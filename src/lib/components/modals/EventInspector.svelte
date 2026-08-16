@@ -59,10 +59,16 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
+  // Track initial state to detect edits on close
+  let initialEventSnapshot: CalendarEvent | null = null;
+
   $effect(() => {
     if (event) {
       startTimeInput = format(parseISO(event.startTime), 'h:mm a');
       endTimeInput = format(parseISO(event.endTime), 'h:mm a');
+      if (!initialEventSnapshot || initialEventSnapshot.id !== event.id) {
+        initialEventSnapshot = JSON.parse(JSON.stringify(event));
+      }
     }
   });
 
@@ -127,8 +133,7 @@
     { id: '15m', label: '15 min before' },
     { id: '30m', label: '30 min before' },
     { id: '1h', label: '1 hour before' },
-    { id: '1d', label: '1 day before' },
-    { id: '2d', label: '2 days before' }
+    { id: '1d', label: '1 day before' }
   ];
 
   let durationText = $derived.by(() => {
@@ -150,6 +155,18 @@
     if (!event) return;
     const updated = { ...event, [field]: value, updatedAt: new Date().toISOString() };
     eventStore.updateEvent(updated);
+  }
+
+  function handleInspectorClose() {
+    if (event && initialEventSnapshot && event.rrule && event.rrule !== 'none') {
+      const hasChanged = JSON.stringify(event) !== JSON.stringify(initialEventSnapshot);
+      if (hasChanged) {
+        contextMenuStore.promptRecurringAction('update', initialEventSnapshot, event);
+      }
+    }
+    calendarState.closeInspector();
+    activeSideMenu = 'none';
+    initialEventSnapshot = null;
   }
 
   function applyCustomTime(isStart: boolean, timeStr: string) {
@@ -252,19 +269,14 @@
 </script>
 
 {#if event}
-  <!-- Global click-away backdrop for floating inspector -->
   {#if !calendarState.isInspectorDocked}
     <div
       class="fixed inset-0 z-40 bg-black/20"
-      onclick={() => {
-        calendarState.closeInspector();
-        activeSideMenu = 'none';
-      }}
+      onclick={handleInspectorClose}
       role="presentation"
     ></div>
   {/if}
 
-  <!-- Click-away backdrop for side menus -->
   {#if activeSideMenu !== 'none'}
     <div
       class="fixed inset-0 z-50 bg-transparent"
@@ -273,14 +285,12 @@
     ></div>
   {/if}
 
-  <!-- Notion 280px Compact Inspector Card -->
   <aside
     class="{calendarState.isInspectorDocked 
       ? 'w-[280px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-40 shrink-0 select-text relative' 
       : 'fixed z-50 w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text animate-in fade-in zoom-in-95 duration-100'}"
     style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
   >
-    <!-- Top Action Bar -->
     <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0 rounded-t-2xl bg-[#181818]">
       <div class="relative">
         <button 
@@ -306,7 +316,6 @@
       </div>
 
       <div class="flex items-center gap-0.5 text-zinc-400">
-        <!-- More options '...' -->
         <div class="relative">
           <button 
             onclick={() => isActionMenuOpen = !isActionMenuOpen}
@@ -321,7 +330,7 @@
                 onclick={() => {
                   calendarState.clipboardEvent = { ...event! };
                   eventStore.deleteEvent(event!.id);
-                  calendarState.closeInspector();
+                  handleInspectorClose();
                   isActionMenuOpen = false;
                 }} 
                 class="flex items-center justify-between px-2.5 py-1.5 text-xs text-zinc-200 hover:bg-[#2c2c2c] rounded-lg transition-colors cursor-pointer"
@@ -356,7 +365,7 @@
                     contextMenuStore.promptRecurringAction('delete', event);
                   } else if (event) {
                     eventStore.deleteEvent(event.id);
-                    calendarState.closeInspector();
+                    handleInspectorClose();
                   }
                   isActionMenuOpen = false;
                 }} 
@@ -377,7 +386,7 @@
         </button>
 
         <button 
-          onclick={() => calendarState.closeInspector()} 
+          onclick={handleInspectorClose} 
           class="p-1 hover:text-zinc-200 hover:bg-[#242424] rounded transition-colors cursor-pointer"
         >
           <X size={14} />
@@ -670,7 +679,7 @@
         </button>
 
         {#if event.reminders && event.reminders.length > 0}
-          <div class="flex flex-col gap-0.5 pl-5">
+          <div class="flex flex-col gap-1 pl-5">
             {#each event.reminders as rem}
               {@const label = reminderPresets.find(r => r.id === rem)?.label || rem}
               <div class="flex items-center justify-between py-0.5 text-xs text-zinc-300 hover:text-white group">
@@ -689,9 +698,7 @@
       </div>
     </div>
 
-    <!-- ================= NOTION SIDE-DOCKED DROPDOWNS ================= -->
-
-    <!-- 1. Time Interval Picker -->
+    <!-- Side-Docked Dropdowns -->
     {#if activeSideMenu === 'start_time' || activeSideMenu === 'end_time'}
       {@const isStart = activeSideMenu === 'start_time'}
       <div 
@@ -709,7 +716,6 @@
       </div>
     {/if}
 
-    <!-- 2. Timezone Search Popover -->
     {#if activeSideMenu === 'timezone'}
       <div 
         class="absolute top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[70] flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100
@@ -740,7 +746,6 @@
       </div>
     {/if}
 
-    <!-- 3. Recurrence Popover -->
     {#if activeSideMenu === 'repeat'}
       <div 
         class="absolute top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1.5 z-[70] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
@@ -761,7 +766,6 @@
       </div>
     {/if}
 
-    <!-- 4. Calendar & Color Swatches Popover -->
     {#if activeSideMenu === 'calendar'}
       <div 
         class="absolute bottom-14 w-58 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[70] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
@@ -805,7 +809,6 @@
       </div>
     {/if}
 
-    <!-- 5. Reminders Adder Popover -->
     {#if activeSideMenu === 'reminders'}
       <div 
         class="absolute bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1 z-[70] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100

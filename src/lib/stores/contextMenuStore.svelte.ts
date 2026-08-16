@@ -1,17 +1,21 @@
 import type { CalendarEvent } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
 import { calendarState } from './calendarState.svelte';
-import { setHours, setMinutes } from 'date-fns';
+import { format, parseISO, setHours, setMinutes } from 'date-fns';
 
 export type ContextMenuMode = 'event' | 'cell';
+
+export interface FieldDiff {
+  field: string;
+  newValue: string;
+  oldValue: string;
+}
 
 export interface RecurringActionPayload {
   action: 'update' | 'delete';
   originalEvent: CalendarEvent;
   updatedEvent?: CalendarEvent;
-  diffType?: 'time' | 'title' | 'general';
-  diffOld?: string;
-  diffNew?: string;
+  diffs: FieldDiff[];
 }
 
 class ContextMenuStore {
@@ -22,25 +26,64 @@ class ContextMenuStore {
   targetEvent = $state<CalendarEvent | null>(null);
   targetDate = $state<Date | null>(null);
 
-  // Recurrence Dialog Scope
+  // Recurrence Dialog State
   isRecurrenceModalOpen = $state(false);
   pendingRecurringAction = $state<RecurringActionPayload | null>(null);
 
   promptRecurringAction(
     action: 'update' | 'delete', 
     originalEvent: CalendarEvent, 
-    updatedEvent?: CalendarEvent,
-    diffType: 'time' | 'title' | 'general' = 'general',
-    diffOld?: string,
-    diffNew?: string
+    updatedEvent?: CalendarEvent
   ) {
+    const diffs: FieldDiff[] = [];
+
+    if (action === 'update' && updatedEvent) {
+      // Time Diff
+      if (originalEvent.startTime !== updatedEvent.startTime || originalEvent.endTime !== updatedEvent.endTime) {
+        const oldStart = format(parseISO(originalEvent.startTime), 'h:mm a');
+        const oldEnd = format(parseISO(originalEvent.endTime), 'h:mm a');
+        const newStart = format(parseISO(updatedEvent.startTime), 'h:mm a');
+        const newEnd = format(parseISO(updatedEvent.endTime), 'h:mm a');
+        diffs.push({
+          field: 'Time',
+          newValue: `${newStart}–${newEnd}`,
+          oldValue: `${oldStart}–${oldEnd}`
+        });
+      }
+
+      // Title Diff
+      if (originalEvent.title !== updatedEvent.title) {
+        diffs.push({
+          field: 'Title',
+          newValue: updatedEvent.title || '(No Title)',
+          oldValue: originalEvent.title || '(No Title)'
+        });
+      }
+
+      // Description Diff
+      if (originalEvent.description !== updatedEvent.description) {
+        diffs.push({
+          field: 'Description',
+          newValue: updatedEvent.description ? (updatedEvent.description.slice(0, 45) + '...') : '(empty)',
+          oldValue: originalEvent.description ? (originalEvent.description.slice(0, 45) + '...') : '(empty)'
+        });
+      }
+
+      // Calendar / Color Diff
+      if (originalEvent.colorOverride !== updatedEvent.colorOverride || originalEvent.calendarId !== updatedEvent.calendarId) {
+        diffs.push({
+          field: 'Calendar / Color',
+          newValue: updatedEvent.colorOverride || 'Default Color',
+          oldValue: originalEvent.colorOverride || 'Default Color'
+        });
+      }
+    }
+
     this.pendingRecurringAction = { 
       action, 
       originalEvent, 
       updatedEvent,
-      diffType,
-      diffOld,
-      diffNew
+      diffs
     };
     this.isRecurrenceModalOpen = true;
   }
@@ -132,7 +175,7 @@ class ContextMenuStore {
     if (!this.targetEvent) return;
     const updated = { ...this.targetEvent, colorOverride: colorHex };
     if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
-      this.promptRecurringAction('update', this.targetEvent, updated, 'general');
+      this.promptRecurringAction('update', this.targetEvent, updated);
     } else {
       eventStore.updateEvent(updated);
     }

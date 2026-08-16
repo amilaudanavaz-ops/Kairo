@@ -1,5 +1,7 @@
 import type { CalendarEvent } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
+import { contextMenuStore } from './contextMenuStore.svelte';
+import { moveEventDate } from '../utils/dateMath';
 
 class DragStore {
   isDragging = $state(false);
@@ -9,7 +11,7 @@ class DragStore {
   hoveredDateKey = $state<string | null>(null);
 
   startDrag(e: PointerEvent, event: CalendarEvent, onDragInitiated?: () => void) {
-    if (e.button !== 0) return; // Only primary mouse button
+    if (e.button !== 0) return;
 
     let dragStarted = false;
     const startX = e.clientX;
@@ -21,7 +23,6 @@ class DragStore {
       const dx = Math.abs(moveEvent.clientX - startX);
       const dy = Math.abs(moveEvent.clientY - startY);
 
-      // 4px movement threshold before initiating drag state
       if (!dragStarted && (dx > 4 || dy > 4)) {
         dragStarted = true;
         this.isDragging = true;
@@ -48,7 +49,26 @@ class DragStore {
       if (this.isDragging && this.draggedEvent && this.hoveredDateKey) {
         const [year, month, day] = this.hoveredDateKey.split('-').map(Number);
         const targetDate = new Date(year, month - 1, day);
-        eventStore.rescheduleEvent(this.draggedEvent.id, targetDate);
+        
+        if (this.draggedEvent.rrule && this.draggedEvent.rrule !== 'none') {
+          const masterEvent = eventStore.events.find(e => e.id === this.draggedEvent?.id) || this.draggedEvent;
+          const updatedEvent = moveEventDate(this.draggedEvent, targetDate);
+          
+          contextMenuStore.pendingRecurringAction = {
+            action: 'update',
+            originalEvent: masterEvent,
+            updatedEvent,
+            occurrenceDate: this.draggedEvent.occurrenceDate,
+            diffs: [{
+              field: 'Time',
+              newValue: targetDate.toLocaleDateString([], { month: 'short', day: 'numeric' }),
+              oldValue: this.draggedEvent.occurrenceDate || ''
+            }]
+          };
+          contextMenuStore.isRecurrenceModalOpen = true;
+        } else {
+          eventStore.rescheduleEvent(this.draggedEvent.id, targetDate);
+        }
       }
 
       if (this.isDragging) {

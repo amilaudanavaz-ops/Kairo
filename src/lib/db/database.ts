@@ -62,13 +62,22 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
   const rows = await db.select<any[]>('SELECT * FROM events ORDER BY start_time ASC');
 
   return rows.map((r) => {
-    let parsedReminders: string[] = ['30m'];
+    let parsedReminders: string[] = ['15m'];
     try {
       if (r.reminders) {
         parsedReminders = r.reminders.startsWith('[') ? JSON.parse(r.reminders) : [r.reminders];
       }
     } catch {
-      parsedReminders = ['30m'];
+      parsedReminders = ['15m'];
+    }
+
+    let parsedExdates: string[] = [];
+    try {
+      if (r.exdates) {
+        parsedExdates = JSON.parse(r.exdates);
+      }
+    } catch {
+      parsedExdates = [];
     }
 
     return {
@@ -86,10 +95,12 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
       isAllDay: Boolean(r.is_all_day),
       timeZone: r.time_zone || 'GMT+5:30 Colombo',
       rrule: r.rrule || 'none',
+      exdates: parsedExdates,
+      untilDate: r.until_date || undefined,
       status: r.status || 'confirmed',
       busyStatus: r.busy_status || 'busy',
       visibility: r.visibility || 'default',
-      reminders: Array.isArray(parsedReminders) ? parsedReminders : ['30m'],
+      reminders: Array.isArray(parsedReminders) ? parsedReminders : ['15m'],
       creatorEmail: r.creator_email || 'amilavaz2003@gmail.com',
       colorOverride: r.color_override || undefined,
       syncStatus: r.sync_status,
@@ -102,12 +113,13 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
   const db = await getDb();
   await db.execute(
     `INSERT INTO events (
-      id, calendar_id, google_event_id, title, description, location,
+      id, calendar_id, google_event_id, recurring_event_id, title, description, location,
       meeting_url, start_time, end_time, is_all_day, time_zone, rrule,
       color_override, status, busy_status, reminders, sync_status, updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
     ON CONFLICT(id) DO UPDATE SET
       calendar_id = excluded.calendar_id,
+      recurring_event_id = excluded.recurring_event_id,
       title = excluded.title,
       description = excluded.description,
       location = excluded.location,
@@ -126,6 +138,7 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       event.id,
       event.calendarId,
       event.googleEventId || null,
+      event.recurringEventId || null,
       event.title,
       event.description || null,
       event.location || null,
@@ -138,7 +151,7 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       event.colorOverride || null,
       event.status,
       event.busyStatus,
-      JSON.stringify(event.reminders || ['30m']),
+      JSON.stringify(event.reminders || ['15m']),
       event.syncStatus,
       event.updatedAt
     ]

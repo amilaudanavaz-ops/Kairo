@@ -19,7 +19,8 @@ export interface CalendarEvent {
   id: string;
   calendarId: string;
   googleEventId?: string;
-  recurringEventId?: string;
+  recurringEventId?: string; // References parent master if this is an exception
+  originalStartTime?: string; // ISO string of the specific occurrence being replaced
   title: string;
   description?: string;
   location?: string;
@@ -30,10 +31,14 @@ export interface CalendarEvent {
   isAllDay: boolean;
   timeZone: string;
   rrule?: string;    // 'none' | 'daily' | 'weekday' | 'weekly' | 'biweekly' | 'monthly_date' | 'monthly_day' | 'yearly'
+  exdates?: string[]; // Array of 'yyyy-MM-dd' dates where master recurrence is suppressed
+  untilDate?: string; // 'yyyy-MM-dd' termination cutoff for "This and following events"
+  occurrenceDate?: string; // 'yyyy-MM-dd' tracking the specific occurrence being viewed/dragged
+  isRecurringInstance?: boolean; // Virtual occurrence flag
   status: EventStatus;
   busyStatus: BusyStatus;
   visibility: Visibility;
-  reminders: string[]; // Multiple reminders array, e.g. ['10m', '1h', '1d']
+  reminders: string[];
   creatorEmail?: string;
   participants?: string[];
   attachments?: string[];

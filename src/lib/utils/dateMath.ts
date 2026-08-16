@@ -10,9 +10,7 @@ import {
   format,
   parseISO,
   set,
-  differenceInDays,
   differenceInWeeks,
-  differenceInMonths,
   getWeekOfMonth,
   differenceInMinutes,
   addMinutes
@@ -43,53 +41,59 @@ export function generateMonthGrid(activeDate: Date): DayCell[] {
 }
 
 /**
- * Checks whether an event occurs on a target date, accounting for recurrence rules (RRULE)
+ * Evaluates whether an event occurs on a target day, respecting recurrence rules,
+ * exclusion dates (exdates), and termination cutoffs (untilDate).
  */
 export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean {
   const start = parseISO(event.startTime);
-  
-  // Cannot occur before its initial start date
-  if (targetDay < startOfDayDate(start)) return false;
+  const targetDayStart = new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate());
+  const eventDayStart = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const targetDateKey = format(targetDay, 'yyyy-MM-dd');
 
-  // Single non-recurring event
+  // 1. Cannot occur before its origin start date
+  if (targetDayStart < eventDayStart) return false;
+
+  // 2. Suppress date if explicitly excluded (e.g. modified via "This event")
+  if (event.exdates && event.exdates.includes(targetDateKey)) {
+    return false;
+  }
+
+  // 3. Suppress date if past termination cutoff (e.g. modified via "This and following")
+  if (event.untilDate && targetDateKey >= event.untilDate) {
+    return false;
+  }
+
+  // 4. Non-recurring standalone events
   if (!event.rrule || event.rrule === 'none') {
     return isSameDay(start, targetDay);
   }
 
-  // Daily recurrence
-  if (event.rrule === 'daily') {
-    return true;
-  }
+  // 5. Recurrence rule evaluation
+  if (event.rrule === 'daily') return true;
 
-  // Weekday recurrence (Mon - Fri)
   if (event.rrule === 'weekday') {
-    const dayOfWeek = targetDay.getDay();
-    return dayOfWeek >= 1 && dayOfWeek <= 5;
+    const day = targetDay.getDay();
+    return day >= 1 && day <= 5;
   }
 
-  // Weekly recurrence on same weekday
   if (event.rrule === 'weekly') {
     return start.getDay() === targetDay.getDay();
   }
 
-  // Bi-weekly (Every 2 weeks)
   if (event.rrule === 'biweekly') {
     if (start.getDay() !== targetDay.getDay()) return false;
     const diffWeeks = Math.abs(differenceInWeeks(targetDay, start));
     return diffWeeks % 2 === 0;
   }
 
-  // Monthly on same date (e.g. 16th of every month)
   if (event.rrule === 'monthly_date' || event.rrule === 'monthly') {
     return start.getDate() === targetDay.getDate();
   }
 
-  // Monthly on same day position (e.g. 3rd Thursday)
   if (event.rrule === 'monthly_day') {
     return start.getDay() === targetDay.getDay() && getWeekOfMonth(start) === getWeekOfMonth(targetDay);
   }
 
-  // Yearly on same month and date
   if (event.rrule === 'yearly') {
     return start.getMonth() === targetDay.getMonth() && start.getDate() === targetDay.getDate();
   }
@@ -97,37 +101,34 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
   return isSameDay(start, targetDay);
 }
 
-function startOfDayDate(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
 /**
- * Returns all active and recurring events for a specific calendar day
+ * Returns all active and recurring events for a specific calendar day,
+ * attaching the exact occurrence date to each instance.
  */
 export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEvent[] {
+  const dateKey = format(day, 'yyyy-MM-dd');
+
   return events
     .filter((event) => eventOccursOnDay(event, day))
     .map((event) => {
-      if (!isSameDay(parseISO(event.startTime), day)) {
-        // Project start and end time to target recurring day
-        const origStart = parseISO(event.startTime);
-        const origEnd = parseISO(event.endTime);
-        const duration = differenceInMinutes(origEnd, origStart);
+      const origStart = parseISO(event.startTime);
+      const origEnd = parseISO(event.endTime);
+      const duration = differenceInMinutes(origEnd, origStart);
 
-        const newStart = set(day, {
-          hours: origStart.getHours(),
-          minutes: origStart.getMinutes(),
-          seconds: origStart.getSeconds()
-        });
-        const newEnd = addMinutes(newStart, duration);
+      const newStart = set(day, {
+        hours: origStart.getHours(),
+        minutes: origStart.getMinutes(),
+        seconds: origStart.getSeconds()
+      });
+      const newEnd = addMinutes(newStart, duration);
 
-        return {
-          ...event,
-          startTime: newStart.toISOString(),
-          endTime: newEnd.toISOString()
-        };
-      }
-      return event;
+      return {
+        ...event,
+        startTime: newStart.toISOString(),
+        endTime: newEnd.toISOString(),
+        occurrenceDate: dateKey,
+        isRecurringInstance: Boolean(event.rrule && event.rrule !== 'none')
+      };
     });
 }
 
