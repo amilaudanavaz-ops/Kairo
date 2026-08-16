@@ -12,13 +12,21 @@ export async function getDb(): Promise<Database> {
 
 export async function loadInitialCalendars(): Promise<CalendarCategory[]> {
   const db = await getDb();
+
+  // 1. Seed default local/Google account first to satisfy Foreign Key constraints
+  await db.execute(
+    `INSERT OR IGNORE INTO accounts (id, email, provider, sync_enabled)
+     VALUES ('acc_primary', 'amilavaz2003@gmail.com', 'google', 1)`
+  );
+
+  // 2. Fetch or seed default calendars
   const rows = await db.select<any[]>('SELECT * FROM calendars ORDER BY created_at ASC');
   
   if (rows.length === 0) {
     const defaults = [
-      { id: '1', account_id: 'local', name: 'Work & Personal', color_id: 'blue', color_hex: '#3b82f6', is_primary: 1, is_visible: 1 },
-      { id: '2', account_id: 'local', name: 'Scraping & Dev', color_id: 'amber', color_hex: '#f59e0b', is_primary: 0, is_visible: 1 },
-      { id: '3', account_id: 'local', name: 'Holidays', color_id: 'emerald', color_hex: '#10b981', is_primary: 0, is_visible: 1 }
+      { id: '1', account_id: 'acc_primary', name: 'Personal & Work', color_id: 'blue', color_hex: '#3b82f6', is_primary: 1, is_visible: 1 },
+      { id: '2', account_id: 'acc_primary', name: 'Scraping & Dev', color_id: 'amber', color_hex: '#f59e0b', is_primary: 0, is_visible: 1 },
+      { id: '3', account_id: 'acc_primary', name: 'Holidays', color_id: 'emerald', color_hex: '#10b981', is_primary: 0, is_visible: 1 }
     ];
 
     for (const d of defaults) {
@@ -60,7 +68,7 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
     calendarId: r.calendar_id,
     googleEventId: r.google_event_id,
     recurringEventId: r.recurring_event_id,
-    title: r.title || '(No Title)',
+    title: r.title || '',
     description: r.description || '',
     location: r.location || '',
     conferencingUrl: r.meeting_url || '',

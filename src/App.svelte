@@ -65,15 +65,15 @@
   });
 </script>
 
-<main class="h-screen w-screen flex flex-col bg-[#121212] overflow-hidden">
+<main class="h-screen w-screen flex flex-col bg-[#121212] overflow-hidden select-none">
   <TitleBar />
 
-  <div class="flex-1 flex overflow-hidden">
+  <div class="flex-1 flex min-h-0 overflow-hidden relative">
     {#if calendarState.isSidebarOpen}
       <Sidebar />
     {/if}
 
-    <section class="flex-1 flex flex-col bg-[#121212] overflow-hidden relative">
+    <section class="flex-1 flex flex-col min-h-0 bg-[#121212] overflow-hidden relative">
       {#if calendarState.viewMode === 'month'}
         <MonthGrid />
       {:else if calendarState.viewMode === 'week'}
@@ -88,7 +88,7 @@
     {/if}
   </div>
 
-  <!-- Popovers and Modals -->
+  <!-- Modals & Floating Inspectors -->
   <DayOverflowPopover />
   {#if !calendarState.isInspectorDocked && calendarState.selectedEvent}
     <EventInspector />
@@ -97,7 +97,7 @@
   <RecurrenceDialog />
   <AddAccountModal />
 
-  <!-- Floating Drag Preview -->
+  <!-- Drag Preview -->
   {#if dragStore.isDragging && dragStore.draggedEvent}
     <div
       class="fixed pointer-events-none z-[999] px-3 py-1.5 rounded-lg bg-[#242424] border border-blue-500/80 shadow-2xl text-xs font-semibold text-white flex items-center gap-2 transform -translate-x-1/2 -translate-y-1/2"

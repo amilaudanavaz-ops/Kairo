@@ -8,25 +8,17 @@
     eachDayOfInterval, 
     isSameMonth, 
     isSameDay, 
-    isToday, 
-    addMonths, 
-    subMonths 
+    isToday 
   } from 'date-fns';
   import { ChevronLeft, ChevronRight } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
 
-  // Keep mini calendar month synced with the active calendar date
-  let viewDate = $state(new Date(calendarState.currentDate));
-
-  $effect(() => {
-    viewDate = new Date(calendarState.currentDate);
-  });
-
-  let monthTitle = $derived(format(viewDate, 'MMMM yyyy'));
   const weekDays = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
+  let monthTitle = $derived(format(calendarState.currentDate, 'MMMM yyyy'));
+
   let days = $derived.by(() => {
-    const mStart = startOfMonth(viewDate);
+    const mStart = startOfMonth(calendarState.currentDate);
     const mEnd = endOfMonth(mStart);
     const cStart = startOfWeek(mStart, { weekStartsOn: 0 });
     const cEnd = endOfWeek(mEnd, { weekStartsOn: 0 });
@@ -38,20 +30,22 @@
   }
 </script>
 
-<div class="flex flex-col gap-1.5 select-none">
+<div class="flex flex-col gap-1.5 select-none shrink-0">
   <!-- Month Header -->
   <div class="flex items-center justify-between px-1 mb-1">
     <span class="text-xs font-semibold text-zinc-200">{monthTitle}</span>
     <div class="flex items-center gap-0.5">
       <button 
-        onclick={() => viewDate = subMonths(viewDate, 1)}
-        class="p-0.5 text-zinc-400 hover:text-zinc-100 hover:bg-[#252525] rounded transition-colors"
+        onclick={() => calendarState.navigatePrev()}
+        class="p-0.5 text-zinc-400 hover:text-zinc-100 hover:bg-[#252525] rounded transition-colors cursor-pointer"
+        title="Previous month"
       >
         <ChevronLeft size={14} />
       </button>
       <button 
-        onclick={() => viewDate = addMonths(viewDate, 1)}
-        class="p-0.5 text-zinc-400 hover:text-zinc-100 hover:bg-[#252525] rounded transition-colors"
+        onclick={() => calendarState.navigateNext()}
+        class="p-0.5 text-zinc-400 hover:text-zinc-100 hover:bg-[#252525] rounded transition-colors cursor-pointer"
+        title="Next month"
       >
         <ChevronRight size={14} />
       </button>
@@ -68,13 +62,13 @@
   <!-- Day Matrix -->
   <div class="grid grid-cols-7 gap-y-1 text-center">
     {#each days as day (day.toISOString())}
-      {@const isCurMonth = isSameMonth(day, viewDate)}
+      {@const isCurMonth = isSameMonth(day, calendarState.currentDate)}
       {@const isSelected = isSameDay(day, calendarState.currentDate)}
       {@const isCurDay = isToday(day)}
 
       <button
         onclick={() => selectDate(day)}
-        class="h-6 w-6 mx-auto rounded-full flex items-center justify-center text-[11px] font-medium transition-colors
+        class="h-6 w-6 mx-auto rounded-full flex items-center justify-center text-[11px] font-medium transition-colors cursor-pointer
           {isCurDay ? 'bg-rose-500 text-white font-bold' : ''}
           {isSelected && !isCurDay ? 'bg-[#333333] text-white' : ''}
           {!isCurDay && !isSelected && isCurMonth ? 'text-zinc-300 hover:bg-[#262626]' : ''}

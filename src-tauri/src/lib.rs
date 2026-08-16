@@ -1,5 +1,10 @@
 use tauri_plugin_sql::{Migration, MigrationKind};
 
+#[tauri::command]
+async fn connect_google_account() -> Result<String, String> {
+    Ok("amilavaz2003@gmail.com".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let migrations = vec![
