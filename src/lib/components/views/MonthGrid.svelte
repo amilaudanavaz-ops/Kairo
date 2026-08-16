@@ -5,7 +5,7 @@
   import { dragStore } from '../../stores/dragStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
-  import { generateMonthGrid, getEventsForDay } from '../../utils/dateMath';
+  import { generateMonthGrid, getEventsForDay, moveEventDate } from '../../utils/dateMath';
   import type { CalendarEvent } from '../../../types/event';
 
   const weekDays = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
@@ -25,7 +25,9 @@
   }
 
   function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
-    dragStore.startDrag(e, event);
+    dragStore.startDrag(e, event, () => {
+      // If recurring, drop listener will prompt scope
+    });
   }
 
   function handleDayDoubleClick(e: MouseEvent, date: Date) {
@@ -45,7 +47,7 @@
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: ['30m'],
+      reminders: ['15m'],
       creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
@@ -146,7 +148,7 @@
                 onclick={(e) => handleEventClick(e, event)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
                 class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-all
-                  {isSelected ? 'ring-2 ring-white/70 shadow-lg' : ''}
+                  {isSelected ? 'ring-2 ring-white/80 shadow-[0_0_15px_rgba(59,130,246,0.5)]' : ''}
                   {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
                 style="background-color: {isSelected ? token.selectedBg : token.bannerBg}; border: 1px solid {token.bannerBorder}; color: {token.selectedText};"
                 role="button"
@@ -156,29 +158,30 @@
                 <span class="truncate pointer-events-none">{event.title || '(No Title)'}</span>
               </div>
             {:else}
+              <!-- Notion Luminous Glass Selected & Unselected Strip -->
               <div
                 onpointerdown={(e) => handlePointerDown(e, event)}
                 onclick={(e) => handleEventClick(e, event)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
                 class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all
                   {isSelected 
-                    ? 'shadow-md ring-1 ring-white/60 font-bold' 
-                    : 'bg-[#1a1a1a]/90 hover:bg-[#242424] border-[#272727]' }
+                    ? 'shadow-[0_0_16px_rgba(59,130,246,0.6)] ring-1 ring-white/70 font-semibold' 
+                    : 'bg-[#181818]/95 hover:bg-[#222222] border-[#262626]' }
                   {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
-                style={isSelected ? `background-color: ${token.selectedBg}; border-color: ${token.selectedBg};` : ''}
+                style={isSelected ? `background: linear-gradient(135deg, ${token.selectedBg} 0%, rgba(37,99,235,0.85) 100%); border-color: ${token.hex};` : ''}
                 role="button"
                 tabindex="0"
                 onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
               >
                 <!-- Left Vertical Curved Pill -->
                 <span 
-                  class="w-[3px] h-3 rounded-full mr-1.5 shrink-0" 
+                  class="w-[3.5px] h-3.5 rounded-full mr-1.5 shrink-0" 
                   style="background-color: {isSelected ? '#ffffff' : token.hex};"
                 ></span>
 
-                <!-- Formatted Tinted Time -->
+                <!-- Notion Light Tinted Formatted Time -->
                 <span 
-                  class="text-[10px] font-semibold mr-1 shrink-0 pointer-events-none"
+                  class="text-[10px] font-semibold mr-1.5 shrink-0 pointer-events-none"
                   style="color: {isSelected ? '#ffffff' : token.timeText};"
                 >
                   {format(parseISO(event.startTime), 'h:mm a')}
@@ -187,7 +190,7 @@
                 <!-- Event Title -->
                 <span 
                   class="truncate pointer-events-none font-medium"
-                  style="color: {isSelected ? '#ffffff' : '#f4f4f5'};"
+                  style="color: {isSelected ? '#ffffff' : '#ededed'};"
                 >
                   {event.title || '(No Title)'}
                 </span>

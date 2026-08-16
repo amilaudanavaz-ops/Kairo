@@ -54,7 +54,7 @@
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: ['30m'],
+      reminders: ['15m'],
       creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
@@ -88,7 +88,7 @@
 
   <!-- Timed Grid Canvas -->
   <div class="flex-1 flex overflow-y-auto relative custom-scrollbar min-h-0">
-    <!-- Time Axis with Rigid Row Heights -->
+    <!-- Time Axis -->
     <div class="w-14 flex flex-col shrink-0 border-r border-[#222222] bg-[#131313]">
       {#each hours as hour}
         <div
@@ -129,12 +129,12 @@
               onclick={(e) => handleEventClick(e, event)}
               oncontextmenu={(e) => handleEventContextMenu(e, event)}
               onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, day, 'move')}
-              class="absolute left-1 right-1 rounded-lg px-2 py-1 cursor-grab active:cursor-grabbing text-xs shadow-md transition-all overflow-hidden flex flex-col justify-between group select-none border
+              class="absolute left-1 right-1 rounded-lg px-2 py-1 cursor-grab active:cursor-grabbing text-xs transition-all overflow-hidden flex flex-col justify-between group select-none border
                 {isSelected 
-                  ? 'ring-2 ring-white/70 shadow-xl font-bold' 
-                  : 'bg-[#1a1a1a] hover:bg-[#222222] border-[#2d2d2d]' }
+                  ? 'ring-2 ring-white/80 shadow-[0_0_18px_rgba(59,130,246,0.6)] font-bold' 
+                  : 'bg-[#181818] hover:bg-[#202020] border-[#282828]' }
                 {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
-              style="top: {style.top}px; height: {style.height}px; {isSelected ? `background-color: ${token.selectedBg}; border-color: ${token.selectedBg};` : `border-left: 3.5px solid ${token.hex};`}"
+              style="top: {style.top}px; height: {style.height}px; {isSelected ? `background: linear-gradient(135deg, ${token.selectedBg} 0%, rgba(37,99,235,0.85) 100%); border-color: ${token.hex};` : `border-left: 3.5px solid ${token.hex};`}"
               role="button"
               tabindex="0"
               onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
@@ -152,7 +152,7 @@
                 <span class="text-[10px] font-semibold" style="color: {isSelected ? '#ffffff' : token.timeText};">
                   {format(parseISO(event.startTime), 'h:mm a')}
                 </span>
-                <span class="font-semibold text-[11px] truncate" style="color: {isSelected ? '#ffffff' : '#f4f4f5'};">
+                <span class="font-semibold text-[11px] truncate" style="color: {isSelected ? '#ffffff' : '#ededed'};">
                   {event.title || '(No Title)'}
                 </span>
               </div>

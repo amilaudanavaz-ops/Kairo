@@ -59,7 +59,7 @@
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: ['30m'],
+      reminders: ['15m'],
       creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
@@ -78,7 +78,6 @@
   </div>
 
   <div class="flex-1 flex overflow-y-auto relative custom-scrollbar min-h-0">
-    <!-- Time Axis with Rigid Row Heights -->
     <div class="w-16 flex flex-col shrink-0 border-r border-[#222222] bg-[#131313]">
       {#each hours as hour}
         <div
@@ -89,7 +88,6 @@
       {/each}
     </div>
 
-    <!-- Day Canvas Column -->
     <div
       data-timeline-col={dateKey}
       ondblclick={handleCanvasDoubleClick}
@@ -114,12 +112,12 @@
           onclick={(e) => handleEventClick(e, event)}
           oncontextmenu={(e) => handleEventContextMenu(e, event)}
           onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'move')}
-          class="absolute left-4 right-8 rounded-xl p-3 cursor-grab active:cursor-grabbing text-xs shadow-lg transition-all flex flex-col justify-between group select-none border
+          class="absolute left-4 right-8 rounded-xl p-3 cursor-grab active:cursor-grabbing text-xs transition-all flex flex-col justify-between group select-none border
             {isSelected 
-              ? 'ring-2 ring-white/70 shadow-2xl font-bold' 
-              : 'bg-[#1a1a1a] hover:bg-[#222222] border-[#2b2b2b]' }
+              ? 'ring-2 ring-white/80 shadow-[0_0_20px_rgba(59,130,246,0.6)] font-bold' 
+              : 'bg-[#181818] hover:bg-[#202020] border-[#282828]' }
             {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
-          style="top: {style.top}px; height: {style.height}px; {isSelected ? `background-color: ${token.selectedBg}; border-color: ${token.selectedBg};` : `border-left: 4px solid ${token.hex};`}"
+          style="top: {style.top}px; height: {style.height}px; {isSelected ? `background: linear-gradient(135deg, ${token.selectedBg} 0%, rgba(37,99,235,0.85) 100%); border-color: ${token.hex};` : `border-left: 4px solid ${token.hex};`}"
           role="button"
           tabindex="0"
           onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
@@ -134,7 +132,7 @@
           ></div>
 
           <div class="flex items-center justify-between pointer-events-none">
-            <span class="font-bold text-sm truncate" style="color: {isSelected ? '#ffffff' : '#f4f4f5'};">
+            <span class="font-bold text-sm truncate" style="color: {isSelected ? '#ffffff' : '#ededed'};">
               {event.title || '(No Title)'}
             </span>
             <span class="text-[11px] font-semibold" style="color: {isSelected ? '#ffffff' : token.timeText};">

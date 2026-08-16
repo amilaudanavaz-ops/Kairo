@@ -5,6 +5,15 @@ import { setHours, setMinutes } from 'date-fns';
 
 export type ContextMenuMode = 'event' | 'cell';
 
+export interface RecurringActionPayload {
+  action: 'update' | 'delete';
+  originalEvent: CalendarEvent;
+  updatedEvent?: CalendarEvent;
+  diffType?: 'time' | 'title' | 'general';
+  diffOld?: string;
+  diffNew?: string;
+}
+
 class ContextMenuStore {
   isOpen = $state(false);
   mode = $state<ContextMenuMode>('cell');
@@ -15,14 +24,24 @@ class ContextMenuStore {
 
   // Recurrence Dialog Scope
   isRecurrenceModalOpen = $state(false);
-  pendingRecurringAction = $state<{
-    action: 'update' | 'delete';
-    originalEvent: CalendarEvent;
-    updatedEvent?: CalendarEvent;
-  } | null>(null);
+  pendingRecurringAction = $state<RecurringActionPayload | null>(null);
 
-  promptRecurringAction(action: 'update' | 'delete', originalEvent: CalendarEvent, updatedEvent?: CalendarEvent) {
-    this.pendingRecurringAction = { action, originalEvent, updatedEvent };
+  promptRecurringAction(
+    action: 'update' | 'delete', 
+    originalEvent: CalendarEvent, 
+    updatedEvent?: CalendarEvent,
+    diffType: 'time' | 'title' | 'general' = 'general',
+    diffOld?: string,
+    diffNew?: string
+  ) {
+    this.pendingRecurringAction = { 
+      action, 
+      originalEvent, 
+      updatedEvent,
+      diffType,
+      diffOld,
+      diffNew
+    };
     this.isRecurrenceModalOpen = true;
   }
 
@@ -74,7 +93,7 @@ class ContextMenuStore {
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: ['30m'],
+      reminders: ['15m'],
       creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
@@ -113,7 +132,7 @@ class ContextMenuStore {
     if (!this.targetEvent) return;
     const updated = { ...this.targetEvent, colorOverride: colorHex };
     if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
-      this.promptRecurringAction('update', this.targetEvent, updated);
+      this.promptRecurringAction('update', this.targetEvent, updated, 'general');
     } else {
       eventStore.updateEvent(updated);
     }
