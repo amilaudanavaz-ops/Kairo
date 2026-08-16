@@ -1,11 +1,47 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import TitleBar from './lib/components/layout/TitleBar.svelte';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
   import MonthGrid from './lib/components/views/MonthGrid.svelte';
+  import WeekGrid from './lib/components/views/WeekGrid.svelte';
+  import DayGrid from './lib/components/views/DayGrid.svelte';
   import DayOverflowPopover from './lib/components/modals/DayOverflowPopover.svelte';
   import EventInspector from './lib/components/modals/EventInspector.svelte';
   import { calendarState } from './lib/stores/calendarState.svelte';
+  import { eventStore } from './lib/stores/eventStore.svelte';
   import { dragStore } from './lib/stores/dragStore.svelte';
+  import { loadInitialCalendars } from './lib/db/database';
+
+  onMount(async () => {
+    try {
+      const cals = await loadInitialCalendars();
+      if (cals.length > 0) {
+        calendarState.calendars = cals;
+      }
+      await eventStore.init();
+    } catch (err) {
+      console.error('Failed to initialize local SQLite store:', err);
+    }
+  });
+
+  $effect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeTag = (document.activeElement?.tagName || '').toLowerCase();
+      if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
+
+      if (e.key === 'm' || e.key === 'M') calendarState.setViewMode('month');
+      if (e.key === 'w' || e.key === 'W') calendarState.setViewMode('week');
+      if (e.key === 'd' || e.key === 'D') calendarState.setViewMode('day');
+      if (e.key === 't' || e.key === 'T') calendarState.setToday();
+      if (e.key === 'Escape') {
+        calendarState.closeInspector();
+        calendarState.closeOverflow();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  });
 </script>
 
 <main class="h-screen w-screen flex flex-col bg-[#121212] overflow-hidden">
@@ -19,15 +55,15 @@
     <section class="flex-1 flex flex-col bg-[#121212] overflow-hidden relative">
       {#if calendarState.viewMode === 'month'}
         <MonthGrid />
-      {:else}
-        <div class="flex-1 flex items-center justify-center text-zinc-500 text-sm">
-          <span>{calendarState.viewMode.toUpperCase()} view implementation</span>
-        </div>
+      {:else if calendarState.viewMode === 'week'}
+        <WeekGrid />
+      {:else if calendarState.viewMode === 'day'}
+        <DayGrid />
       {/if}
     </section>
   </div>
 
-  <!-- Global Floating Modals -->
+  <!-- Global Modals & Floating Inspectors -->
   <DayOverflowPopover />
   <EventInspector />
 

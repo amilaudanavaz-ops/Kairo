@@ -1,6 +1,6 @@
 <script lang="ts">
   import { format, parseISO } from 'date-fns';
-  import { X, Trash2, Clock, AlignLeft, Calendar as CalIcon } from 'lucide-svelte';
+  import { X, Trash2, Clock, AlignLeft, Calendar as CalIcon, Check } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
 
@@ -20,26 +20,31 @@
 
   function calculatePosition(rect: DOMRect | null) {
     if (!rect) return 'top: 25%; left: 50%; transform: translateX(-50%);';
-    const top = Math.min(window.innerHeight - 380, Math.max(20, rect.top));
-    const left = Math.min(window.innerWidth - 340, Math.max(20, rect.right + 10));
+    
+    const inspectorWidth = 320;
+    const inspectorHeight = 360;
+
+    // Prefer rendering to the right of the active anchor
+    let left = rect.right + 12;
+    if (left + inspectorWidth > window.innerWidth - 16) {
+      // Flip to left if screen boundary is reached
+      left = Math.max(16, rect.left - inspectorWidth - 12);
+    }
+
+    let top = Math.min(window.innerHeight - inspectorHeight - 16, Math.max(16, rect.top - 10));
     return `top: ${top}px; left: ${left}px;`;
   }
 </script>
 
 {#if event}
+  <!-- Event Inspector Panel with Higher Stacking Level -->
   <div
-    class="fixed inset-0 z-40 bg-black/20"
-    onclick={() => calendarState.closeInspector()}
-    role="presentation"
-  ></div>
-
-  <div
-    class="fixed z-50 w-80 bg-[#1c1c1c] border border-[#2d2d2d] rounded-xl shadow-2xl p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-100"
+    class="fixed z-50 w-80 bg-[#1c1c1c] border border-[#333333] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.6)] p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-100 select-text"
     style={calculatePosition(calendarState.inspectorRect)}
   >
-    <!-- Header: Quick Actions -->
+    <!-- Header -->
     <div class="flex items-center justify-between border-b border-[#282828] pb-2">
-      <span class="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Event Details</span>
+      <span class="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Edit Event</span>
       <div class="flex items-center gap-1">
         <button
           onclick={handleDelete}
@@ -66,7 +71,7 @@
       placeholder="Event Title"
     />
 
-    <!-- Date & Time Row -->
+    <!-- Date & Time Info -->
     <div class="flex items-center gap-2.5 text-xs text-zinc-300">
       <Clock size={15} class="text-zinc-500 shrink-0" />
       <span>{format(parseISO(event.startTime), 'EEE, MMM d, yyyy · h:mm a')}</span>
@@ -88,7 +93,7 @@
       </select>
     </div>
 
-    <!-- Description Placeholder -->
+    <!-- Description -->
     <div class="flex items-start gap-2.5 text-xs text-zinc-300 pt-1">
       <AlignLeft size={15} class="text-zinc-500 shrink-0 mt-1" />
       <textarea

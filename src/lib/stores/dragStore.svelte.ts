@@ -1,7 +1,5 @@
-
 import type { CalendarEvent } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
-import { parseISO } from 'date-fns';
 
 class DragStore {
   isDragging = $state(false);
@@ -10,35 +8,33 @@ class DragStore {
   currentY = $state(0);
   hoveredDateKey = $state<string | null>(null);
 
-  private startX = 0;
-  private startY = 0;
-  private hasMoved = false;
-
-  startDrag(e: PointerEvent, event: CalendarEvent) {
+  startDrag(e: PointerEvent, event: CalendarEvent, onDragInitiated?: () => void) {
     if (e.button !== 0) return; // Only primary mouse button
 
-    this.draggedEvent = event;
-    this.startX = e.clientX;
-    this.startY = e.clientY;
+    let dragStarted = false;
+    const startX = e.clientX;
+    const startY = e.clientY;
     this.currentX = e.clientX;
     this.currentY = e.clientY;
-    this.hasMoved = false;
 
     const onPointerMove = (moveEvent: PointerEvent) => {
-      const dx = Math.abs(moveEvent.clientX - this.startX);
-      const dy = Math.abs(moveEvent.clientY - this.startY);
+      const dx = Math.abs(moveEvent.clientX - startX);
+      const dy = Math.abs(moveEvent.clientY - startY);
 
-      // 4px movement threshold before initiating drag
-      if (!this.hasMoved && (dx > 4 || dy > 4)) {
-        this.hasMoved = true;
+      // 4px movement threshold before initiating drag state
+      if (!dragStarted && (dx > 4 || dy > 4)) {
+        dragStarted = true;
         this.isDragging = true;
+        this.draggedEvent = event;
+        if (onDragInitiated) {
+          onDragInitiated();
+        }
       }
 
       if (this.isDragging) {
         this.currentX = moveEvent.clientX;
         this.currentY = moveEvent.clientY;
 
-        // Perform element hit-testing underneath cursor
         const elements = document.elementsFromPoint(moveEvent.clientX, moveEvent.clientY);
         const dayCell = elements.find((el) => el.hasAttribute('data-day-cell'));
         this.hoveredDateKey = dayCell ? dayCell.getAttribute('data-day-cell') : null;
@@ -55,10 +51,17 @@ class DragStore {
         eventStore.rescheduleEvent(this.draggedEvent.id, targetDate);
       }
 
-      this.isDragging = false;
-      this.draggedEvent = null;
-      this.hoveredDateKey = null;
-      this.hasMoved = false;
+      if (this.isDragging) {
+        setTimeout(() => {
+          this.isDragging = false;
+          this.draggedEvent = null;
+          this.hoveredDateKey = null;
+        }, 50);
+      } else {
+        this.isDragging = false;
+        this.draggedEvent = null;
+        this.hoveredDateKey = null;
+      }
     };
 
     window.addEventListener('pointermove', onPointerMove);

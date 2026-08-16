@@ -1,118 +1,41 @@
 import type { CalendarEvent } from '../../types/event';
 import { moveEventDate } from '../utils/dateMath';
+import { 
+  loadStoredEvents, 
+  persistUpsertEvent, 
+  persistDeleteEvent 
+} from '../db/database';
 
 class EventStore {
-  events = $state<CalendarEvent[]>([
-    {
-      id: 'evt_1',
-      calendarId: '1',
-      title: 'Mathematics for Computing',
-      startTime: '2026-08-01T08:00:00.000Z',
-      endTime: '2026-08-01T10:00:00.000Z',
-      isAllDay: false,
-      timeZone: 'UTC',
-      status: 'confirmed',
-      busyStatus: 'busy',
-      syncStatus: 'synced',
-      updatedAt: new Date().toISOString()
-    },
-    {
-      id: 'evt_2',
-      calendarId: '2',
-      title: 'VNOOIR - Lab Scraping',
-      startTime: '2026-08-08T05:00:00.000Z',
-      endTime: '2026-08-08T07:00:00.000Z',
-      isAllDay: false,
-      timeZone: 'UTC',
-      status: 'confirmed',
-      busyStatus: 'busy',
-      syncStatus: 'synced',
-      updatedAt: new Date().toISOString()
-    },
-    {
-      id: 'evt_3',
-      calendarId: '2',
-      title: 'Generate Video - Morning',
-      startTime: '2026-08-08T10:00:00.000Z',
-      endTime: '2026-08-08T11:00:00.000Z',
-      isAllDay: false,
-      timeZone: 'UTC',
-      status: 'confirmed',
-      busyStatus: 'busy',
-      syncStatus: 'synced',
-      updatedAt: new Date().toISOString()
-    },
-    {
-      id: 'evt_4',
-      calendarId: '2',
-      title: 'Generate Audio - Night',
-      startTime: '2026-08-08T11:00:00.000Z',
-      endTime: '2026-08-08T12:00:00.000Z',
-      isAllDay: false,
-      timeZone: 'UTC',
-      status: 'confirmed',
-      busyStatus: 'busy',
-      syncStatus: 'synced',
-      updatedAt: new Date().toISOString()
-    },
-    {
-      id: 'evt_5',
-      calendarId: '2',
-      title: 'VNOOIR Manual Research',
-      startTime: '2026-08-08T13:00:00.000Z',
-      endTime: '2026-08-08T15:00:00.000Z',
-      isAllDay: false,
-      timeZone: 'UTC',
-      status: 'confirmed',
-      busyStatus: 'busy',
-      syncStatus: 'synced',
-      updatedAt: new Date().toISOString()
-    },
-    {
-      id: 'evt_6',
-      calendarId: '1',
-      title: 'Semi Reset 🧹',
-      startTime: '2026-08-08T16:00:00.000Z',
-      endTime: '2026-08-08T17:00:00.000Z',
-      isAllDay: false,
-      timeZone: 'UTC',
-      status: 'confirmed',
-      busyStatus: 'busy',
-      syncStatus: 'synced',
-      updatedAt: new Date().toISOString()
-    },
-    {
-      id: 'evt_7',
-      calendarId: '3',
-      title: 'Esala Full Moon Poya Day',
-      startTime: '2026-08-28T00:00:00.000Z',
-      endTime: '2026-08-28T23:59:59.000Z',
-      isAllDay: true,
-      timeZone: 'UTC',
-      status: 'confirmed',
-      busyStatus: 'free',
-      syncStatus: 'synced',
-      updatedAt: new Date().toISOString()
+  events = $state<CalendarEvent[]>([]);
+  isLoading = $state(true);
+
+  async init() {
+    try {
+      const stored = await loadStoredEvents();
+      if (stored.length > 0) {
+        this.events = stored;
+      }
+    } catch (e) {
+      console.warn('Using in-memory fallback events:', e);
+    } finally {
+      this.isLoading = false;
     }
-  ]);
-
-  // Global Drag State
-  activeDraggedId = $state<string | null>(null);
-
-  setDraggedEvent(id: string | null) {
-    this.activeDraggedId = id;
   }
 
   addEvent(event: CalendarEvent) {
     this.events = [...this.events, event];
+    persistUpsertEvent(event).catch(console.error);
   }
 
   updateEvent(updated: CalendarEvent) {
     this.events = this.events.map((e) => (e.id === updated.id ? updated : e));
+    persistUpsertEvent(updated).catch(console.error);
   }
 
   deleteEvent(id: string) {
     this.events = this.events.filter((e) => e.id !== id);
+    persistDeleteEvent(id).catch(console.error);
   }
 
   rescheduleEvent(eventId: string, targetDate: Date) {
