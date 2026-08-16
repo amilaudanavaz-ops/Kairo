@@ -19,21 +19,21 @@ export interface CalendarEvent {
   id: string;
   calendarId: string;
   googleEventId?: string;
-  recurringEventId?: string;
+  recurringEventId?: string; // References master parent series if detached
   originalStartTime?: string;
   title: string;
   description?: string;
   location?: string;
   conferencingUrl?: string;
   meetingUrl?: string;
-  startTime: string;
-  endTime: string;
+  startTime: string; // ISO UTC string
+  endTime: string;   // ISO UTC string
   isAllDay: boolean;
   timeZone: string;
-  rrule?: string;
-  exdates?: string[];
-  untilDate?: string;
-  occurrenceDate?: string;
+  rrule?: string;    // 'none' | 'daily' | 'weekday' | 'weekly' | 'biweekly' | 'monthly_date' | 'monthly_day' | 'yearly'
+  exdates?: string[]; // Array of 'yyyy-MM-dd' dates where master series is suppressed
+  untilDate?: string; // 'yyyy-MM-dd' cutoff date for "This and following events"
+  occurrenceDate?: string; // 'yyyy-MM-dd' active occurrence key
   isRecurringInstance?: boolean;
   status: EventStatus;
   busyStatus: BusyStatus;

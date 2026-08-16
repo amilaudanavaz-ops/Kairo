@@ -5,7 +5,7 @@
   import { dragStore } from '../../stores/dragStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
-  import { generateMonthGrid, getEventsForDay, moveEventDate } from '../../utils/dateMath';
+  import { generateMonthGrid, getEventsForDay } from '../../utils/dateMath';
   import type { CalendarEvent } from '../../../types/event';
 
   const weekDays = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
@@ -25,9 +25,7 @@
   }
 
   function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
-    dragStore.startDrag(e, event, () => {
-      // If recurring, drop listener will prompt scope
-    });
+    dragStore.startDrag(e, event);
   }
 
   function handleDayDoubleClick(e: MouseEvent, date: Date) {
@@ -55,14 +53,14 @@
 
     eventStore.addEvent(newEvent);
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    calendarState.openInspector(newEvent, rect);
+    calendarState.openInspector(newEvent, rect, true, format(date, 'yyyy-MM-dd'));
   }
 
-  function handleEventClick(e: MouseEvent, event: CalendarEvent) {
+  function handleEventClick(e: MouseEvent, event: CalendarEvent, dateKey: string) {
     if (dragStore.isDragging) return;
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    calendarState.openInspector(event, rect);
+    calendarState.openInspector(event, rect, false, dateKey);
   }
 
   function handleEventContextMenu(e: MouseEvent, event: CalendarEvent) {
@@ -106,7 +104,7 @@
     {/each}
   </div>
 
-  <!-- Dynamic Month Matrix -->
+  <!-- Dynamic Month Grid -->
   <div 
     class="flex-1 grid grid-cols-7 gap-[1px] bg-[#1e1e1e] overflow-hidden no-scrollbar"
     style="grid-template-rows: repeat({totalWeeks}, minmax(0, 1fr));"
@@ -137,15 +135,15 @@
         </div>
 
         <div class="flex-1 flex flex-col gap-1 overflow-hidden">
-          {#each visibleEvents as event (event.id)}
+          {#each visibleEvents as event (event.id + '_' + cell.dateKey)}
             {@const token = getEventToken(event)}
-            {@const isSelected = calendarState.selectedEventId === event.id}
+            {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === cell.dateKey}
             {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
 
             {#if event.isAllDay}
               <div
                 onpointerdown={(e) => handlePointerDown(e, event)}
-                onclick={(e) => handleEventClick(e, event)}
+                onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
                 class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-all
                   {isSelected ? 'ring-2 ring-white/80 shadow-[0_0_15px_rgba(59,130,246,0.5)]' : ''}
@@ -153,15 +151,15 @@
                 style="background-color: {isSelected ? token.selectedBg : token.bannerBg}; border: 1px solid {token.bannerBorder}; color: {token.selectedText};"
                 role="button"
                 tabindex="0"
-                onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
+                onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, cell.dateKey)}
               >
                 <span class="truncate pointer-events-none">{event.title || '(No Title)'}</span>
               </div>
             {:else}
-              <!-- Notion Luminous Glass Selected & Unselected Strip -->
+              <!-- Notion Minimalist Strip with Glass Selection Highlight -->
               <div
                 onpointerdown={(e) => handlePointerDown(e, event)}
-                onclick={(e) => handleEventClick(e, event)}
+                onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
                 class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all
                   {isSelected 
@@ -171,7 +169,7 @@
                 style={isSelected ? `background: linear-gradient(135deg, ${token.selectedBg} 0%, rgba(37,99,235,0.85) 100%); border-color: ${token.hex};` : ''}
                 role="button"
                 tabindex="0"
-                onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
+                onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, cell.dateKey)}
               >
                 <!-- Left Vertical Curved Pill -->
                 <span 

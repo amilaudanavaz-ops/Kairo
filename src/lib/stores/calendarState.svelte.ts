@@ -1,4 +1,4 @@
-import { addMonths, subMonths, addWeeks, subWeeks, addDays, subDays } from 'date-fns';
+import { addMonths, subMonths, addWeeks, subWeeks, addDays, subDays, format, parseISO } from 'date-fns';
 import type { ViewMode, CalendarEvent, DayOverflowItem, CalendarCategory } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
 
@@ -9,13 +9,15 @@ class CalendarState {
   isInspectorDocked = $state(false);
   isAddAccountModalOpen = $state(false);
   
-  // Modals & Floating Inspectors
+  // Instance-level selection tracking
   selectedEventId = $state<string | null>(null);
+  selectedDateKey = $state<string | null>(null); // Exact 'yyyy-MM-dd' instance selected
+  isCreatingNewEvent = $state(false);
   inspectorRect = $state<DOMRect | null>(null);
   overflowData = $state<DayOverflowItem | null>(null);
   clipboardEvent = $state<CalendarEvent | null>(null);
 
-  // Live Reactive Selected Event
+  // Live Master Event
   selectedEvent = $derived.by(() => {
     if (!this.selectedEventId) return null;
     return eventStore.events.find((e) => e.id === this.selectedEventId) || null;
@@ -73,13 +75,17 @@ class CalendarState {
     this.isAddAccountModalOpen = false;
   }
 
-  openInspector(event: CalendarEvent, rect: DOMRect) {
+  openInspector(event: CalendarEvent, rect: DOMRect, isNew: boolean = false, dateKey?: string) {
     this.selectedEventId = event.id;
+    this.selectedDateKey = dateKey || event.occurrenceDate || format(parseISO(event.startTime), 'yyyy-MM-dd');
+    this.isCreatingNewEvent = isNew;
     this.inspectorRect = rect;
   }
 
   closeInspector() {
     this.selectedEventId = null;
+    this.selectedDateKey = null;
+    this.isCreatingNewEvent = false;
     this.inspectorRect = null;
   }
 
@@ -92,4 +98,4 @@ class CalendarState {
   }
 }
 
-export const calendarState = new CalendarState(); 
+export const calendarState = new CalendarState();

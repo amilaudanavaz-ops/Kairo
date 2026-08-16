@@ -27,7 +27,7 @@ class ContextMenuStore {
   targetEvent = $state<CalendarEvent | null>(null);
   targetDate = $state<Date | null>(null);
 
-  // Recurrence Scope Dialog State
+  // Recurrence Dialog State
   isRecurrenceModalOpen = $state(false);
   pendingRecurringAction = $state<RecurringActionPayload | null>(null);
 
@@ -40,21 +40,27 @@ class ContextMenuStore {
     const diffs: FieldDiff[] = [];
 
     if (action === 'update' && updatedEvent) {
-      // 1. Time Diff
-      if (originalEvent.startTime !== updatedEvent.startTime || originalEvent.endTime !== updatedEvent.endTime) {
-        const oldStart = format(parseISO(originalEvent.startTime), 'h:mm a');
-        const oldEnd = format(parseISO(originalEvent.endTime), 'h:mm a');
-        const newStart = format(parseISO(updatedEvent.startTime), 'h:mm a');
-        const newEnd = format(parseISO(updatedEvent.endTime), 'h:mm a');
+      const oldStart = parseISO(originalEvent.startTime);
+      const oldEnd = parseISO(originalEvent.endTime);
+      const newStart = parseISO(updatedEvent.startTime);
+      const newEnd = parseISO(updatedEvent.endTime);
+
+      const oldTimeStr = `${format(oldStart, 'h:mm a')}–${format(oldEnd, 'h:mm a')}`;
+      const newTimeStr = `${format(newStart, 'h:mm a')}–${format(newEnd, 'h:mm a')}`;
+      const oldDateStr = format(oldStart, 'MMM d');
+      const newDateStr = format(newStart, 'MMM d');
+
+      // Date / Time Diff
+      if (oldDateStr !== newDateStr || oldTimeStr !== newTimeStr) {
         diffs.push({
           field: 'Time',
-          newValue: `${newStart}–${newEnd}`,
-          oldValue: `${oldStart}–${oldEnd}`
+          newValue: oldDateStr !== newDateStr ? `${newDateStr}, ${newTimeStr}` : newTimeStr,
+          oldValue: oldDateStr !== newDateStr ? `${oldDateStr}, ${oldTimeStr}` : oldTimeStr
         });
       }
 
-      // 2. Title Diff
-      if (originalEvent.title !== updatedEvent.title) {
+      // Title Diff
+      if ((originalEvent.title || '') !== (updatedEvent.title || '')) {
         diffs.push({
           field: 'Title',
           newValue: updatedEvent.title || '(No Title)',
@@ -62,8 +68,8 @@ class ContextMenuStore {
         });
       }
 
-      // 3. Description Diff
-      if (originalEvent.description !== updatedEvent.description) {
+      // Description Diff
+      if ((originalEvent.description || '') !== (updatedEvent.description || '')) {
         diffs.push({
           field: 'Description',
           newValue: updatedEvent.description ? (updatedEvent.description.slice(0, 45) + '...') : '(empty)',
@@ -71,12 +77,12 @@ class ContextMenuStore {
         });
       }
 
-      // 4. Color / Category Diff
-      if (originalEvent.colorOverride !== updatedEvent.colorOverride || originalEvent.calendarId !== updatedEvent.calendarId) {
+      // Color Diff
+      if (originalEvent.colorOverride !== updatedEvent.colorOverride) {
         diffs.push({
-          field: 'Calendar / Color',
-          newValue: updatedEvent.colorOverride || 'Default Color',
-          oldValue: originalEvent.colorOverride || 'Default Color'
+          field: 'Color',
+          newValue: updatedEvent.colorOverride || 'Default',
+          oldValue: originalEvent.colorOverride || 'Default'
         });
       }
     }
@@ -146,7 +152,7 @@ class ContextMenuStore {
     };
 
     eventStore.addEvent(newEvent);
-    calendarState.openInspector(newEvent, new DOMRect(this.x, this.y, 20, 20));
+    calendarState.openInspector(newEvent, new DOMRect(this.x, this.y, 20, 20), true);
     this.close();
   }
 

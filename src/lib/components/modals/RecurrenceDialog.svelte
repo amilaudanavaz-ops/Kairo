@@ -2,7 +2,7 @@
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
-  import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes } from 'date-fns';
+  import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes, differenceInCalendarDays, addDays } from 'date-fns';
   import { List, X } from 'lucide-svelte';
 
   let selectedScope = $state<'this' | 'following' | 'all'>('this');
@@ -18,7 +18,6 @@
 
     if (pending.action === 'delete') {
       if (selectedScope === 'this' && occurrenceDate) {
-        // Suppress this specific date from master series
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -26,14 +25,12 @@
           updatedAt: new Date().toISOString()
         });
       } else if (selectedScope === 'following' && occurrenceDate) {
-        // Cut off master series before this occurrence
         eventStore.updateEvent({
           ...master,
           untilDate: occurrenceDate,
           updatedAt: new Date().toISOString()
         });
       } else {
-        // Delete all events in this series
         eventStore.deleteEvent(master.id);
       }
 
@@ -42,7 +39,7 @@
       }
     } else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // 1. Suppress this date from master series to prevent duplicates
+        // Exclude occurrence from master series so it NEVER duplicates
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -50,7 +47,7 @@
           updatedAt: new Date().toISOString()
         });
 
-        // 2. Create detached standalone event
+        // Create detached event
         const detached = {
           ...updated,
           id: 'evt_' + Date.now(),
@@ -63,14 +60,14 @@
         };
         eventStore.addEvent(detached);
       } else if (selectedScope === 'following' && occurrenceDate) {
-        // 1. Terminate old master series before this occurrence
+        // Terminate old master series before this occurrence
         eventStore.updateEvent({
           ...master,
           untilDate: occurrenceDate,
           updatedAt: new Date().toISOString()
         });
 
-        // 2. Create new recurring series starting at this occurrence
+        // Create new series starting at this occurrence
         const newSeries = {
           ...updated,
           id: 'evt_' + Date.now(),
@@ -82,13 +79,21 @@
         };
         eventStore.addEvent(newSeries);
       } else {
-        // Update All events: shift master start/end time-of-day and sync all properties
+        // Update All events: shift origin date and time across the entire series
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
         const duration = differenceInMinutes(newEnd, newStart);
 
         const masterStart = parseISO(master.startTime);
-        const adjustedMasterStart = setMinutes(setHours(masterStart, newStart.getHours()), newStart.getMinutes());
+        
+        let dayShift = 0;
+        if (occurrenceDate) {
+          const occStart = parseISO(occurrenceDate);
+          dayShift = differenceInCalendarDays(newStart, occStart);
+        }
+
+        const shiftedMasterStart = addDays(masterStart, dayShift);
+        const adjustedMasterStart = setMinutes(setHours(shiftedMasterStart, newStart.getHours()), newStart.getMinutes());
         const adjustedMasterEnd = addMinutes(adjustedMasterStart, duration);
 
         eventStore.updateEvent({
@@ -146,6 +151,7 @@
         </label>
       </div>
 
+      <!-- Pending Changes Diff Section -->
       {#if pending.diffs && pending.diffs.length > 0}
         <div class="border-t border-[#2a2a2a] pt-3 flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs text-zinc-400 font-medium">
