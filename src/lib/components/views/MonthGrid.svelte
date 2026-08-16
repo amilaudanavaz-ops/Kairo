@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { format, parseISO } from 'date-fns';
+  import { format, parseISO, setHours, setMinutes } from 'date-fns';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { dragStore } from '../../stores/dragStore.svelte';
@@ -20,21 +20,34 @@
     dragStore.startDrag(e, event);
   }
 
-  function handleDayDoubleClick(date: Date) {
+  function handleDayDoubleClick(e: MouseEvent, date: Date) {
+    e.stopPropagation();
+    const currentNow = new Date();
+    const startTime = setMinutes(setHours(date, currentNow.getHours()), 0);
+    const endTime = setMinutes(setHours(date, currentNow.getHours() + 1), 0);
+
     const newEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
       calendarId: calendarState.calendars[0]?.id || '1',
-      title: 'New Event',
-      startTime: date.toISOString(),
-      endTime: new Date(date.getTime() + 60 * 60 * 1000).toISOString(),
+      title: '',
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
       isAllDay: false,
-      timeZone: 'UTC',
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       status: 'confirmed',
       busyStatus: 'busy',
+      visibility: 'default',
+      reminders: '30m',
+      creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
     };
+
     eventStore.addEvent(newEvent);
+
+    // Capture cell position and immediately open inspector
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    calendarState.openInspector(newEvent, rect);
   }
 
   function handleEventClick(e: MouseEvent, event: CalendarEvent) {
@@ -61,7 +74,7 @@
     {/each}
   </div>
 
-  <!-- Month 7x5/6 Grid -->
+  <!-- Month Grid -->
   <div class="flex-1 grid grid-cols-7 grid-rows-5 lg:grid-rows-6 gap-[1px] bg-[#222222] overflow-hidden">
     {#each gridCells as cell (cell.dateKey)}
       {@const dayEvents = getEventsForDay(eventStore.events, cell.date)}
@@ -69,17 +82,16 @@
       {@const overflowCount = dayEvents.length - MAX_VISIBLE_EVENTS}
       {@const isHighlighted = dragStore.hoveredDateKey === cell.dateKey}
 
-      <!-- Day Cell Drop Target -->
+      <!-- Day Cell -->
       <div
         data-day-cell={cell.dateKey}
+        ondblclick={(e) => handleDayDoubleClick(e, cell.date)}
         class="bg-[#141414] p-1.5 flex flex-col gap-1 relative overflow-hidden transition-colors
           {cell.isCurrentMonth ? 'text-zinc-200' : 'text-zinc-600 bg-[#101010]'}
           {isHighlighted ? '!bg-[#1e293b] ring-2 ring-blue-500 z-10' : ''}"
-        ondblclick={() => handleDayDoubleClick(cell.date)}
         role="gridcell"
         tabindex="0"
       >
-        <!-- Day Number -->
         <div class="flex items-center justify-between pointer-events-none px-1">
           <span
             class="text-xs font-semibold rounded-full w-5 h-5 flex items-center justify-center
@@ -89,7 +101,6 @@
           </span>
         </div>
 
-        <!-- Rendered Events -->
         <div class="flex-1 flex flex-col gap-1 overflow-hidden">
           {#each visibleEvents as event (event.id)}
             {@const color = getCalendarColor(event.calendarId)}
@@ -112,11 +123,12 @@
                 </span>
               {/if}
 
-              <span class="truncate pointer-events-none">{event.title}</span>
+              <span class="truncate pointer-events-none">
+                {event.title || '(No Title)'}
+              </span>
             </div>
           {/each}
 
-          <!-- Overflow Pill -->
           {#if overflowCount > 0}
             <button
               onclick={(e) => handleOverflowClick(e, cell.date, dayEvents)}
