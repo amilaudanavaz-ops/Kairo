@@ -7,6 +7,7 @@
   import DayGrid from './lib/components/views/DayGrid.svelte';
   import DayOverflowPopover from './lib/components/modals/DayOverflowPopover.svelte';
   import EventInspector from './lib/components/modals/EventInspector.svelte';
+  import ContextMenu from './lib/components/modals/ContextMenu.svelte';
   import { calendarState } from './lib/stores/calendarState.svelte';
   import { eventStore } from './lib/stores/eventStore.svelte';
   import { dragStore } from './lib/stores/dragStore.svelte';
@@ -20,7 +21,7 @@
       }
       await eventStore.init();
     } catch (err) {
-      console.error('Failed to initialize local SQLite store:', err);
+      console.error('Failed to initialize SQLite store:', err);
     }
   });
 
@@ -33,6 +34,7 @@
       if (e.key === 'w' || e.key === 'W') calendarState.setViewMode('week');
       if (e.key === 'd' || e.key === 'D') calendarState.setViewMode('day');
       if (e.key === 't' || e.key === 'T') calendarState.setToday();
+      if (e.key === '\\') calendarState.toggleInspectorDock();
       if (e.key === 'Escape') {
         calendarState.closeInspector();
         calendarState.closeOverflow();
@@ -61,11 +63,20 @@
         <DayGrid />
       {/if}
     </section>
+
+    {#if calendarState.isInspectorDocked && calendarState.selectedEvent}
+      <EventInspector />
+    {/if}
   </div>
 
-  <!-- Global Modals & Floating Inspectors -->
   <DayOverflowPopover />
-  <EventInspector />
+
+  {#if !calendarState.isInspectorDocked && calendarState.selectedEvent}
+    <EventInspector />
+  {/if}
+
+  <!-- Right-Click Context Menu -->
+  <ContextMenu />
 
   <!-- Floating Drag Ghost -->
   {#if dragStore.isDragging && dragStore.draggedEvent}

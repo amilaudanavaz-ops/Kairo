@@ -3,6 +3,7 @@
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { dragStore } from '../../stores/dragStore.svelte';
+  import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { generateMonthGrid, getEventsForDay } from '../../utils/dateMath';
   import type { CalendarEvent } from '../../../types/event';
 
@@ -11,8 +12,9 @@
 
   let gridCells = $derived(generateMonthGrid(calendarState.currentDate));
 
-  function getCalendarColor(calendarId: string): string {
-    const cal = calendarState.calendars.find((c) => c.id === calendarId);
+  function getCalendarColor(event: CalendarEvent): string {
+    if (event.colorOverride) return event.colorOverride;
+    const cal = calendarState.calendars.find((c) => c.id === event.calendarId);
     return cal?.colorHex ?? '#3b82f6';
   }
 
@@ -33,7 +35,7 @@
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
       isAllDay: false,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      timeZone: 'GMT+5:30 Colombo',
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
@@ -44,8 +46,6 @@
     };
 
     eventStore.addEvent(newEvent);
-
-    // Capture cell position and immediately open inspector
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     calendarState.openInspector(newEvent, rect);
   }
@@ -57,6 +57,10 @@
     calendarState.openInspector(event, rect);
   }
 
+  function handleEventContextMenu(e: MouseEvent, event: CalendarEvent) {
+    contextMenuStore.open(e, event);
+  }
+
   function handleOverflowClick(e: MouseEvent, day: Date, dayEvents: CalendarEvent[]) {
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -65,7 +69,6 @@
 </script>
 
 <div class="flex-1 flex flex-col h-full bg-[#121212] select-none">
-  <!-- Weekday Header -->
   <div class="grid grid-cols-7 border-b border-[#242424] bg-[#141414]">
     {#each weekDays as day}
       <div class="py-1.5 text-center text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
@@ -74,7 +77,6 @@
     {/each}
   </div>
 
-  <!-- Month Grid -->
   <div class="flex-1 grid grid-cols-7 grid-rows-5 lg:grid-rows-6 gap-[1px] bg-[#222222] overflow-hidden">
     {#each gridCells as cell (cell.dateKey)}
       {@const dayEvents = getEventsForDay(eventStore.events, cell.date)}
@@ -82,7 +84,6 @@
       {@const overflowCount = dayEvents.length - MAX_VISIBLE_EVENTS}
       {@const isHighlighted = dragStore.hoveredDateKey === cell.dateKey}
 
-      <!-- Day Cell -->
       <div
         data-day-cell={cell.dateKey}
         ondblclick={(e) => handleDayDoubleClick(e, cell.date)}
@@ -103,12 +104,13 @@
 
         <div class="flex-1 flex flex-col gap-1 overflow-hidden">
           {#each visibleEvents as event (event.id)}
-            {@const color = getCalendarColor(event.calendarId)}
+            {@const color = getCalendarColor(event)}
             {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
 
             <div
               onpointerdown={(e) => handlePointerDown(e, event)}
               onclick={(e) => handleEventClick(e, event)}
+              oncontextmenu={(e) => handleEventContextMenu(e, event)}
               class="px-2 py-0.5 rounded text-[11px] font-medium truncate cursor-grab active:cursor-grabbing flex items-center gap-1.5 border border-[#2b2b2b]/40 bg-[#1c1c1c] hover:bg-[#252525] text-zinc-100 transition-opacity
                 {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
               role="button"

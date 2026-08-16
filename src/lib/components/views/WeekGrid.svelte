@@ -29,7 +29,7 @@
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const offsetY = e.clientY - rect.top;
     const startTime = snapPointerToTime(offsetY, day);
-    const endTime = new Date(startTime.getTime() + 45 * 60 * 1000);
+    const endTime = new Date(startTime.getTime() + 60 * 60 * 1000);
 
     const newEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
@@ -38,19 +38,22 @@
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
       isAllDay: false,
-      timeZone: 'UTC',
+      timeZone: 'GMT+5:30 Colombo',
       status: 'confirmed',
       busyStatus: 'busy',
+      visibility: 'default',
+      reminders: '30m',
+      creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
     };
 
     eventStore.addEvent(newEvent);
+    calendarState.openInspector(newEvent, rect);
   }
 </script>
 
 <div class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden">
-  <!-- Weekday Header Row -->
   <div class="flex border-b border-[#242424] bg-[#141414] pl-14">
     {#each weekDays as day (day.toISOString())}
       {@const activeToday = isToday(day)}
@@ -70,9 +73,7 @@
     {/each}
   </div>
 
-  <!-- Timed Grid Canvas -->
   <div class="flex-1 flex overflow-y-auto relative scrollbar-thin">
-    <!-- Time Axis Labels -->
     <div class="w-14 flex flex-col shrink-0 border-r border-[#222222] bg-[#131313]">
       {#each hours as hour}
         <div
@@ -84,16 +85,13 @@
       {/each}
     </div>
 
-    <!-- 7-Day Columns -->
     <div class="flex-1 flex relative">
-      <!-- Horizontal Background Grid Lines -->
       <div class="absolute inset-0 flex flex-col pointer-events-none">
         {#each hours as _}
           <div class="border-b border-[#1c1c1c]" style="height: {HOUR_HEIGHT_PX}px;"></div>
         {/each}
       </div>
 
-      <!-- Day Columns -->
       {#each weekDays as day (day.toISOString())}
         {@const dateKey = format(day, 'yyyy-MM-dd')}
         {@const dayEvents = eventStore.events.filter((e) => !e.isAllDay && isSameDay(parseISO(e.startTime), day))}
@@ -108,7 +106,6 @@
           role="gridcell"
           tabindex="0"
         >
-          <!-- Timed Event Blocks -->
           {#each dayEvents as event (event.id)}
             {@const style = computeTimedEventStyle(event)}
             {@const color = getCalendarColor(event.calendarId)}

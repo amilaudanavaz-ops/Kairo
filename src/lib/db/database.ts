@@ -15,7 +15,6 @@ export async function loadInitialCalendars(): Promise<CalendarCategory[]> {
   const rows = await db.select<any[]>('SELECT * FROM calendars ORDER BY created_at ASC');
   
   if (rows.length === 0) {
-    // Seed default categories on first run
     const defaults = [
       { id: '1', account_id: 'local', name: 'Work & Personal', color_id: 'blue', color_hex: '#3b82f6', is_primary: 1, is_visible: 1 },
       { id: '2', account_id: 'local', name: 'Scraping & Dev', color_id: 'amber', color_hex: '#f59e0b', is_primary: 0, is_visible: 1 },
@@ -61,17 +60,21 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
     calendarId: r.calendar_id,
     googleEventId: r.google_event_id,
     recurringEventId: r.recurring_event_id,
-    title: r.title,
-    description: r.description,
-    location: r.location,
-    meetingUrl: r.meeting_url,
+    title: r.title || '(No Title)',
+    description: r.description || '',
+    location: r.location || '',
+    conferencingUrl: r.meeting_url || '',
+    meetingUrl: r.meeting_url || '',
     startTime: r.start_time,
     endTime: r.end_time,
     isAllDay: Boolean(r.is_all_day),
-    timeZone: r.time_zone || 'UTC',
-    rrule: r.rrule,
-    status: r.status,
-    busyStatus: r.busy_status,
+    timeZone: r.time_zone || 'GMT+5:30 Colombo',
+    rrule: r.rrule || 'none',
+    status: r.status || 'confirmed',
+    busyStatus: r.busy_status || 'busy',
+    visibility: r.visibility || 'default',
+    reminders: r.reminders || '30m',
+    creatorEmail: r.creator_email || 'amilavaz2003@gmail.com',
     colorOverride: r.color_override,
     syncStatus: r.sync_status,
     updatedAt: r.updated_at
@@ -82,17 +85,22 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
   const db = await getDb();
   await db.execute(
     `INSERT INTO events (
-      id, calendar_id, google_event_id, title, description,
-      start_time, end_time, is_all_day, time_zone, status,
-      busy_status, sync_status, updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      id, calendar_id, google_event_id, title, description, location,
+      meeting_url, start_time, end_time, is_all_day, time_zone, rrule,
+      status, busy_status, sync_status, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     ON CONFLICT(id) DO UPDATE SET
       calendar_id = excluded.calendar_id,
       title = excluded.title,
       description = excluded.description,
+      location = excluded.location,
+      meeting_url = excluded.meeting_url,
       start_time = excluded.start_time,
       end_time = excluded.end_time,
       is_all_day = excluded.is_all_day,
+      time_zone = excluded.time_zone,
+      rrule = excluded.rrule,
+      busy_status = excluded.busy_status,
       sync_status = excluded.sync_status,
       updated_at = excluded.updated_at`,
     [
@@ -101,10 +109,13 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       event.googleEventId || null,
       event.title,
       event.description || null,
+      event.location || null,
+      event.conferencingUrl || event.meetingUrl || null,
       event.startTime,
       event.endTime,
       event.isAllDay ? 1 : 0,
       event.timeZone,
+      event.rrule || 'none',
       event.status,
       event.busyStatus,
       event.syncStatus,

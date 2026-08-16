@@ -5,14 +5,14 @@ class CalendarState {
   currentDate = $state(new Date());
   viewMode = $state<ViewMode>('month');
   isSidebarOpen = $state(true);
+  isInspectorDocked = $state(false); // Controls floating vs. Notion right-docked side panel
   
-  // Modals and Popover Anchors
+  // Modals & Floating Inspectors
   selectedEvent = $state<CalendarEvent | null>(null);
   inspectorRect = $state<DOMRect | null>(null);
   overflowData = $state<DayOverflowItem | null>(null);
-  quickCreateDate = $state<Date | null>(null);
+  clipboardEvent = $state<CalendarEvent | null>(null);
 
-  // Active Calendars
   calendars = $state<CalendarCategory[]>([
     { id: '1', accountId: 'acc_1', name: 'Personal & Work', colorId: 'blue', colorHex: '#3b82f6', isPrimary: true, isVisible: true },
     { id: '2', accountId: 'acc_1', name: 'Scraping & Dev', colorId: 'amber', colorHex: '#f59e0b', isPrimary: false, isVisible: true },
@@ -23,8 +23,16 @@ class CalendarState {
     this.isSidebarOpen = !this.isSidebarOpen;
   }
 
+  toggleInspectorDock() {
+    this.isInspectorDocked = !this.isInspectorDocked;
+  }
+
   setViewMode(mode: ViewMode) {
     this.viewMode = mode;
+  }
+
+  setDate(date: Date) {
+    this.currentDate = date;
   }
 
   setToday() {
@@ -44,7 +52,7 @@ class CalendarState {
   }
 
   toggleCalendarVisibility(calendarId: string) {
-    const target = this.calendars.find(c => c.id === calendarId);
+    const target = this.calendars.find((c) => c.id === calendarId);
     if (target) {
       target.isVisible = !target.isVisible;
     }

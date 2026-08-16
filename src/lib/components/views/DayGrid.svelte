@@ -43,28 +43,29 @@
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
       isAllDay: false,
-      timeZone: 'UTC',
+      timeZone: 'GMT+5:30 Colombo',
       status: 'confirmed',
       busyStatus: 'busy',
+      visibility: 'default',
+      reminders: '30m',
+      creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
     };
 
     eventStore.addEvent(newEvent);
+    calendarState.openInspector(newEvent, rect);
   }
 </script>
 
 <div class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden">
-  <!-- Day Header -->
   <div class="flex items-center gap-3 border-b border-[#242424] bg-[#141414] px-6 py-2.5">
     <span class="text-xl font-bold text-zinc-100">
       {format(currentDay, 'EEEE, MMMM d, yyyy')}
     </span>
   </div>
 
-  <!-- Timed Grid Canvas -->
   <div class="flex-1 flex overflow-y-auto relative scrollbar-thin">
-    <!-- Time Axis -->
     <div class="w-16 flex flex-col shrink-0 border-r border-[#222222] bg-[#131313]">
       {#each hours as hour}
         <div
@@ -76,7 +77,6 @@
       {/each}
     </div>
 
-    <!-- Single Day Column -->
     <div
       data-day-cell={dateKey}
       ondblclick={handleCanvasDoubleClick}
@@ -85,14 +85,12 @@
       role="gridcell"
       tabindex="0"
     >
-      <!-- Background Horizontal Lines -->
       <div class="absolute inset-0 flex flex-col pointer-events-none">
         {#each hours as _}
           <div class="border-b border-[#1c1c1c]" style="height: {HOUR_HEIGHT_PX}px;"></div>
         {/each}
       </div>
 
-      <!-- Events -->
       {#each dayEvents as event (event.id)}
         {@const style = computeTimedEventStyle(event)}
         {@const color = getCalendarColor(event.calendarId)}
