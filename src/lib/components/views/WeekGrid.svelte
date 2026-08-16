@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { format, parseISO, isSameDay, isToday } from 'date-fns';
+  import { format, parseISO, isToday } from 'date-fns';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { timelineDragStore } from '../../stores/timelineDragStore.svelte';
+  import { getEventsForDay } from '../../utils/dateMath';
   import { getWeekDays, computeTimedEventStyle, snapPointerToTime, HOUR_HEIGHT_PX } from '../../utils/timeMath';
   import type { CalendarEvent } from '../../../types/event';
 
@@ -55,7 +56,7 @@
   }
 </script>
 
-<div class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden">
+<div class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden min-h-0">
   <!-- Weekday Header Row -->
   <div class="flex border-b border-[#242424] bg-[#141414] pl-14 shrink-0">
     {#each weekDays as day (day.toISOString())}
@@ -77,13 +78,12 @@
   </div>
 
   <!-- Timed Grid Canvas -->
-  <div class="flex-1 flex overflow-y-auto relative custom-scrollbar">
-    <!-- Time Axis -->
+  <div class="flex-1 flex overflow-y-auto relative custom-scrollbar min-h-0">
+    <!-- Time Axis with Rigid Row Heights -->
     <div class="w-14 flex flex-col shrink-0 border-r border-[#222222] bg-[#131313]">
       {#each hours as hour}
         <div
-          class="text-[10px] font-medium text-zinc-500 text-right pr-2 select-none"
-          style="height: {HOUR_HEIGHT_PX}px;"
+          class="h-[48px] min-h-[48px] shrink-0 text-[10px] font-medium text-zinc-500 text-right pr-2 select-none box-border flex items-start justify-end pt-1"
         >
           {hour === 0 ? '' : format(new Date().setHours(hour, 0, 0, 0), 'ha').toLowerCase()}
         </div>
@@ -91,24 +91,23 @@
     </div>
 
     <!-- 7 Day Columns -->
-    <div class="flex-1 flex relative">
-      <!-- Background Hour Grid Lines -->
+    <div class="flex-1 flex relative h-[1152px]">
+      <!-- Background Horizontal Grid Lines -->
       <div class="absolute inset-0 flex flex-col pointer-events-none">
         {#each hours as _}
-          <div class="border-b border-[#1c1c1c]" style="height: {HOUR_HEIGHT_PX}px;"></div>
+          <div class="h-[48px] min-h-[48px] shrink-0 border-b border-[#1c1c1c] box-border"></div>
         {/each}
       </div>
 
-      <!-- Columns -->
+      <!-- Column Days -->
       {#each weekDays as day (day.toISOString())}
         {@const dateKey = format(day, 'yyyy-MM-dd')}
-        {@const dayEvents = eventStore.events.filter((e) => !e.isAllDay && isSameDay(parseISO(e.startTime), day) && isCalendarVisible(e.calendarId))}
+        {@const dayEvents = getEventsForDay(eventStore.events, day).filter((e) => !e.isAllDay && isCalendarVisible(e.calendarId))}
 
         <div
           data-timeline-col={dateKey}
           ondblclick={(e) => handleColumnDoubleClick(e, day)}
-          class="flex-1 relative border-r border-[#1e1e1e]"
-          style="height: {24 * HOUR_HEIGHT_PX}px;"
+          class="flex-1 relative border-r border-[#1e1e1e] h-full"
           role="gridcell"
           tabindex="0"
         >
@@ -117,7 +116,6 @@
             {@const color = getCalendarColor(event)}
             {@const isBeingDragged = timelineDragStore.activeEvent?.id === event.id}
 
-            <!-- Timed Event Card with Top/Bottom Resize Handles -->
             <div
               onclick={(e) => handleEventClick(e, event)}
               onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, day, 'move')}
@@ -165,7 +163,7 @@
               class="absolute left-1 right-1 rounded-lg px-2 py-1 bg-blue-600/30 border-2 border-blue-500 pointer-events-none z-30 flex flex-col justify-between shadow-2xl"
               style="top: {timelineDragStore.previewTop}px; height: {timelineDragStore.previewHeight}px;"
             >
-              <span class="text-[10px] font-semibold text-blue-200">
+              <span class="text-[10px] font-semibold text-blue-200 truncate">
                 {timelineDragStore.activeEvent.title || '(Moving Event)'}
               </span>
             </div>

@@ -13,13 +13,11 @@ export async function getDb(): Promise<Database> {
 export async function loadInitialCalendars(): Promise<CalendarCategory[]> {
   const db = await getDb();
 
-  // 1. Seed default local/Google account first to satisfy Foreign Key constraints
   await db.execute(
     `INSERT OR IGNORE INTO accounts (id, email, provider, sync_enabled)
      VALUES ('acc_primary', 'amilavaz2003@gmail.com', 'google', 1)`
   );
 
-  // 2. Fetch or seed default calendars
   const rows = await db.select<any[]>('SELECT * FROM calendars ORDER BY created_at ASC');
   
   if (rows.length === 0) {
@@ -83,7 +81,7 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
     visibility: r.visibility || 'default',
     reminders: r.reminders || '30m',
     creatorEmail: r.creator_email || 'amilavaz2003@gmail.com',
-    colorOverride: r.color_override,
+    colorOverride: r.color_override || undefined,
     syncStatus: r.sync_status,
     updatedAt: r.updated_at
   }));
@@ -95,8 +93,8 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
     `INSERT INTO events (
       id, calendar_id, google_event_id, title, description, location,
       meeting_url, start_time, end_time, is_all_day, time_zone, rrule,
-      status, busy_status, sync_status, updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      color_override, status, busy_status, sync_status, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
     ON CONFLICT(id) DO UPDATE SET
       calendar_id = excluded.calendar_id,
       title = excluded.title,
@@ -108,6 +106,7 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       is_all_day = excluded.is_all_day,
       time_zone = excluded.time_zone,
       rrule = excluded.rrule,
+      color_override = excluded.color_override,
       busy_status = excluded.busy_status,
       sync_status = excluded.sync_status,
       updated_at = excluded.updated_at`,
@@ -124,6 +123,7 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       event.isAllDay ? 1 : 0,
       event.timeZone,
       event.rrule || 'none',
+      event.colorOverride || null,
       event.status,
       event.busyStatus,
       event.syncStatus,

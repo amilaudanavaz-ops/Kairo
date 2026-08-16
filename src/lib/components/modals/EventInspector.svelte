@@ -27,8 +27,6 @@
     AlignLeft, 
     Bell, 
     ChevronDown,
-    ChevronLeft,
-    ChevronRight,
     Scissors,
     Copy,
     Files,
@@ -38,6 +36,7 @@
   } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
+  import { dispatchEventReminder } from '../../utils/notifications';
   import type { CalendarEvent } from '../../../types/event';
 
   let event = $derived(calendarState.selectedEvent);
@@ -45,15 +44,12 @@
     calendarState.calendars.find((c) => c.id === event?.calendarId) || calendarState.calendars[0]
   );
 
-  // Side-Docked Dropdowns (Opens to the Left of the Inspector)
   let activeSideMenu = $state<'none' | 'start_time' | 'end_time' | 'timezone' | 'repeat' | 'reminders' | 'calendar'>('none');
   let isTypeDropdownOpen = $state(false);
   let isActionMenuOpen = $state(false);
 
-  // Interactive Form Inputs
   let startTimeInput = $state('');
   let endTimeInput = $state('');
-  let isAddingParticipant = $state(false);
   let participantInput = $state('');
   let isAddingAttachment = $state(false);
   let attachmentInput = $state('');
@@ -64,6 +60,11 @@
       startTimeInput = format(parseISO(event.startTime), 'h:mm a');
       endTimeInput = format(parseISO(event.endTime), 'h:mm a');
     }
+  });
+
+  let sideMenuOnRight = $derived.by(() => {
+    if (!calendarState.inspectorRect) return false;
+    return calendarState.inspectorRect.left < 310;
   });
 
   const timePresets: string[] = [];
@@ -205,20 +206,45 @@
     updateField('description', (event.description || '') + template);
   }
 
+  function handleSelectReminder(optId: string) {
+    updateField('reminders', optId);
+    activeSideMenu = 'none';
+    if (event) {
+      dispatchEventReminder(event);
+    }
+  }
+
   function calculatePosition(rect: DOMRect | null) {
-    if (!rect) return 'top: 12%; right: 24px;';
-    const width = 290;
+    const width = 280;
+    const targetHeight = 460;
+    const topNavOffset = 48;
+    const bottomPadding = 16;
+    const maxAvailableHeight = Math.max(300, window.innerHeight - topNavOffset - bottomPadding);
+    const cardHeight = Math.min(targetHeight, maxAvailableHeight);
+
+    if (!rect) {
+      return `top: ${topNavOffset + 12}px; right: 24px; height: ${cardHeight}px;`;
+    }
+
     let left = rect.right + 10;
     if (left + width > window.innerWidth - 16) {
       left = Math.max(16, rect.left - width - 10);
     }
-    const top = Math.min(window.innerHeight - 560, Math.max(16, rect.top - 20));
-    return `top: ${top}px; left: ${left}px;`;
+
+    let top = rect.top - 10;
+    if (top + cardHeight > window.innerHeight - bottomPadding) {
+      top = window.innerHeight - bottomPadding - cardHeight;
+    }
+    if (top < topNavOffset) {
+      top = topNavOffset;
+    }
+
+    return `top: ${top}px; left: ${left}px; height: ${cardHeight}px;`;
   }
 </script>
 
 {#if event}
-  <!-- Global click-away backdrop -->
+  <!-- Global click-away backdrop for floating inspector -->
   {#if !calendarState.isInspectorDocked}
     <div
       class="fixed inset-0 z-40 bg-black/20"
@@ -239,15 +265,15 @@
     ></div>
   {/if}
 
-  <!-- Notion Sleek 290px Card -->
+  <!-- Notion 280px Compact Inspector Card with Strict Viewport Height -->
   <aside
     class="{calendarState.isInspectorDocked 
-      ? 'w-[290px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-40 shrink-0 select-text relative' 
-      : 'fixed z-50 w-[290px] max-h-[82vh] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text animate-in fade-in zoom-in-95 duration-100'}"
+      ? 'w-[280px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-40 shrink-0 select-text relative' 
+      : 'fixed z-50 w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text animate-in fade-in zoom-in-95 duration-100'}"
     style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
   >
     <!-- Top Action Bar -->
-    <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0">
+    <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0 rounded-t-2xl bg-[#181818]">
       <div class="relative">
         <button 
           onclick={() => isTypeDropdownOpen = !isTypeDropdownOpen}
@@ -347,19 +373,19 @@
       </div>
     </div>
 
-    <!-- Scrollable Body with Clean Visible Dark Scrollbar -->
-    <div class="overflow-y-auto max-h-[calc(82vh-40px)] px-3.5 py-2.5 flex flex-col gap-2.5 custom-scrollbar">
+    <!-- Inner Scrollable Form Container -->
+    <div class="flex-1 min-h-0 overflow-y-auto px-3.5 py-2.5 flex flex-col gap-2.5 custom-scrollbar">
       <!-- Title Input -->
       <input
         type="text"
         placeholder="Add title"
         value={event.title}
         oninput={(e) => updateField('title', (e.target as HTMLInputElement).value)}
-        class="w-full bg-transparent text-sm font-semibold text-zinc-100 placeholder-zinc-500 focus:outline-none"
+        class="w-full bg-transparent text-sm font-semibold text-zinc-100 placeholder-zinc-500 focus:outline-none shrink-0"
       />
 
       <!-- Time & Date -->
-      <div class="flex flex-col gap-1">
+      <div class="flex flex-col gap-1 shrink-0">
         <div class="flex items-center gap-1.5 text-xs">
           <Clock size={14} class="text-zinc-400 shrink-0" />
           
@@ -397,7 +423,7 @@
       </div>
 
       <!-- All-Day Toggle Switch -->
-      <div class="flex items-center justify-between text-xs text-zinc-300">
+      <div class="flex items-center justify-between text-xs text-zinc-300 shrink-0">
         <span>All-day</span>
         <button
           type="button"
@@ -415,7 +441,7 @@
       <!-- Timezone -->
       <button 
         onclick={() => { activeSideMenu = activeSideMenu === 'timezone' ? 'none' : 'timezone'; timezoneQuery = ''; }}
-        class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer"
+        class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
       >
         <div class="flex items-center gap-2 truncate">
           <Globe size={13} class="shrink-0 text-zinc-400" />
@@ -427,7 +453,7 @@
       <!-- Recurrence -->
       <button 
         onclick={() => activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'}
-        class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer"
+        class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
       >
         <div class="flex items-center gap-2 truncate">
           <Repeat size={13} class="shrink-0 text-zinc-400" />
@@ -436,10 +462,10 @@
         <ChevronDown size={12} class="text-zinc-500 shrink-0" />
       </button>
 
-      <div class="h-[1px] bg-[#242424] -mx-1"></div>
+      <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
       <!-- Participants -->
-      <div class="flex flex-col gap-1.5 text-xs">
+      <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <div class="flex items-center gap-2 text-zinc-400 truncate">
           <User size={13} class="shrink-0 text-zinc-500" />
           <span class="truncate">Created by <strong class="text-zinc-300 font-medium">{event.creatorEmail || 'amilavaz2003@gmail.com'}</strong></span>
@@ -478,11 +504,10 @@
         {/if}
       </div>
 
-      <div class="h-[1px] bg-[#242424] -mx-1"></div>
+      <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
       <!-- Conferencing, AI Notes, Location & Attachments -->
-      <div class="flex flex-col gap-1.5 text-xs">
-        <!-- Conferencing -->
+      <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <button 
           onclick={toggleGoogleMeet}
           class="flex items-center justify-between text-zinc-400 hover:text-zinc-200 text-left py-0.5 cursor-pointer group"
@@ -498,7 +523,6 @@
           {/if}
         </button>
 
-        <!-- AI Meeting Notes -->
         <button 
           onclick={addAiMeetingNotes}
           class="flex items-center gap-2 text-zinc-400 hover:text-zinc-200 text-left py-0.5 cursor-pointer"
@@ -507,7 +531,6 @@
           <span>Add AI meeting notes</span>
         </button>
 
-        <!-- Location -->
         <div class="flex items-center gap-2 text-zinc-400 py-0.5">
           <MapPin size={13} class="shrink-0 text-zinc-500" />
           <input
@@ -519,7 +542,6 @@
           />
         </div>
 
-        <!-- Links and Attachments -->
         <div class="flex flex-col gap-1">
           {#if !isAddingAttachment}
             <button 
@@ -569,10 +591,10 @@
         </div>
       </div>
 
-      <div class="h-[1px] bg-[#242424] -mx-1"></div>
+      <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
       <!-- Description / Notes -->
-      <div class="flex flex-col gap-1 text-xs">
+      <div class="flex flex-col gap-1 text-xs shrink-0">
         <div class="flex items-center gap-1.5 text-zinc-400">
           <AlignLeft size={13} class="text-zinc-500" />
           <span class="font-medium">Description</span>
@@ -586,12 +608,12 @@
         ></textarea>
       </div>
 
-      <div class="h-[1px] bg-[#242424] -mx-1"></div>
+      <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
       <!-- Calendar Category & Notion Color Chip -->
       <button 
         onclick={() => activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'}
-        class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer"
+        class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
       >
         <div class="flex items-center gap-2 truncate">
           <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: {event.colorOverride || activeCalendar.colorHex};"></span>
@@ -601,7 +623,7 @@
       </button>
 
       <!-- Busy / Free & Visibility -->
-      <div class="flex items-center justify-between text-xs text-zinc-300">
+      <div class="flex items-center justify-between text-xs text-zinc-300 shrink-0">
         <select
           value={event.busyStatus}
           onchange={(e) => updateField('busyStatus', (e.target as HTMLSelectElement).value as any)}
@@ -625,7 +647,7 @@
       <!-- Reminders -->
       <button 
         onclick={() => activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'}
-        class="w-full flex items-center justify-between text-xs text-zinc-400 bg-[#1f1f1f] hover:bg-[#242424] border border-[#2a2a2a] rounded-lg p-2 transition-colors cursor-pointer"
+        class="w-full flex items-center justify-between text-xs text-zinc-400 bg-[#1f1f1f] hover:bg-[#242424] border border-[#2a2a2a] rounded-lg p-2 transition-colors cursor-pointer shrink-0"
       >
         <div class="flex items-center gap-1.5">
           <Bell size={13} class="text-zinc-500" />
@@ -635,13 +657,12 @@
       </button>
     </div>
 
-    <!-- ================= NOTION SIDE-DOCKED DROPDOWNS ================= -->
-
-    <!-- 1. 15-Minute Time Interval Picker -->
+    <!-- Side-Docked Dropdowns with High Stacking -->
     {#if activeSideMenu === 'start_time' || activeSideMenu === 'end_time'}
       {@const isStart = activeSideMenu === 'start_time'}
       <div 
-        class="absolute -left-[160px] top-10 w-38 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1 z-[60] max-h-68 overflow-y-auto custom-scrollbar flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100"
+        class="absolute top-10 w-38 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1 z-[70] max-h-68 overflow-y-auto custom-scrollbar flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[160px]'}"
       >
         {#each timePresets as preset}
           <button
@@ -654,10 +675,10 @@
       </div>
     {/if}
 
-    <!-- 2. Timezone Search Popover -->
     {#if activeSideMenu === 'timezone'}
       <div 
-        class="absolute -left-[270px] top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[60] flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+        class="absolute top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[70] flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[270px]'}"
       >
         <div class="flex items-center gap-2 px-2 py-1 bg-[#141414] border border-[#2a2a2a] rounded-lg">
           <Search size={12} class="text-zinc-500" />
@@ -673,7 +694,7 @@
           {#each filteredTimezones as tz}
             <button
               onclick={() => { updateField('timeZone', tz.tz); activeSideMenu = 'none'; }}
-              class="flex items-center justify-between px-2 py-1.5 text-xs rounded-lg text-left transition-colors cursor-pointer
+              class="flex items-center justify-between px-2.5 py-1.5 text-xs rounded-lg text-left transition-colors cursor-pointer
                 {event.timeZone === tz.tz ? 'bg-[#282828] text-blue-400 font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
             >
               <span class="text-zinc-500 font-mono text-[10px] w-14 shrink-0">{tz.offset}</span>
@@ -684,15 +705,15 @@
       </div>
     {/if}
 
-    <!-- 3. Recurrence Popover -->
     {#if activeSideMenu === 'repeat'}
       <div 
-        class="absolute -left-[230px] top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1.5 z-[60] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100"
+        class="absolute top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1.5 z-[70] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[230px]'}"
       >
         {#each repeatOptions as opt}
           <button
             onclick={() => { updateField('rrule', opt.id); activeSideMenu = 'none'; }}
-            class="flex items-center justify-between px-2 py-1.5 text-xs rounded-lg text-left transition-colors cursor-pointer
+            class="flex items-center justify-between px-2.5 py-1.5 text-xs rounded-lg text-left transition-colors cursor-pointer
               {(event.rrule || 'none') === opt.id ? 'bg-[#282828] text-blue-400 font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
           >
             <span>{opt.label}</span>
@@ -704,10 +725,10 @@
       </div>
     {/if}
 
-    <!-- 4. Calendar & Color Swatches Popover -->
     {#if activeSideMenu === 'calendar'}
       <div 
-        class="absolute -left-[240px] bottom-14 w-58 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[60] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100"
+        class="absolute bottom-14 w-58 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[70] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[240px]'}"
       >
         <div class="text-[10px] font-semibold text-zinc-400 px-1">amilavaz2003@gmail.com</div>
         <div class="flex flex-col gap-0.5">
@@ -746,14 +767,14 @@
       </div>
     {/if}
 
-    <!-- 5. Reminders Popover -->
     {#if activeSideMenu === 'reminders'}
       <div 
-        class="absolute -left-[200px] bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1 z-[60] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100"
+        class="absolute bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1 z-[70] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[200px]'}"
       >
         {#each reminderOptions as opt}
           <button
-            onclick={() => { updateField('reminders', opt.id); activeSideMenu = 'none'; }}
+            onclick={() => handleSelectReminder(opt.id)}
             class="flex items-center justify-between px-2 py-1 text-xs rounded text-left transition-colors cursor-pointer
               {(event.reminders || '30m') === opt.id ? 'bg-[#282828] text-blue-400 font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
           >

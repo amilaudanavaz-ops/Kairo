@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { format, parseISO, isSameDay } from 'date-fns';
+  import { format, parseISO } from 'date-fns';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { timelineDragStore } from '../../stores/timelineDragStore.svelte';
+  import { getEventsForDay } from '../../utils/dateMath';
   import { computeTimedEventStyle, snapPointerToTime, HOUR_HEIGHT_PX } from '../../utils/timeMath';
   import type { CalendarEvent } from '../../../types/event';
 
@@ -22,7 +23,7 @@
   }
 
   let dayEvents = $derived(
-    eventStore.events.filter((e) => !e.isAllDay && isSameDay(parseISO(e.startTime), currentDay) && isCalendarVisible(e.calendarId))
+    getEventsForDay(eventStore.events, currentDay).filter((e) => !e.isAllDay && isCalendarVisible(e.calendarId))
   );
 
   function handleEventClick(e: MouseEvent, event: CalendarEvent) {
@@ -60,44 +61,39 @@
   }
 </script>
 
-<div class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden">
-  <!-- Day Header -->
+<div class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden min-h-0">
   <div class="flex items-center gap-3 border-b border-[#242424] bg-[#141414] px-6 py-2.5 shrink-0">
     <span class="text-lg font-bold text-zinc-100">
       {format(currentDay, 'EEEE, MMMM d, yyyy')}
     </span>
   </div>
 
-  <div class="flex-1 flex overflow-y-auto relative custom-scrollbar">
-    <!-- Time Axis -->
+  <div class="flex-1 flex overflow-y-auto relative custom-scrollbar min-h-0">
+    <!-- Time Axis with Rigid Row Heights -->
     <div class="w-16 flex flex-col shrink-0 border-r border-[#222222] bg-[#131313]">
       {#each hours as hour}
         <div
-          class="text-[11px] font-medium text-zinc-500 text-right pr-3 select-none"
-          style="height: {HOUR_HEIGHT_PX}px;"
+          class="h-[48px] min-h-[48px] shrink-0 text-[11px] font-medium text-zinc-500 text-right pr-3 select-none box-border flex items-start justify-end pt-1"
         >
           {hour === 0 ? '' : format(new Date().setHours(hour, 0, 0, 0), 'h a')}
         </div>
       {/each}
     </div>
 
-    <!-- Day Canvas -->
+    <!-- Day Canvas Column -->
     <div
       data-timeline-col={dateKey}
       ondblclick={handleCanvasDoubleClick}
-      class="flex-1 relative"
-      style="height: {24 * HOUR_HEIGHT_PX}px;"
+      class="flex-1 relative h-[1152px]"
       role="gridcell"
       tabindex="0"
     >
-      <!-- Background Hour Grid Lines -->
       <div class="absolute inset-0 flex flex-col pointer-events-none">
         {#each hours as _}
-          <div class="border-b border-[#1c1c1c]" style="height: {HOUR_HEIGHT_PX}px;"></div>
+          <div class="h-[48px] min-h-[48px] shrink-0 border-b border-[#1c1c1c] box-border"></div>
         {/each}
       </div>
 
-      <!-- Rendered Events -->
       {#each dayEvents as event (event.id)}
         {@const style = computeTimedEventStyle(event)}
         {@const color = getCalendarColor(event)}
@@ -140,13 +136,12 @@
         </div>
       {/each}
 
-      <!-- Live Ghost Preview -->
       {#if timelineDragStore.isDragging && timelineDragStore.activeEvent}
         <div
           class="absolute left-4 right-8 rounded-xl p-3 bg-blue-600/30 border-2 border-blue-500 pointer-events-none z-30 shadow-2xl flex items-center justify-between"
           style="top: {timelineDragStore.previewTop}px; height: {timelineDragStore.previewHeight}px;"
         >
-          <span class="font-bold text-blue-200 text-sm">{timelineDragStore.activeEvent.title || '(Moving Event)'}</span>
+          <span class="font-bold text-blue-200 text-sm truncate">{timelineDragStore.activeEvent.title || '(Moving Event)'}</span>
         </div>
       {/if}
     </div>
