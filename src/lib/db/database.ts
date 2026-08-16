@@ -61,30 +61,41 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
   const db = await getDb();
   const rows = await db.select<any[]>('SELECT * FROM events ORDER BY start_time ASC');
 
-  return rows.map((r) => ({
-    id: r.id,
-    calendarId: r.calendar_id,
-    googleEventId: r.google_event_id,
-    recurringEventId: r.recurring_event_id,
-    title: r.title || '',
-    description: r.description || '',
-    location: r.location || '',
-    conferencingUrl: r.meeting_url || '',
-    meetingUrl: r.meeting_url || '',
-    startTime: r.start_time,
-    endTime: r.end_time,
-    isAllDay: Boolean(r.is_all_day),
-    timeZone: r.time_zone || 'GMT+5:30 Colombo',
-    rrule: r.rrule || 'none',
-    status: r.status || 'confirmed',
-    busyStatus: r.busy_status || 'busy',
-    visibility: r.visibility || 'default',
-    reminders: r.reminders || '30m',
-    creatorEmail: r.creator_email || 'amilavaz2003@gmail.com',
-    colorOverride: r.color_override || undefined,
-    syncStatus: r.sync_status,
-    updatedAt: r.updated_at
-  }));
+  return rows.map((r) => {
+    let parsedReminders: string[] = ['30m'];
+    try {
+      if (r.reminders) {
+        parsedReminders = r.reminders.startsWith('[') ? JSON.parse(r.reminders) : [r.reminders];
+      }
+    } catch {
+      parsedReminders = ['30m'];
+    }
+
+    return {
+      id: r.id,
+      calendarId: r.calendar_id,
+      googleEventId: r.google_event_id,
+      recurringEventId: r.recurring_event_id,
+      title: r.title || '',
+      description: r.description || '',
+      location: r.location || '',
+      conferencingUrl: r.meeting_url || '',
+      meetingUrl: r.meeting_url || '',
+      startTime: r.start_time,
+      endTime: r.end_time,
+      isAllDay: Boolean(r.is_all_day),
+      timeZone: r.time_zone || 'GMT+5:30 Colombo',
+      rrule: r.rrule || 'none',
+      status: r.status || 'confirmed',
+      busyStatus: r.busy_status || 'busy',
+      visibility: r.visibility || 'default',
+      reminders: Array.isArray(parsedReminders) ? parsedReminders : ['30m'],
+      creatorEmail: r.creator_email || 'amilavaz2003@gmail.com',
+      colorOverride: r.color_override || undefined,
+      syncStatus: r.sync_status,
+      updatedAt: r.updated_at
+    };
+  });
 }
 
 export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
@@ -93,8 +104,8 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
     `INSERT INTO events (
       id, calendar_id, google_event_id, title, description, location,
       meeting_url, start_time, end_time, is_all_day, time_zone, rrule,
-      color_override, status, busy_status, sync_status, updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      color_override, status, busy_status, reminders, sync_status, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
     ON CONFLICT(id) DO UPDATE SET
       calendar_id = excluded.calendar_id,
       title = excluded.title,
@@ -108,6 +119,7 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       rrule = excluded.rrule,
       color_override = excluded.color_override,
       busy_status = excluded.busy_status,
+      reminders = excluded.reminders,
       sync_status = excluded.sync_status,
       updated_at = excluded.updated_at`,
     [
@@ -126,6 +138,7 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       event.colorOverride || null,
       event.status,
       event.busyStatus,
+      JSON.stringify(event.reminders || ['30m']),
       event.syncStatus,
       event.updatedAt
     ]

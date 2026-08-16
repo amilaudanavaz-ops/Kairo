@@ -208,7 +208,7 @@
 
   function addReminder(remId: string) {
     if (!event) return;
-    const current = event.reminders || [];
+    const current = Array.isArray(event.reminders) ? event.reminders : [];
     if (!current.includes(remId)) {
       updateField('reminders', [...current, remId]);
       dispatchEventReminder(event);
@@ -218,12 +218,13 @@
 
   function removeReminder(remId: string) {
     if (!event) return;
-    updateField('reminders', (event.reminders || []).filter(r => r !== remId));
+    const current = Array.isArray(event.reminders) ? event.reminders : [];
+    updateField('reminders', current.filter(r => r !== remId));
   }
 
   function calculatePosition(rect: DOMRect | null) {
     const width = 280;
-    const targetHeight = 460;
+    const targetHeight = 480;
     const topNavOffset = 48;
     const bottomPadding = 16;
     const maxAvailableHeight = Math.max(300, window.innerHeight - topNavOffset - bottomPadding);
@@ -272,7 +273,7 @@
     ></div>
   {/if}
 
-  <!-- Notion 280px Compact Card -->
+  <!-- Notion 280px Compact Inspector Card -->
   <aside
     class="{calendarState.isInspectorDocked 
       ? 'w-[280px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-40 shrink-0 select-text relative' 
@@ -655,36 +656,35 @@
         </select>
       </div>
 
-      <!-- Multi-Reminder List & Adder -->
-      <div class="flex flex-col gap-1.5 p-2 bg-[#1f1f1f] border border-[#2a2a2a] rounded-xl shrink-0">
-        <div class="flex items-center justify-between text-xs text-zinc-400">
+      <!-- Notion Stacked Reminders Section -->
+      <div class="flex flex-col gap-1 shrink-0">
+        <button 
+          onclick={() => activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'}
+          class="w-full flex items-center justify-between p-1 rounded hover:bg-[#222222] transition-colors cursor-pointer text-xs text-zinc-400 hover:text-zinc-200"
+        >
           <div class="flex items-center gap-1.5">
             <Bell size={13} class="text-zinc-500" />
             <span class="font-medium">Reminders</span>
           </div>
-          <button
-            onclick={() => activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'}
-            class="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 font-semibold cursor-pointer"
-          >
-            <Plus size={12} />
-            <span>Add</span>
-          </button>
-        </div>
+          <Plus size={13} class="text-zinc-500" />
+        </button>
 
         {#if event.reminders && event.reminders.length > 0}
-          <div class="flex flex-wrap gap-1 mt-0.5">
+          <div class="flex flex-col gap-0.5 pl-5">
             {#each event.reminders as rem}
               {@const label = reminderPresets.find(r => r.id === rem)?.label || rem}
-              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#282828] border border-[#333333] text-[10px] text-zinc-200 font-medium">
+              <div class="flex items-center justify-between py-0.5 text-xs text-zinc-300 hover:text-white group">
                 <span>{label}</span>
-                <button onclick={() => removeReminder(rem)} class="text-zinc-500 hover:text-rose-400 cursor-pointer">
-                  <X size={10} />
+                <button 
+                  onclick={() => removeReminder(rem)}
+                  class="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-500 hover:text-rose-400 transition-opacity cursor-pointer"
+                  title="Remove reminder"
+                >
+                  <X size={11} />
                 </button>
-              </span>
+              </div>
             {/each}
           </div>
-        {:else}
-          <span class="text-[11px] text-zinc-500 italic">No reminders set</span>
         {/if}
       </div>
     </div>

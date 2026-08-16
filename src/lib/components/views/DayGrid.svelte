@@ -3,6 +3,8 @@
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { timelineDragStore } from '../../stores/timelineDragStore.svelte';
+  import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
+  import { resolveEventColorToken } from '../../utils/colors';
   import { getEventsForDay } from '../../utils/dateMath';
   import { computeTimedEventStyle, snapPointerToTime, HOUR_HEIGHT_PX } from '../../utils/timeMath';
   import type { CalendarEvent } from '../../../types/event';
@@ -11,10 +13,9 @@
   let dateKey = $derived(format(currentDay, 'yyyy-MM-dd'));
   const hours = Array.from({ length: 24 }, (_, i) => i);
 
-  function getCalendarColor(event: CalendarEvent): string {
-    if (event.colorOverride) return event.colorOverride;
+  function getEventToken(event: CalendarEvent) {
     const cal = calendarState.calendars.find((c) => c.id === event.calendarId);
-    return cal?.colorHex ?? '#3b82f6';
+    return resolveEventColorToken(event.colorOverride || cal?.colorHex);
   }
 
   function isCalendarVisible(calendarId: string): boolean {
@@ -31,6 +32,14 @@
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     calendarState.openInspector(event, rect);
+  }
+
+  function handleEventContextMenu(e: MouseEvent, event: CalendarEvent) {
+    contextMenuStore.openForEvent(e, event);
+  }
+
+  function handleDayContextMenu(e: MouseEvent) {
+    contextMenuStore.openForCell(e, currentDay);
   }
 
   function handleCanvasDoubleClick(e: MouseEvent) {
@@ -50,7 +59,7 @@
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: '30m',
+      reminders: ['30m'],
       creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
@@ -84,6 +93,7 @@
     <div
       data-timeline-col={dateKey}
       ondblclick={handleCanvasDoubleClick}
+      oncontextmenu={handleDayContextMenu}
       class="flex-1 relative h-[1152px]"
       role="gridcell"
       tabindex="0"
@@ -96,22 +106,27 @@
 
       {#each dayEvents as event (event.id)}
         {@const style = computeTimedEventStyle(event)}
-        {@const color = getCalendarColor(event)}
+        {@const token = getEventToken(event)}
+        {@const isSelected = calendarState.selectedEventId === event.id}
         {@const isBeingDragged = timelineDragStore.activeEvent?.id === event.id}
 
         <div
           onclick={(e) => handleEventClick(e, event)}
+          oncontextmenu={(e) => handleEventContextMenu(e, event)}
           onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'move')}
-          class="absolute left-4 right-8 rounded-xl p-3 bg-[#1a1a1a] hover:bg-[#222222] border border-[#2b2b2b] cursor-grab active:cursor-grabbing text-xs shadow-lg transition-opacity flex flex-col justify-between group select-none
+          class="absolute left-4 right-8 rounded-xl p-3 cursor-grab active:cursor-grabbing text-xs shadow-lg transition-all flex flex-col justify-between group select-none border
+            {isSelected 
+              ? 'ring-2 ring-white/70 shadow-2xl font-bold' 
+              : 'bg-[#1a1a1a] hover:bg-[#222222] border-[#2b2b2b]' }
             {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
-          style="top: {style.top}px; height: {style.height}px; border-left: 4px solid {color};"
+          style="top: {style.top}px; height: {style.height}px; {isSelected ? `background-color: ${token.selectedBg}; border-color: ${token.selectedBg};` : `border-left: 4px solid ${token.hex};`}"
           role="button"
           tabindex="0"
           onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
         >
           <div
             onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'resize-top')}
-            class="absolute top-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-blue-500/50 transition-colors"
+            class="absolute top-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-white/40 transition-colors"
             role="slider"
             aria-label="Resize event start time"
             aria-valuenow={style.top}
@@ -119,15 +134,17 @@
           ></div>
 
           <div class="flex items-center justify-between pointer-events-none">
-            <span class="font-bold text-zinc-100 text-sm">{event.title || '(No Title)'}</span>
-            <span class="text-[11px] text-zinc-400 font-medium">
+            <span class="font-bold text-sm truncate" style="color: {isSelected ? '#ffffff' : '#f4f4f5'};">
+              {event.title || '(No Title)'}
+            </span>
+            <span class="text-[11px] font-semibold" style="color: {isSelected ? '#ffffff' : token.timeText};">
               {format(parseISO(event.startTime), 'h:mm a')} – {format(parseISO(event.endTime), 'h:mm a')}
             </span>
           </div>
 
           <div
             onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'resize-bottom')}
-            class="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-blue-500/50 transition-colors"
+            class="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-white/40 transition-colors"
             role="slider"
             aria-label="Resize event duration"
             aria-valuenow={style.height}

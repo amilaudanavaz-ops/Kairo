@@ -3,6 +3,8 @@
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { timelineDragStore } from '../../stores/timelineDragStore.svelte';
+  import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
+  import { resolveEventColorToken } from '../../utils/colors';
   import { getEventsForDay } from '../../utils/dateMath';
   import { getWeekDays, computeTimedEventStyle, snapPointerToTime, HOUR_HEIGHT_PX } from '../../utils/timeMath';
   import type { CalendarEvent } from '../../../types/event';
@@ -10,10 +12,9 @@
   let weekDays = $derived(getWeekDays(calendarState.currentDate));
   const hours = Array.from({ length: 24 }, (_, i) => i);
 
-  function getCalendarColor(event: CalendarEvent): string {
-    if (event.colorOverride) return event.colorOverride;
+  function getEventToken(event: CalendarEvent) {
     const cal = calendarState.calendars.find((c) => c.id === event.calendarId);
-    return cal?.colorHex ?? '#3b82f6';
+    return resolveEventColorToken(event.colorOverride || cal?.colorHex);
   }
 
   function isCalendarVisible(calendarId: string): boolean {
@@ -26,6 +27,14 @@
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     calendarState.openInspector(event, rect);
+  }
+
+  function handleEventContextMenu(e: MouseEvent, event: CalendarEvent) {
+    contextMenuStore.openForEvent(e, event);
+  }
+
+  function handleColumnContextMenu(e: MouseEvent, day: Date) {
+    contextMenuStore.openForCell(e, day);
   }
 
   function handleColumnDoubleClick(e: MouseEvent, day: Date) {
@@ -45,7 +54,7 @@
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: '30m',
+      reminders: ['30m'],
       creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
@@ -57,7 +66,7 @@
 </script>
 
 <div class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden min-h-0">
-  <!-- Weekday Header Row -->
+  <!-- Weekday Header -->
   <div class="flex border-b border-[#242424] bg-[#141414] pl-14 shrink-0">
     {#each weekDays as day (day.toISOString())}
       {@const activeToday = isToday(day)}
@@ -92,14 +101,12 @@
 
     <!-- 7 Day Columns -->
     <div class="flex-1 flex relative h-[1152px]">
-      <!-- Background Horizontal Grid Lines -->
       <div class="absolute inset-0 flex flex-col pointer-events-none">
         {#each hours as _}
           <div class="h-[48px] min-h-[48px] shrink-0 border-b border-[#1c1c1c] box-border"></div>
         {/each}
       </div>
 
-      <!-- Column Days -->
       {#each weekDays as day (day.toISOString())}
         {@const dateKey = format(day, 'yyyy-MM-dd')}
         {@const dayEvents = getEventsForDay(eventStore.events, day).filter((e) => !e.isAllDay && isCalendarVisible(e.calendarId))}
@@ -107,29 +114,34 @@
         <div
           data-timeline-col={dateKey}
           ondblclick={(e) => handleColumnDoubleClick(e, day)}
+          oncontextmenu={(e) => handleColumnContextMenu(e, day)}
           class="flex-1 relative border-r border-[#1e1e1e] h-full"
           role="gridcell"
           tabindex="0"
         >
           {#each dayEvents as event (event.id)}
             {@const style = computeTimedEventStyle(event)}
-            {@const color = getCalendarColor(event)}
+            {@const token = getEventToken(event)}
+            {@const isSelected = calendarState.selectedEventId === event.id}
             {@const isBeingDragged = timelineDragStore.activeEvent?.id === event.id}
 
             <div
               onclick={(e) => handleEventClick(e, event)}
+              oncontextmenu={(e) => handleEventContextMenu(e, event)}
               onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, day, 'move')}
-              class="absolute left-1 right-1 rounded-lg px-2 py-1 bg-[#1a1a1a] hover:bg-[#222222] border border-[#2d2d2d] cursor-grab active:cursor-grabbing text-xs shadow-md transition-opacity overflow-hidden flex flex-col justify-between group select-none
+              class="absolute left-1 right-1 rounded-lg px-2 py-1 cursor-grab active:cursor-grabbing text-xs shadow-md transition-all overflow-hidden flex flex-col justify-between group select-none border
+                {isSelected 
+                  ? 'ring-2 ring-white/70 shadow-xl font-bold' 
+                  : 'bg-[#1a1a1a] hover:bg-[#222222] border-[#2d2d2d]' }
                 {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
-              style="top: {style.top}px; height: {style.height}px; border-left: 3.5px solid {color};"
+              style="top: {style.top}px; height: {style.height}px; {isSelected ? `background-color: ${token.selectedBg}; border-color: ${token.selectedBg};` : `border-left: 3.5px solid ${token.hex};`}"
               role="button"
               tabindex="0"
               onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
             >
-              <!-- Top Resize Handle -->
               <div
                 onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, day, 'resize-top')}
-                class="absolute top-0 left-0 right-0 h-1.5 cursor-ns-resize hover:bg-blue-500/50 transition-colors"
+                class="absolute top-0 left-0 right-0 h-1.5 cursor-ns-resize hover:bg-white/40 transition-colors"
                 role="slider"
                 aria-label="Resize event start time"
                 aria-valuenow={style.top}
@@ -137,18 +149,17 @@
               ></div>
 
               <div class="flex flex-col truncate pointer-events-none">
-                <span class="text-[10px] text-zinc-400 font-medium">
+                <span class="text-[10px] font-semibold" style="color: {isSelected ? '#ffffff' : token.timeText};">
                   {format(parseISO(event.startTime), 'h:mm a')}
                 </span>
-                <span class="font-semibold text-zinc-100 text-[11px] truncate">
+                <span class="font-semibold text-[11px] truncate" style="color: {isSelected ? '#ffffff' : '#f4f4f5'};">
                   {event.title || '(No Title)'}
                 </span>
               </div>
 
-              <!-- Bottom Resize Handle -->
               <div
                 onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, day, 'resize-bottom')}
-                class="absolute bottom-0 left-0 right-0 h-1.5 cursor-ns-resize hover:bg-blue-500/50 transition-colors"
+                class="absolute bottom-0 left-0 right-0 h-1.5 cursor-ns-resize hover:bg-white/40 transition-colors"
                 role="slider"
                 aria-label="Resize event duration"
                 aria-valuenow={style.height}
@@ -157,7 +168,6 @@
             </div>
           {/each}
 
-          <!-- Live Drag & Resize Ghost Preview -->
           {#if timelineDragStore.isDragging && timelineDragStore.previewDateKey === dateKey && timelineDragStore.activeEvent}
             <div
               class="absolute left-1 right-1 rounded-lg px-2 py-1 bg-blue-600/30 border-2 border-blue-500 pointer-events-none z-30 flex flex-col justify-between shadow-2xl"
