@@ -54,18 +54,12 @@ class DragStore {
           const masterEvent = eventStore.events.find(e => e.id === this.draggedEvent?.id) || this.draggedEvent;
           const updatedEvent = moveEventDate(this.draggedEvent, targetDate);
           
-          contextMenuStore.pendingRecurringAction = {
-            action: 'update',
-            originalEvent: masterEvent,
+          contextMenuStore.promptRecurringAction(
+            'update',
+            masterEvent,
             updatedEvent,
-            occurrenceDate: this.draggedEvent.occurrenceDate,
-            diffs: [{
-              field: 'Time',
-              newValue: targetDate.toLocaleDateString([], { month: 'short', day: 'numeric' }),
-              oldValue: this.draggedEvent.occurrenceDate || ''
-            }]
-          };
-          contextMenuStore.isRecurrenceModalOpen = true;
+            this.draggedEvent.occurrenceDate
+          );
         } else {
           eventStore.rescheduleEvent(this.draggedEvent.id, targetDate);
         }

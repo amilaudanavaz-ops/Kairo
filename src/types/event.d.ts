@@ -19,22 +19,22 @@ export interface CalendarEvent {
   id: string;
   calendarId: string;
   googleEventId?: string;
-  recurringEventId?: string; // References parent master if this is an exception
-  originalStartTime?: string; // ISO string of the specific occurrence being replaced
+  recurringEventId?: string;
+  originalStartTime?: string;
   title: string;
   description?: string;
   location?: string;
   conferencingUrl?: string;
   meetingUrl?: string;
-  startTime: string; // ISO UTC string
-  endTime: string;   // ISO UTC string
+  startTime: string;
+  endTime: string;
   isAllDay: boolean;
   timeZone: string;
-  rrule?: string;    // 'none' | 'daily' | 'weekday' | 'weekly' | 'biweekly' | 'monthly_date' | 'monthly_day' | 'yearly'
-  exdates?: string[]; // Array of 'yyyy-MM-dd' dates where master recurrence is suppressed
-  untilDate?: string; // 'yyyy-MM-dd' termination cutoff for "This and following events"
-  occurrenceDate?: string; // 'yyyy-MM-dd' tracking the specific occurrence being viewed/dragged
-  isRecurringInstance?: boolean; // Virtual occurrence flag
+  rrule?: string;
+  exdates?: string[];
+  untilDate?: string;
+  occurrenceDate?: string;
+  isRecurringInstance?: boolean;
   status: EventStatus;
   busyStatus: BusyStatus;
   visibility: Visibility;

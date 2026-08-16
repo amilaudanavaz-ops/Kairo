@@ -59,8 +59,9 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
-  // Track initial state to detect edits on close
+  // Track initial state and creation status
   let initialEventSnapshot: CalendarEvent | null = null;
+  let isNewlyCreated = $state(false);
 
   $effect(() => {
     if (event) {
@@ -68,6 +69,7 @@
       endTimeInput = format(parseISO(event.endTime), 'h:mm a');
       if (!initialEventSnapshot || initialEventSnapshot.id !== event.id) {
         initialEventSnapshot = JSON.parse(JSON.stringify(event));
+        isNewlyCreated = event.syncStatus === 'pending_insert' && (!event.title || event.title === '');
       }
     }
   });
@@ -158,15 +160,24 @@
   }
 
   function handleInspectorClose() {
-    if (event && initialEventSnapshot && event.rrule && event.rrule !== 'none') {
+    // Only prompt recurrence scope if editing an ALREADY existing repeating event (not on initial creation)
+    if (
+      !isNewlyCreated &&
+      event && 
+      initialEventSnapshot && 
+      initialEventSnapshot.rrule && 
+      initialEventSnapshot.rrule !== 'none'
+    ) {
       const hasChanged = JSON.stringify(event) !== JSON.stringify(initialEventSnapshot);
       if (hasChanged) {
-        contextMenuStore.promptRecurringAction('update', initialEventSnapshot, event);
+        const masterEvent = eventStore.events.find(e => e.id === event?.id) || event;
+        contextMenuStore.promptRecurringAction('update', initialEventSnapshot, event, event.occurrenceDate);
       }
     }
     calendarState.closeInspector();
     activeSideMenu = 'none';
     initialEventSnapshot = null;
+    isNewlyCreated = false;
   }
 
   function applyCustomTime(isStart: boolean, timeStr: string) {
@@ -269,6 +280,7 @@
 </script>
 
 {#if event}
+  <!-- Global click-away backdrop for floating inspector -->
   {#if !calendarState.isInspectorDocked}
     <div
       class="fixed inset-0 z-40 bg-black/20"
@@ -277,6 +289,7 @@
     ></div>
   {/if}
 
+  <!-- Click-away backdrop for side menus -->
   {#if activeSideMenu !== 'none'}
     <div
       class="fixed inset-0 z-50 bg-transparent"
@@ -285,12 +298,14 @@
     ></div>
   {/if}
 
+  <!-- Notion 280px Compact Inspector Card with overflow-visible to unclip floating side menus -->
   <aside
     class="{calendarState.isInspectorDocked 
       ? 'w-[280px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-40 shrink-0 select-text relative' 
-      : 'fixed z-50 w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text animate-in fade-in zoom-in-95 duration-100'}"
+      : 'fixed z-50 w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
     style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
   >
+    <!-- Top Action Bar -->
     <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0 rounded-t-2xl bg-[#181818]">
       <div class="relative">
         <button 
@@ -698,11 +713,13 @@
       </div>
     </div>
 
-    <!-- Side-Docked Dropdowns -->
+    <!-- ================= UNCLIPPED SIDE-DOCKED DROPDOWNS ================= -->
+
+    <!-- 1. Time Interval Picker -->
     {#if activeSideMenu === 'start_time' || activeSideMenu === 'end_time'}
       {@const isStart = activeSideMenu === 'start_time'}
       <div 
-        class="absolute top-10 w-38 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1 z-[70] max-h-68 overflow-y-auto custom-scrollbar flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+        class="absolute top-10 w-38 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-[80] max-h-68 overflow-y-auto custom-scrollbar flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-[160px]'}"
       >
         {#each timePresets as preset}
@@ -716,9 +733,10 @@
       </div>
     {/if}
 
+    <!-- 2. Timezone Search Popover -->
     {#if activeSideMenu === 'timezone'}
       <div 
-        class="absolute top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[70] flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100
+        class="absolute top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2 z-[80] flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-[270px]'}"
       >
         <div class="flex items-center gap-2 px-2 py-1 bg-[#141414] border border-[#2a2a2a] rounded-lg">
@@ -746,9 +764,10 @@
       </div>
     {/if}
 
+    <!-- 3. Recurrence Popover -->
     {#if activeSideMenu === 'repeat'}
       <div 
-        class="absolute top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1.5 z-[70] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+        class="absolute top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1.5 z-[80] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-[230px]'}"
       >
         {#each repeatOptions as opt}
@@ -766,9 +785,10 @@
       </div>
     {/if}
 
+    <!-- 4. Calendar & Color Swatches Popover -->
     {#if activeSideMenu === 'calendar'}
       <div 
-        class="absolute bottom-14 w-58 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[70] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
+        class="absolute bottom-14 w-58 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2 z-[80] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-[240px]'}"
       >
         <div class="text-[10px] font-semibold text-zinc-400 px-1">amilavaz2003@gmail.com</div>
@@ -809,9 +829,10 @@
       </div>
     {/if}
 
+    <!-- 5. Reminders Adder Popover -->
     {#if activeSideMenu === 'reminders'}
       <div 
-        class="absolute bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1 z-[70] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+        class="absolute bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-[80] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-[200px]'}"
       >
         {#each reminderPresets as opt}

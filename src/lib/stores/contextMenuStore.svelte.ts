@@ -15,6 +15,7 @@ export interface RecurringActionPayload {
   action: 'update' | 'delete';
   originalEvent: CalendarEvent;
   updatedEvent?: CalendarEvent;
+  occurrenceDate?: string;
   diffs: FieldDiff[];
 }
 
@@ -26,19 +27,20 @@ class ContextMenuStore {
   targetEvent = $state<CalendarEvent | null>(null);
   targetDate = $state<Date | null>(null);
 
-  // Recurrence Dialog State
+  // Recurrence Scope Dialog State
   isRecurrenceModalOpen = $state(false);
   pendingRecurringAction = $state<RecurringActionPayload | null>(null);
 
   promptRecurringAction(
     action: 'update' | 'delete', 
     originalEvent: CalendarEvent, 
-    updatedEvent?: CalendarEvent
+    updatedEvent?: CalendarEvent,
+    occurrenceDate?: string
   ) {
     const diffs: FieldDiff[] = [];
 
     if (action === 'update' && updatedEvent) {
-      // Time Diff
+      // 1. Time Diff
       if (originalEvent.startTime !== updatedEvent.startTime || originalEvent.endTime !== updatedEvent.endTime) {
         const oldStart = format(parseISO(originalEvent.startTime), 'h:mm a');
         const oldEnd = format(parseISO(originalEvent.endTime), 'h:mm a');
@@ -51,7 +53,7 @@ class ContextMenuStore {
         });
       }
 
-      // Title Diff
+      // 2. Title Diff
       if (originalEvent.title !== updatedEvent.title) {
         diffs.push({
           field: 'Title',
@@ -60,7 +62,7 @@ class ContextMenuStore {
         });
       }
 
-      // Description Diff
+      // 3. Description Diff
       if (originalEvent.description !== updatedEvent.description) {
         diffs.push({
           field: 'Description',
@@ -69,7 +71,7 @@ class ContextMenuStore {
         });
       }
 
-      // Calendar / Color Diff
+      // 4. Color / Category Diff
       if (originalEvent.colorOverride !== updatedEvent.colorOverride || originalEvent.calendarId !== updatedEvent.calendarId) {
         diffs.push({
           field: 'Calendar / Color',
@@ -83,6 +85,7 @@ class ContextMenuStore {
       action, 
       originalEvent, 
       updatedEvent,
+      occurrenceDate: occurrenceDate || originalEvent.occurrenceDate,
       diffs
     };
     this.isRecurrenceModalOpen = true;
@@ -175,7 +178,7 @@ class ContextMenuStore {
     if (!this.targetEvent) return;
     const updated = { ...this.targetEvent, colorOverride: colorHex };
     if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
-      this.promptRecurringAction('update', this.targetEvent, updated);
+      this.promptRecurringAction('update', this.targetEvent, updated, this.targetEvent.occurrenceDate);
     } else {
       eventStore.updateEvent(updated);
     }
@@ -209,7 +212,7 @@ class ContextMenuStore {
   delete() {
     if (!this.targetEvent) return;
     if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
-      this.promptRecurringAction('delete', this.targetEvent);
+      this.promptRecurringAction('delete', this.targetEvent, undefined, this.targetEvent.occurrenceDate);
     } else {
       eventStore.deleteEvent(this.targetEvent.id);
       if (calendarState.selectedEventId === this.targetEvent.id) {

@@ -42,7 +42,7 @@
       }
     } else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // 1. Suppress this date from master series so it NEVER duplicates
+        // 1. Suppress this date from master series to prevent duplicates
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -58,6 +58,7 @@
           exdates: [],
           untilDate: undefined,
           recurringEventId: master.id,
+          isRecurringInstance: false,
           updatedAt: new Date().toISOString()
         };
         eventStore.addEvent(detached);
@@ -73,13 +74,15 @@
         const newSeries = {
           ...updated,
           id: 'evt_' + Date.now(),
+          rrule: master.rrule || updated.rrule || 'daily',
           exdates: [],
           untilDate: undefined,
+          isRecurringInstance: false,
           updatedAt: new Date().toISOString()
         };
         eventStore.addEvent(newSeries);
       } else {
-        // Update All events: shift master start/end time-of-day and properties
+        // Update All events: shift master start/end time-of-day and sync all properties
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
         const duration = differenceInMinutes(newEnd, newStart);
@@ -99,6 +102,7 @@
           colorOverride: updated.colorOverride,
           calendarId: updated.calendarId,
           reminders: updated.reminders,
+          rrule: updated.rrule || master.rrule,
           updatedAt: new Date().toISOString()
         });
       }
