@@ -15,7 +15,12 @@
   import { ChevronLeft, ChevronRight } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
 
+  // Keep mini calendar month synced with the active calendar date
   let viewDate = $state(new Date(calendarState.currentDate));
+
+  $effect(() => {
+    viewDate = new Date(calendarState.currentDate);
+  });
 
   let monthTitle = $derived(format(viewDate, 'MMMM yyyy'));
   const weekDays = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
@@ -34,7 +39,7 @@
 </script>
 
 <div class="flex flex-col gap-1.5 select-none">
-  <!-- Month Header & Navigation -->
+  <!-- Month Header -->
   <div class="flex items-center justify-between px-1 mb-1">
     <span class="text-xs font-semibold text-zinc-200">{monthTitle}</span>
     <div class="flex items-center gap-0.5">
@@ -53,14 +58,14 @@
     </div>
   </div>
 
-  <!-- Day-of-Week Initials -->
+  <!-- Weekday Labels -->
   <div class="grid grid-cols-7 text-center">
     {#each weekDays as wd}
       <span class="text-[10px] font-semibold text-zinc-500">{wd}</span>
     {/each}
   </div>
 
-  <!-- 7x5/6 Date Matrix -->
+  <!-- Day Matrix -->
   <div class="grid grid-cols-7 gap-y-1 text-center">
     {#each days as day (day.toISOString())}
       {@const isCurMonth = isSameMonth(day, viewDate)}

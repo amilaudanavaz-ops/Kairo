@@ -5,7 +5,8 @@ class CalendarState {
   currentDate = $state(new Date());
   viewMode = $state<ViewMode>('month');
   isSidebarOpen = $state(true);
-  isInspectorDocked = $state(false); // Controls floating vs. Notion right-docked side panel
+  isInspectorDocked = $state(false);
+  isAddAccountModalOpen = $state(false);
   
   // Modals & Floating Inspectors
   selectedEvent = $state<CalendarEvent | null>(null);
@@ -52,10 +53,17 @@ class CalendarState {
   }
 
   toggleCalendarVisibility(calendarId: string) {
-    const target = this.calendars.find((c) => c.id === calendarId);
-    if (target) {
-      target.isVisible = !target.isVisible;
-    }
+    this.calendars = this.calendars.map((c) =>
+      c.id === calendarId ? { ...c, isVisible: !c.isVisible } : c
+    );
+  }
+
+  openAddAccountModal() {
+    this.isAddAccountModalOpen = true;
+  }
+
+  closeAddAccountModal() {
+    this.isAddAccountModalOpen = false;
   }
 
   openInspector(event: CalendarEvent, rect: DOMRect) {

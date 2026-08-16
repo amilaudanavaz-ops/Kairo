@@ -1,31 +1,111 @@
 import type { CalendarEvent } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
 import { calendarState } from './calendarState.svelte';
+import { setHours, setMinutes } from 'date-fns';
+
+export type ContextMenuMode = 'event' | 'cell';
 
 class ContextMenuStore {
   isOpen = $state(false);
+  mode = $state<ContextMenuMode>('cell');
   x = $state(0);
   y = $state(0);
   targetEvent = $state<CalendarEvent | null>(null);
+  targetDate = $state<Date | null>(null);
 
-  open(e: MouseEvent, event: CalendarEvent) {
+  // Recurrence Dialog Scope
+  isRecurrenceModalOpen = $state(false);
+  pendingRecurringAction = $state<{
+    action: 'update' | 'delete';
+    event: CalendarEvent;
+    targetDate?: Date;
+  } | null>(null);
+
+  openForEvent(e: MouseEvent, event: CalendarEvent) {
     e.preventDefault();
     e.stopPropagation();
+    this.mode = 'event';
     this.targetEvent = event;
-    
-    // Prevent menu overflowing window boundaries
-    const menuWidth = 220;
-    const menuHeight = 260;
-    this.x = Math.min(window.innerWidth - menuWidth - 10, e.clientX);
-    this.y = Math.min(window.innerHeight - menuHeight - 10, e.clientY);
+    this.targetDate = null;
+    this.setPosition(e.clientX, e.clientY, 220, 260);
     this.isOpen = true;
+  }
+
+  openForCell(e: MouseEvent, date: Date) {
+    e.preventDefault();
+    e.stopPropagation();
+    this.mode = 'cell';
+    this.targetEvent = null;
+    this.targetDate = date;
+    this.setPosition(e.clientX, e.clientY, 200, 100);
+    this.isOpen = true;
+  }
+
+  private setPosition(clientX: number, clientY: number, width: number, height: number) {
+    this.x = Math.min(window.innerWidth - width - 12, clientX);
+    this.y = Math.min(window.innerHeight - height - 12, clientY);
   }
 
   close() {
     this.isOpen = false;
     this.targetEvent = null;
+    this.targetDate = null;
   }
 
+  // Cell Context Actions
+  createEventAtCell() {
+    if (!this.targetDate) return;
+    const now = new Date();
+    const startTime = setMinutes(setHours(this.targetDate, now.getHours()), 0);
+    const endTime = setMinutes(setHours(this.targetDate, now.getHours() + 1), 0);
+
+    const newEvent: CalendarEvent = {
+      id: 'evt_' + Date.now(),
+      calendarId: calendarState.calendars[0]?.id || '1',
+      title: '',
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
+      isAllDay: false,
+      timeZone: 'GMT+5:30 Colombo',
+      status: 'confirmed',
+      busyStatus: 'busy',
+      visibility: 'default',
+      reminders: '30m',
+      creatorEmail: 'amilavaz2003@gmail.com',
+      syncStatus: 'pending_insert',
+      updatedAt: new Date().toISOString()
+    };
+
+    eventStore.addEvent(newEvent);
+    calendarState.openInspector(newEvent, new DOMRect(this.x, this.y, 20, 20));
+    this.close();
+  }
+
+  pasteEventAtCell() {
+    if (!this.targetDate || !calendarState.clipboardEvent) return;
+    const clip = calendarState.clipboardEvent;
+    const [year, month, day] = [this.targetDate.getFullYear(), this.targetDate.getMonth(), this.targetDate.getDate()];
+    const origStart = new Date(clip.startTime);
+    const origEnd = new Date(clip.endTime);
+    const duration = origEnd.getTime() - origStart.getTime();
+
+    const newStart = new Date(year, month, day, origStart.getHours(), origStart.getMinutes());
+    const newEnd = new Date(newStart.getTime() + duration);
+
+    const pastedEvent: CalendarEvent = {
+      ...clip,
+      id: 'evt_' + Date.now(),
+      title: clip.title,
+      startTime: newStart.toISOString(),
+      endTime: newEnd.toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    eventStore.addEvent(pastedEvent);
+    this.close();
+  }
+
+  // Event Context Actions
   setColorOverride(colorHex: string | undefined) {
     if (!this.targetEvent) return;
     eventStore.updateEvent({

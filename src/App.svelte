@@ -8,9 +8,12 @@
   import DayOverflowPopover from './lib/components/modals/DayOverflowPopover.svelte';
   import EventInspector from './lib/components/modals/EventInspector.svelte';
   import ContextMenu from './lib/components/modals/ContextMenu.svelte';
+  import RecurrenceDialog from './lib/components/modals/RecurrenceDialog.svelte';
+  import AddAccountModal from './lib/components/modals/AddAccountModal.svelte';
   import { calendarState } from './lib/stores/calendarState.svelte';
   import { eventStore } from './lib/stores/eventStore.svelte';
   import { dragStore } from './lib/stores/dragStore.svelte';
+  import { contextMenuStore } from './lib/stores/contextMenuStore.svelte';
   import { loadInitialCalendars } from './lib/db/database';
 
   onMount(async () => {
@@ -34,15 +37,31 @@
       if (e.key === 'w' || e.key === 'W') calendarState.setViewMode('week');
       if (e.key === 'd' || e.key === 'D') calendarState.setViewMode('day');
       if (e.key === 't' || e.key === 'T') calendarState.setToday();
+      if (e.key === 'c' || e.key === 'C') {
+        const today = new Date();
+        contextMenuStore.targetDate = today;
+        contextMenuStore.createEventAtCell();
+      }
       if (e.key === '\\') calendarState.toggleInspectorDock();
       if (e.key === 'Escape') {
         calendarState.closeInspector();
         calendarState.closeOverflow();
+        calendarState.closeAddAccountModal();
+        contextMenuStore.close();
       }
     };
 
+    const handleGlobalContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('contextmenu', handleGlobalContextMenu);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('contextmenu', handleGlobalContextMenu);
+    };
   });
 </script>
 
@@ -69,16 +88,16 @@
     {/if}
   </div>
 
+  <!-- Popovers and Modals -->
   <DayOverflowPopover />
-
   {#if !calendarState.isInspectorDocked && calendarState.selectedEvent}
     <EventInspector />
   {/if}
-
-  <!-- Right-Click Context Menu -->
   <ContextMenu />
+  <RecurrenceDialog />
+  <AddAccountModal />
 
-  <!-- Floating Drag Ghost -->
+  <!-- Floating Drag Preview -->
   {#if dragStore.isDragging && dragStore.draggedEvent}
     <div
       class="fixed pointer-events-none z-[999] px-3 py-1.5 rounded-lg bg-[#242424] border border-blue-500/80 shadow-2xl text-xs font-semibold text-white flex items-center gap-2 transform -translate-x-1/2 -translate-y-1/2"

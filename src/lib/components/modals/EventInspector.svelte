@@ -244,11 +244,21 @@
   {/if}
 
   <aside
-    class="{calendarState.isInspectorDocked 
-      ? 'w-80 h-full border-l border-[#262626] bg-[#161616] flex flex-col z-30 shrink-0 select-text' 
-      : 'fixed z-50 w-[340px] max-h-[92vh] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)] flex flex-col animate-in fade-in zoom-in-95 duration-100 select-text overflow-hidden'}"
-    style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
-  >
+  class="{calendarState.isInspectorDocked 
+    ? 'w-80 h-full border-l border-[#262626] bg-[#161616] flex flex-col z-30 shrink-0 select-text' 
+    : 'fixed z-50 w-[340px] h-[85vh] max-h-[640px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)] flex flex-col animate-in fade-in zoom-in-95 duration-100 select-text overflow-hidden'}"
+  style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
+>
+  <!-- Fixed Header -->
+  <div class="flex items-center justify-between px-3.5 pt-3 pb-2 border-b border-[#242424] relative shrink-0">
+    <!-- Type Selector & Action Icons -->
+  </div>
+
+  <!-- Scrollable Form Body -->
+  <div class="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3.5 custom-scrollbar min-h-0">
+    <!-- Title, Time, All-Day, Timezones, Recurrences, Participants, Meet, Location, Description, Categories, Reminders -->
+  </div>
+  
     <!-- Top Action Bar -->
     <div class="flex items-center justify-between px-3.5 pt-3 pb-2 border-b border-[#242424] relative">
       <div class="relative">
@@ -722,5 +732,6 @@
         {/if}
       </div>
     </div>
+    
   </aside>
 {/if}
