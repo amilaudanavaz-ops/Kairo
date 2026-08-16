@@ -96,6 +96,13 @@ class EventStore {
     }
   ]);
 
+  // Global Drag State
+  activeDraggedId = $state<string | null>(null);
+
+  setDraggedEvent(id: string | null) {
+    this.activeDraggedId = id;
+  }
+
   addEvent(event: CalendarEvent) {
     this.events = [...this.events, event];
   }
