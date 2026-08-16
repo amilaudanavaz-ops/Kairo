@@ -4,6 +4,7 @@
   import { eventStore } from '../../stores/eventStore.svelte';
   import { dragStore } from '../../stores/dragStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
+  import { resolveEventColorToken } from '../../utils/colors';
   import { generateMonthGrid, getEventsForDay } from '../../utils/dateMath';
   import type { CalendarEvent } from '../../../types/event';
 
@@ -13,10 +14,9 @@
   let gridCells = $derived(generateMonthGrid(calendarState.currentDate));
   let totalWeeks = $derived(Math.ceil(gridCells.length / 7));
 
-  function getCalendarColor(event: CalendarEvent): string {
-    if (event.colorOverride) return event.colorOverride;
+  function getEventToken(event: CalendarEvent) {
     const cal = calendarState.calendars.find((c) => c.id === event.calendarId);
-    return cal?.colorHex ?? '#3b82f6';
+    return resolveEventColorToken(event.colorOverride || cal?.colorHex);
   }
 
   function isCalendarVisible(calendarId: string): boolean {
@@ -45,7 +45,7 @@
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: '30m',
+      reminders: ['30m'],
       creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
@@ -77,7 +77,6 @@
     calendarState.openOverflow(day, dayEvents, rect);
   }
 
-  // Smooth Month Navigation with Mouse Wheel
   let wheelLock = false;
   function handleWheel(e: WheelEvent) {
     if (wheelLock) return;
@@ -105,7 +104,7 @@
     {/each}
   </div>
 
-  <!-- Dynamic Month Grid -->
+  <!-- Dynamic Month Matrix -->
   <div 
     class="flex-1 grid grid-cols-7 gap-[1px] bg-[#1e1e1e] overflow-hidden no-scrollbar"
     style="grid-template-rows: repeat({totalWeeks}, minmax(0, 1fr));"
@@ -116,7 +115,6 @@
       {@const overflowCount = allDayEvents.length - MAX_VISIBLE_EVENTS}
       {@const isHighlighted = dragStore.hoveredDateKey === cell.dateKey}
 
-      <!-- Day Cell -->
       <div
         data-day-cell={cell.dateKey}
         ondblclick={(e) => handleDayDoubleClick(e, cell.date)}
@@ -138,7 +136,8 @@
 
         <div class="flex-1 flex flex-col gap-1 overflow-hidden">
           {#each visibleEvents as event (event.id)}
-            {@const color = getCalendarColor(event)}
+            {@const token = getEventToken(event)}
+            {@const isSelected = calendarState.selectedEventId === event.id}
             {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
 
             {#if event.isAllDay}
@@ -146,9 +145,10 @@
                 onpointerdown={(e) => handlePointerDown(e, event)}
                 onclick={(e) => handleEventClick(e, event)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
-                class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-opacity
+                class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-all
+                  {isSelected ? 'ring-2 ring-white/70 shadow-lg' : ''}
                   {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
-                style="background-color: {color}28; border: 1px solid {color}55; color: #f4f4f5;"
+                style="background-color: {isSelected ? token.selectedBg : token.bannerBg}; border: 1px solid {token.bannerBorder}; color: {token.selectedText};"
                 role="button"
                 tabindex="0"
                 onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
@@ -160,22 +160,35 @@
                 onpointerdown={(e) => handlePointerDown(e, event)}
                 onclick={(e) => handleEventClick(e, event)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
-                class="px-1.5 py-0.5 rounded text-[11px] font-medium truncate cursor-grab active:cursor-grabbing flex items-center bg-[#1a1a1a]/90 hover:bg-[#242424] border border-[#272727] text-zinc-100 transition-colors
+                class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all
+                  {isSelected 
+                    ? 'shadow-md ring-1 ring-white/60 font-bold' 
+                    : 'bg-[#1a1a1a]/90 hover:bg-[#242424] border-[#272727]' }
                   {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
+                style={isSelected ? `background-color: ${token.selectedBg}; border-color: ${token.selectedBg};` : ''}
                 role="button"
                 tabindex="0"
                 onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
               >
+                <!-- Left Vertical Curved Pill -->
                 <span 
                   class="w-[3px] h-3 rounded-full mr-1.5 shrink-0" 
-                  style="background-color: {color};"
+                  style="background-color: {isSelected ? '#ffffff' : token.hex};"
                 ></span>
 
-                <span class="text-[10px] text-zinc-400 font-semibold mr-1 shrink-0 pointer-events-none">
+                <!-- Formatted Tinted Time -->
+                <span 
+                  class="text-[10px] font-semibold mr-1 shrink-0 pointer-events-none"
+                  style="color: {isSelected ? '#ffffff' : token.timeText};"
+                >
                   {format(parseISO(event.startTime), 'h:mm a')}
                 </span>
 
-                <span class="truncate pointer-events-none font-medium">
+                <!-- Event Title -->
+                <span 
+                  class="truncate pointer-events-none font-medium"
+                  style="color: {isSelected ? '#ffffff' : '#f4f4f5'};"
+                >
                   {event.title || '(No Title)'}
                 </span>
               </div>
@@ -185,7 +198,7 @@
           {#if overflowCount > 0}
             <button
               onclick={(e) => handleOverflowClick(e, cell.date, allDayEvents)}
-              class="text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#202020] px-1.5 py-0.5 rounded text-left transition-colors flex items-center gap-1 mt-auto"
+              class="text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#202020] px-1.5 py-0.5 rounded text-left transition-colors flex items-center gap-1 mt-auto cursor-pointer"
             >
               <span>{overflowCount} more</span>
             </button>

@@ -17,9 +17,14 @@ class ContextMenuStore {
   isRecurrenceModalOpen = $state(false);
   pendingRecurringAction = $state<{
     action: 'update' | 'delete';
-    event: CalendarEvent;
-    targetDate?: Date;
+    originalEvent: CalendarEvent;
+    updatedEvent?: CalendarEvent;
   } | null>(null);
+
+  promptRecurringAction(action: 'update' | 'delete', originalEvent: CalendarEvent, updatedEvent?: CalendarEvent) {
+    this.pendingRecurringAction = { action, originalEvent, updatedEvent };
+    this.isRecurrenceModalOpen = true;
+  }
 
   openForEvent(e: MouseEvent, event: CalendarEvent) {
     e.preventDefault();
@@ -52,7 +57,6 @@ class ContextMenuStore {
     this.targetDate = null;
   }
 
-  // Cell Context Actions
   createEventAtCell() {
     if (!this.targetDate) return;
     const now = new Date();
@@ -70,7 +74,7 @@ class ContextMenuStore {
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: '30m',
+      reminders: ['30m'],
       creatorEmail: 'amilavaz2003@gmail.com',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
@@ -105,24 +109,21 @@ class ContextMenuStore {
     this.close();
   }
 
-  // Event Context Actions
   setColorOverride(colorHex: string | undefined) {
     if (!this.targetEvent) return;
-    eventStore.updateEvent({
-      ...this.targetEvent,
-      colorOverride: colorHex
-    });
+    const updated = { ...this.targetEvent, colorOverride: colorHex };
+    if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
+      this.promptRecurringAction('update', this.targetEvent, updated);
+    } else {
+      eventStore.updateEvent(updated);
+    }
     this.close();
   }
 
   cut() {
     if (!this.targetEvent) return;
     calendarState.clipboardEvent = { ...this.targetEvent };
-    eventStore.deleteEvent(this.targetEvent.id);
-    if (calendarState.selectedEvent?.id === this.targetEvent.id) {
-      calendarState.closeInspector();
-    }
-    this.close();
+    this.delete();
   }
 
   copy() {
@@ -145,9 +146,13 @@ class ContextMenuStore {
 
   delete() {
     if (!this.targetEvent) return;
-    eventStore.deleteEvent(this.targetEvent.id);
-    if (calendarState.selectedEvent?.id === this.targetEvent.id) {
-      calendarState.closeInspector();
+    if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
+      this.promptRecurringAction('delete', this.targetEvent);
+    } else {
+      eventStore.deleteEvent(this.targetEvent.id);
+      if (calendarState.selectedEventId === this.targetEvent.id) {
+        calendarState.closeInspector();
+      }
     }
     this.close();
   }

@@ -26,6 +26,7 @@
     Paperclip, 
     AlignLeft, 
     Bell, 
+    Plus,
     ChevronDown,
     Scissors,
     Copy,
@@ -36,6 +37,8 @@
   } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
+  import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
+  import { resolveEventColorToken, NOTION_COLORS } from '../../utils/colors';
   import { dispatchEventReminder } from '../../utils/notifications';
   import type { CalendarEvent } from '../../../types/event';
 
@@ -43,6 +46,7 @@
   let activeCalendar = $derived(
     calendarState.calendars.find((c) => c.id === event?.calendarId) || calendarState.calendars[0]
   );
+  let colorToken = $derived(resolveEventColorToken(event?.colorOverride || activeCalendar?.colorHex));
 
   let activeSideMenu = $state<'none' | 'start_time' | 'end_time' | 'timezone' | 'repeat' | 'reminders' | 'calendar'>('none');
   let isTypeDropdownOpen = $state(false);
@@ -116,14 +120,15 @@
     ];
   });
 
-  const reminderOptions = [
+  const reminderPresets = [
     { id: '0m', label: 'At start of event' },
     { id: '5m', label: '5 min before' },
     { id: '10m', label: '10 min before' },
     { id: '15m', label: '15 min before' },
     { id: '30m', label: '30 min before' },
     { id: '1h', label: '1 hour before' },
-    { id: '1d', label: '1 day before' }
+    { id: '1d', label: '1 day before' },
+    { id: '2d', label: '2 days before' }
   ];
 
   let durationText = $derived.by(() => {
@@ -133,11 +138,6 @@
     const hrs = Math.floor(diff / 60);
     const mins = diff % 60;
     return mins > 0 ? `${hrs}h ${mins}min` : `${hrs}h`;
-  });
-
-  let reminderLabel = $derived.by(() => {
-    const r = reminderOptions.find(opt => opt.id === event?.reminders);
-    return r ? r.label : '30 min before';
   });
 
   let repeatLabel = $derived.by(() => {
@@ -206,12 +206,19 @@
     updateField('description', (event.description || '') + template);
   }
 
-  function handleSelectReminder(optId: string) {
-    updateField('reminders', optId);
-    activeSideMenu = 'none';
-    if (event) {
+  function addReminder(remId: string) {
+    if (!event) return;
+    const current = event.reminders || [];
+    if (!current.includes(remId)) {
+      updateField('reminders', [...current, remId]);
       dispatchEventReminder(event);
     }
+    activeSideMenu = 'none';
+  }
+
+  function removeReminder(remId: string) {
+    if (!event) return;
+    updateField('reminders', (event.reminders || []).filter(r => r !== remId));
   }
 
   function calculatePosition(rect: DOMRect | null) {
@@ -265,7 +272,7 @@
     ></div>
   {/if}
 
-  <!-- Notion 280px Compact Inspector Card with Strict Viewport Height -->
+  <!-- Notion 280px Compact Card -->
   <aside
     class="{calendarState.isInspectorDocked 
       ? 'w-[280px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-40 shrink-0 select-text relative' 
@@ -344,8 +351,12 @@
               <div class="h-[1px] bg-[#292929] my-0.5"></div>
               <button 
                 onclick={() => {
-                  eventStore.deleteEvent(event!.id);
-                  calendarState.closeInspector();
+                  if (event?.rrule && event.rrule !== 'none') {
+                    contextMenuStore.promptRecurringAction('delete', event);
+                  } else if (event) {
+                    eventStore.deleteEvent(event.id);
+                    calendarState.closeInspector();
+                  }
                   isActionMenuOpen = false;
                 }} 
                 class="flex items-center justify-between px-2.5 py-1.5 text-xs text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
@@ -373,7 +384,7 @@
       </div>
     </div>
 
-    <!-- Inner Scrollable Form Container -->
+    <!-- Scrollable Form Body -->
     <div class="flex-1 min-h-0 overflow-y-auto px-3.5 py-2.5 flex flex-col gap-2.5 custom-scrollbar">
       <!-- Title Input -->
       <input
@@ -410,7 +421,7 @@
             />
 
             {#if durationText}
-              <span class="text-zinc-400 text-[10px] ml-0.5 truncate">{durationText}</span>
+              <span class="text-[10px] ml-0.5 truncate font-semibold" style="color: {colorToken.timeText};">{durationText}</span>
             {/if}
           {:else}
             <span class="text-zinc-300 font-semibold text-xs py-0.5">All Day</span>
@@ -593,7 +604,7 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Description / Notes -->
+      <!-- Description -->
       <div class="flex flex-col gap-1 text-xs shrink-0">
         <div class="flex items-center gap-1.5 text-zinc-400">
           <AlignLeft size={13} class="text-zinc-500" />
@@ -616,7 +627,7 @@
         class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
       >
         <div class="flex items-center gap-2 truncate">
-          <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: {event.colorOverride || activeCalendar.colorHex};"></span>
+          <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: {colorToken.hex};"></span>
           <span class="text-xs font-semibold text-zinc-200 truncate">{activeCalendar.name}</span>
         </div>
         <ChevronDown size={12} class="text-zinc-500 shrink-0" />
@@ -644,20 +655,43 @@
         </select>
       </div>
 
-      <!-- Reminders -->
-      <button 
-        onclick={() => activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'}
-        class="w-full flex items-center justify-between text-xs text-zinc-400 bg-[#1f1f1f] hover:bg-[#242424] border border-[#2a2a2a] rounded-lg p-2 transition-colors cursor-pointer shrink-0"
-      >
-        <div class="flex items-center gap-1.5">
-          <Bell size={13} class="text-zinc-500" />
-          <span>Reminders</span>
+      <!-- Multi-Reminder List & Adder -->
+      <div class="flex flex-col gap-1.5 p-2 bg-[#1f1f1f] border border-[#2a2a2a] rounded-xl shrink-0">
+        <div class="flex items-center justify-between text-xs text-zinc-400">
+          <div class="flex items-center gap-1.5">
+            <Bell size={13} class="text-zinc-500" />
+            <span class="font-medium">Reminders</span>
+          </div>
+          <button
+            onclick={() => activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'}
+            class="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 font-semibold cursor-pointer"
+          >
+            <Plus size={12} />
+            <span>Add</span>
+          </button>
         </div>
-        <span class="text-zinc-200 font-semibold text-[11px]">{reminderLabel}</span>
-      </button>
+
+        {#if event.reminders && event.reminders.length > 0}
+          <div class="flex flex-wrap gap-1 mt-0.5">
+            {#each event.reminders as rem}
+              {@const label = reminderPresets.find(r => r.id === rem)?.label || rem}
+              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#282828] border border-[#333333] text-[10px] text-zinc-200 font-medium">
+                <span>{label}</span>
+                <button onclick={() => removeReminder(rem)} class="text-zinc-500 hover:text-rose-400 cursor-pointer">
+                  <X size={10} />
+                </button>
+              </span>
+            {/each}
+          </div>
+        {:else}
+          <span class="text-[11px] text-zinc-500 italic">No reminders set</span>
+        {/if}
+      </div>
     </div>
 
-    <!-- Side-Docked Dropdowns with High Stacking -->
+    <!-- ================= NOTION SIDE-DOCKED DROPDOWNS ================= -->
+
+    <!-- 1. Time Interval Picker -->
     {#if activeSideMenu === 'start_time' || activeSideMenu === 'end_time'}
       {@const isStart = activeSideMenu === 'start_time'}
       <div 
@@ -675,6 +709,7 @@
       </div>
     {/if}
 
+    <!-- 2. Timezone Search Popover -->
     {#if activeSideMenu === 'timezone'}
       <div 
         class="absolute top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[70] flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100
@@ -705,6 +740,7 @@
       </div>
     {/if}
 
+    <!-- 3. Recurrence Popover -->
     {#if activeSideMenu === 'repeat'}
       <div 
         class="absolute top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1.5 z-[70] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
@@ -725,6 +761,7 @@
       </div>
     {/if}
 
+    <!-- 4. Calendar & Color Swatches Popover -->
     {#if activeSideMenu === 'calendar'}
       <div 
         class="absolute bottom-14 w-58 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-2 z-[70] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
@@ -752,13 +789,14 @@
 
         <div class="text-[10px] font-semibold text-zinc-400 px-1">Event color</div>
         <div class="flex items-center justify-between px-1">
-          {#each [{ name: 'Red', hex: '#ef4444' }, { name: 'Orange', hex: '#f97316' }, { name: 'Amber', hex: '#f59e0b' }, { name: 'Green', hex: '#10b981' }, { name: 'Blue', hex: '#3b82f6' }, { name: 'Purple', hex: '#8b5cf6' }, { name: 'Default', hex: '#71717a' }] as c}
+          {#each Object.values(NOTION_COLORS) as c}
             <button
-              onclick={() => { updateField('colorOverride', c.hex === '#71717a' ? undefined : c.hex); activeSideMenu = 'none'; }}
+              onclick={() => { updateField('colorOverride', c.id === 'charcoal' ? undefined : c.hex); activeSideMenu = 'none'; }}
               class="w-3.5 h-3.5 rounded-full flex items-center justify-center transition-transform hover:scale-125 cursor-pointer"
               style="background-color: {c.hex};"
+              title={c.name}
             >
-              {#if (event.colorOverride === c.hex) || (!event.colorOverride && c.hex === '#71717a')}
+              {#if (event.colorOverride === c.hex) || (!event.colorOverride && c.id === 'charcoal')}
                 <Check size={9} class="text-white" />
               {/if}
             </button>
@@ -767,16 +805,16 @@
       </div>
     {/if}
 
+    <!-- 5. Reminders Adder Popover -->
     {#if activeSideMenu === 'reminders'}
       <div 
         class="absolute bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.9)] p-1 z-[70] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-[200px]'}"
       >
-        {#each reminderOptions as opt}
+        {#each reminderPresets as opt}
           <button
-            onclick={() => handleSelectReminder(opt.id)}
-            class="flex items-center justify-between px-2 py-1 text-xs rounded text-left transition-colors cursor-pointer
-              {(event.reminders || '30m') === opt.id ? 'bg-[#282828] text-blue-400 font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
+            onclick={() => addReminder(opt.id)}
+            class="flex items-center justify-between px-2 py-1 text-xs rounded text-left transition-colors cursor-pointer text-zinc-300 hover:bg-[#242424] hover:text-white"
           >
             <span>{opt.label}</span>
           </button>

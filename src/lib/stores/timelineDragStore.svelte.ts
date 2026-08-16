@@ -1,6 +1,7 @@
 import type { CalendarEvent } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
-import { parseISO, addMinutes, differenceInMinutes, setHours, setMinutes } from 'date-fns';
+import { contextMenuStore } from './contextMenuStore.svelte';
+import { parseISO, addMinutes, differenceInMinutes, setHours, setMinutes, format } from 'date-fns';
 import { HOUR_HEIGHT_PX } from '../utils/timeMath';
 
 export type DragMode = 'move' | 'resize-top' | 'resize-bottom';
@@ -10,7 +11,6 @@ class TimelineDragStore {
   dragMode = $state<DragMode>('move');
   activeEvent = $state<CalendarEvent | null>(null);
   
-  // Ghost preview coordinates
   previewTop = $state(0);
   previewHeight = $state(0);
   previewDateKey = $state<string | null>(null);
@@ -29,7 +29,7 @@ class TimelineDragStore {
     day: Date, 
     mode: DragMode = 'move'
   ) {
-    if (e.button !== 0) return; // Only primary button
+    if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
 
@@ -49,45 +49,41 @@ class TimelineDragStore {
 
     this.previewTop = this.initialTop;
     this.previewHeight = this.initialHeight;
-    this.previewDateKey = event.startTime.split('T')[0];
+    // Strict date anchoring: Resizing always stays anchored to the current day column
+    this.previewDateKey = format(day, 'yyyy-MM-dd');
 
     const onPointerMove = (moveEvent: PointerEvent) => {
       const deltaY = moveEvent.clientY - this.startClientY;
+      const deltaX = moveEvent.clientX - this.startClientX;
       
-      if (!this.isDragging && (Math.abs(deltaY) > 3 || Math.abs(moveEvent.clientX - this.startClientX) > 3)) {
+      if (!this.isDragging && (Math.abs(deltaY) > 3 || Math.abs(deltaX) > 3)) {
         this.isDragging = true;
       }
 
       if (!this.isDragging) return;
 
-      // 15-minute snap step in pixels (HOUR_HEIGHT_PX / 4)
-      const stepPx = HOUR_HEIGHT_PX / 4;
+      const stepPx = HOUR_HEIGHT_PX / 4; // 15-minute step in pixels
       const snappedDeltaSteps = Math.round(deltaY / stepPx);
       const deltaMinutes = snappedDeltaSteps * 15;
 
       if (this.dragMode === 'move') {
-        // Move start and end simultaneously
         const newStart = addMinutes(this.initialEventStart, deltaMinutes);
-        const newEnd = addMinutes(this.initialEventEnd, deltaMinutes);
+        const clampedMinutes = newStart.getHours() * 60 + newStart.getMinutes();
+        this.previewTop = Math.max(0, Math.min(24 * HOUR_HEIGHT_PX - this.initialHeight, (clampedMinutes / 60) * HOUR_HEIGHT_PX));
 
-        // Bound to 00:00 - 23:59
-        if (newStart.getHours() >= 0 && newEnd.getDate() === newStart.getDate()) {
-          const clampedMinutes = newStart.getHours() * 60 + newStart.getMinutes();
-          this.previewTop = Math.max(0, Math.min(24 * HOUR_HEIGHT_PX - this.initialHeight, (clampedMinutes / 60) * HOUR_HEIGHT_PX));
-        }
-
-        // Horizontal hit-test for day columns in Week view
+        // Horizontal column detection only during full-body moves
         const elements = document.elementsFromPoint(moveEvent.clientX, moveEvent.clientY);
         const dayCell = elements.find((el) => el.hasAttribute('data-timeline-col'));
         if (dayCell) {
           this.previewDateKey = dayCell.getAttribute('data-timeline-col');
         }
       } else if (this.dragMode === 'resize-bottom') {
-        // Expand/reduce end time
-        const newDuration = Math.max(15, differenceInMinutes(this.initialEventEnd, this.initialEventStart) + deltaMinutes);
-        this.previewHeight = Math.max(stepPx, (newDuration / 60) * HOUR_HEIGHT_PX);
+        // Expand/reduce bottom edge
+        const originalDuration = differenceInMinutes(this.initialEventEnd, this.initialEventStart);
+        const newDuration = Math.max(15, originalDuration + deltaMinutes);
+        this.previewHeight = (newDuration / 60) * HOUR_HEIGHT_PX;
       } else if (this.dragMode === 'resize-top') {
-        // Expand/reduce start time
+        // Expand/reduce top edge (Anchored securely to the column)
         const originalDuration = differenceInMinutes(this.initialEventEnd, this.initialEventStart);
         const newDuration = Math.max(15, originalDuration - deltaMinutes);
         const durationDiff = originalDuration - newDuration;
@@ -121,7 +117,7 @@ class TimelineDragStore {
     const durationMinutes = (this.previewHeight / HOUR_HEIGHT_PX) * 60;
 
     let targetDate = this.targetDay;
-    if (this.previewDateKey) {
+    if (this.dragMode === 'move' && this.previewDateKey) {
       const [y, m, d] = this.previewDateKey.split('-').map(Number);
       targetDate = new Date(y, m - 1, d);
     }
@@ -132,12 +128,19 @@ class TimelineDragStore {
     const newStart = setMinutes(setHours(targetDate, startH), startM);
     const newEnd = addMinutes(newStart, durationMinutes);
 
-    eventStore.updateEvent({
+    const updatedEvent: CalendarEvent = {
       ...this.activeEvent,
       startTime: newStart.toISOString(),
       endTime: newEnd.toISOString(),
       updatedAt: new Date().toISOString()
-    });
+    };
+
+    // Prompt recurrence scope selector if event repeats
+    if (this.activeEvent.rrule && this.activeEvent.rrule !== 'none') {
+      contextMenuStore.promptRecurringAction('update', this.activeEvent, updatedEvent);
+    } else {
+      eventStore.updateEvent(updatedEvent);
+    }
   }
 }
 

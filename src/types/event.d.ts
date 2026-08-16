@@ -29,11 +29,11 @@ export interface CalendarEvent {
   endTime: string;   // ISO UTC string
   isAllDay: boolean;
   timeZone: string;
-  rrule?: string;    // 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly' | custom RFC5545
+  rrule?: string;    // 'none' | 'daily' | 'weekday' | 'weekly' | 'biweekly' | 'monthly_date' | 'monthly_day' | 'yearly'
   status: EventStatus;
   busyStatus: BusyStatus;
   visibility: Visibility;
-  reminders: string; // e.g. '10m', '30m', '1h', '1d'
+  reminders: string[]; // Multiple reminders array, e.g. ['10m', '1h', '1d']
   creatorEmail?: string;
   participants?: string[];
   attachments?: string[];
