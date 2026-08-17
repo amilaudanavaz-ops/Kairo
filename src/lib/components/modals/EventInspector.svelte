@@ -8,7 +8,7 @@
     startOfDay, 
     endOfDay, 
     getWeekOfMonth,
-    parse
+    addMinutes
   } from 'date-fns';
   import { 
     X, 
@@ -42,11 +42,9 @@
   import { dispatchEventReminder } from '../../utils/notifications';
   import type { CalendarEvent } from '../../../types/event';
 
-  // 1. Declare state variables first
   let draft = $state<CalendarEvent | null>(null);
   let initialEventSnapshot: CalendarEvent | null = null;
 
-  // 2. Derived reactive bindings
   let masterEvent = $derived(calendarState.selectedEvent);
   let activeCalendar = $derived(
     calendarState.calendars.find((c) => c.id === (draft?.calendarId || masterEvent?.calendarId)) || calendarState.calendars[0]
@@ -153,6 +151,7 @@
   let durationText = $derived.by(() => {
     if (!draft || draft.isAllDay) return '';
     const diff = differenceInMinutes(parseISO(draft.endTime), parseISO(draft.startTime));
+    if (diff < 0) return '0 min';
     if (diff < 60) return `${diff} min`;
     const hrs = Math.floor(diff / 60);
     const mins = diff % 60;
@@ -168,6 +167,51 @@
   function updateDraft<K extends keyof CalendarEvent>(field: K, value: CalendarEvent[K]) {
     if (!draft) return;
     draft = { ...draft, [field]: value, updatedAt: new Date().toISOString() };
+  }
+
+  function parseTime12h(timeStr: string): { hours: number; minutes: number } | null {
+    const clean = timeStr.trim().toUpperCase().replace(/\s+/g, ' ');
+    // Matches formats like "1:00 AM", "1:00AM", "1 AM", "01:00 AM"
+    const match = clean.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/);
+    if (!match) return null;
+    let h = parseInt(match[1], 10);
+    const m = match[2] ? parseInt(match[2], 10) : 0;
+    const period = match[3];
+    if (period === 'PM' && h < 12) h += 12;
+    if (period === 'AM' && h === 12) h = 0;
+    if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+    return { hours: h, minutes: m };
+  }
+
+  function applyCustomTime(isStart: boolean, timeStr: string) {
+    if (!draft) return;
+    const parsed = parseTime12h(timeStr);
+    if (!parsed) return;
+
+    const baseStart = parseISO(draft.startTime);
+    const baseEnd = parseISO(draft.endTime);
+    const currentDuration = Math.max(15, differenceInMinutes(baseEnd, baseStart));
+
+    if (isStart) {
+      const newStart = setMinutes(setHours(baseStart, parsed.hours), parsed.minutes);
+      const newEnd = addMinutes(newStart, currentDuration);
+      draft.startTime = newStart.toISOString();
+      draft.endTime = newEnd.toISOString();
+      startTimeInput = format(newStart, 'h:mm a');
+      endTimeInput = format(newEnd, 'h:mm a');
+    } else {
+      let newEnd = setMinutes(setHours(baseEnd, parsed.hours), parsed.minutes);
+      if (newEnd <= baseStart) {
+        newEnd = addMinutes(baseStart, 15);
+      }
+      draft.endTime = newEnd.toISOString();
+      endTimeInput = format(newEnd, 'h:mm a');
+    }
+  }
+
+  function selectPresetTime(isStart: boolean, preset: string) {
+    applyCustomTime(isStart, preset);
+    activeSideMenu = 'none';
   }
 
   function handleInspectorClose() {
@@ -220,29 +264,6 @@
     activeSideMenu = 'none';
     draft = null;
     initialEventSnapshot = null;
-  }
-
-  function applyCustomTime(isStart: boolean, timeStr: string) {
-    if (!draft) return;
-    try {
-      const parsed = parse(timeStr.trim().toUpperCase(), 'h:mm a', new Date());
-      if (!isNaN(parsed.getTime())) {
-        const baseDate = parseISO(isStart ? draft.startTime : draft.endTime);
-        const updated = setMinutes(setHours(baseDate, parsed.getHours()), parsed.getMinutes());
-        if (isStart) {
-          updateDraft('startTime', updated.toISOString());
-        } else {
-          updateDraft('endTime', updated.toISOString());
-        }
-      }
-    } catch (e) {
-      console.warn('Invalid time format', e);
-    }
-  }
-
-  function selectPresetTime(isStart: boolean, preset: string) {
-    applyCustomTime(isStart, preset);
-    activeSideMenu = 'none';
   }
 
   function toggleAllDay() {
@@ -322,7 +343,6 @@
 </script>
 
 {#if draft}
-  <!-- Global click-away backdrop for floating inspector -->
   {#if !calendarState.isInspectorDocked}
     <div
       class="fixed inset-0 z-40 bg-black/20"
@@ -331,7 +351,6 @@
     ></div>
   {/if}
 
-  <!-- Click-away backdrop for side menus -->
   {#if activeSideMenu !== 'none'}
     <div
       class="fixed inset-0 z-50 bg-transparent"
@@ -340,14 +359,12 @@
     ></div>
   {/if}
 
-  <!-- Notion 280px Compact Inspector Card -->
   <aside
     class="{calendarState.isInspectorDocked 
       ? 'w-[280px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-40 shrink-0 select-text relative' 
       : 'fixed z-50 w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
     style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
   >
-    <!-- Top Action Bar -->
     <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0 rounded-t-2xl bg-[#181818]">
       <div class="relative">
         <button 
@@ -666,6 +683,7 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
+      <!-- Description -->
       <div class="flex flex-col gap-1 text-xs shrink-0">
         <div class="flex items-center gap-1.5 text-zinc-400">
           <AlignLeft size={13} class="text-zinc-500" />
@@ -682,6 +700,7 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
+      <!-- Calendar Category & Notion Color Chip -->
       <button 
         onclick={() => activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'}
         class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
@@ -693,6 +712,7 @@
         <ChevronDown size={12} class="text-zinc-500 shrink-0" />
       </button>
 
+      <!-- Busy / Free & Visibility -->
       <div class="flex items-center justify-between text-xs text-zinc-300 shrink-0">
         <select
           value={draft.busyStatus}
@@ -714,6 +734,7 @@
         </select>
       </div>
 
+      <!-- Reminders -->
       <div class="flex flex-col gap-1 shrink-0">
         <button 
           onclick={() => activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'}

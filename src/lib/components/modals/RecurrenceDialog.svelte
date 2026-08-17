@@ -18,6 +18,7 @@
 
     if (pending.action === 'delete') {
       if (selectedScope === 'this' && occurrenceDate) {
+        // Exclude only this specific date from master series
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -25,12 +26,14 @@
           updatedAt: new Date().toISOString()
         });
       } else if (selectedScope === 'following' && occurrenceDate) {
+        // Cut off master series before this occurrence
         eventStore.updateEvent({
           ...master,
           untilDate: occurrenceDate,
           updatedAt: new Date().toISOString()
         });
       } else {
+        // Delete all events in this series
         eventStore.deleteEvent(master.id);
       }
 
@@ -39,7 +42,7 @@
       }
     } else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // Exclude occurrence from master series so it NEVER duplicates
+        // 1. Exclude this date from master series to prevent duplicates
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -47,7 +50,7 @@
           updatedAt: new Date().toISOString()
         });
 
-        // Create detached event
+        // 2. Create detached standalone event
         const detached = {
           ...updated,
           id: 'evt_' + Date.now(),
@@ -60,14 +63,14 @@
         };
         eventStore.addEvent(detached);
       } else if (selectedScope === 'following' && occurrenceDate) {
-        // Terminate old master series before this occurrence
+        // 1. Terminate old master series before this occurrence
         eventStore.updateEvent({
           ...master,
           untilDate: occurrenceDate,
           updatedAt: new Date().toISOString()
         });
 
-        // Create new series starting at this occurrence
+        // 2. Create new series starting at this occurrence
         const newSeries = {
           ...updated,
           id: 'evt_' + Date.now(),
@@ -79,7 +82,7 @@
         };
         eventStore.addEvent(newSeries);
       } else {
-        // Update All events: shift origin date and time across the entire series
+        // Option 3: Update "All events" (shifts origin date and time across the entire series)
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
         const duration = differenceInMinutes(newEnd, newStart);
@@ -151,7 +154,6 @@
         </label>
       </div>
 
-      <!-- Pending Changes Diff Section -->
       {#if pending.diffs && pending.diffs.length > 0}
         <div class="border-t border-[#2a2a2a] pt-3 flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs text-zinc-400 font-medium">
