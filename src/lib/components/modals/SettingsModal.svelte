@@ -8,44 +8,23 @@
     Video, 
     Plus, 
     Check, 
-    Trash2, 
     RefreshCw,
     Volume2,
-    MoreHorizontal,
-    ExternalLink,
-    ChevronRight,
-    Square,
-    Eye
+    MoreHorizontal
   } from 'lucide-svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
+  import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
 
   let localPreferredName = $state('');
   let localUsername = $state('');
   let isSavedMessage = $state(false);
   let isSyncing = $state(false);
 
-  // Calendar inline action menu popup state
-  let activeCalendarMenuId = $state<string | null>(null);
-  let showColorSubmenuId = $state<string | null>(null);
-
   $effect(() => {
     localPreferredName = settingsStore.preferredName;
     localUsername = settingsStore.username;
   });
-
-  const calendarPalette = [
-    { name: 'Blue', hex: '#3b82f6' },
-    { name: 'Tangerine', hex: '#f4511e' },
-    { name: 'Red', hex: '#d50000' },
-    { name: 'Banana', hex: '#f6bf26' },
-    { name: 'Basil', hex: '#0b8043' },
-    { name: 'Peacock', hex: '#039be5' },
-    { name: 'Graphite', hex: '#616161' },
-    { name: 'Grape', hex: '#8e24aa' },
-    { name: 'Flamingo', hex: '#e67c73' },
-    { name: 'Sage', hex: '#33b679' }
-  ];
 
   async function triggerGoogleSync() {
     isSyncing = true;
@@ -89,7 +68,7 @@
       osc.start();
       osc.stop(audioCtx.currentTime + 0.35);
     } catch (e) {
-      console.warn('AudioContext not allowed:', e);
+      console.warn('AudioContext permission required:', e);
     }
   }
 
@@ -114,26 +93,20 @@
       }
     }
   }
-
-  function openGoogleCalendarWebSettings(calName: string, gCalId?: string) {
-    const encodedId = encodeURIComponent(gCalId || calName);
-    window.open(`https://calendar.google.com/calendar/u/0/r/settings/calendar/${encodedId}`, '_blank');
-    activeCalendarMenuId = null;
-  }
 </script>
 
 {#if settingsStore.isOpen}
   <div 
     class="fixed inset-0 z-[150] bg-black/75 backdrop-blur-[2px] flex items-center justify-center select-none"
-    onclick={() => { settingsStore.close(); activeCalendarMenuId = null; }}
+    onclick={() => settingsStore.close()}
     role="presentation"
   >
     <div 
       class="w-[780px] h-[540px] bg-[#191919] border border-[#2b2b2b] rounded-2xl shadow-[0_24px_70px_rgba(0,0,0,0.95)] flex overflow-hidden text-zinc-200 animate-in fade-in zoom-in-95 duration-150"
-      onclick={(e) => { e.stopPropagation(); activeCalendarMenuId = null; }}
+      onclick={(e) => e.stopPropagation()}
       role="dialog"
     >
-      <!-- Left Sidebar Navigation -->
+      <!-- Left Navigation -->
       <aside class="w-56 bg-[#141414] border-r border-[#242424] p-3.5 flex flex-col justify-between shrink-0">
         <div class="flex flex-col gap-4">
           <div class="flex flex-col gap-0.5">
@@ -217,7 +190,7 @@
         <div class="text-[10px] text-zinc-600 px-2">Kairo v1.0 • Desktop Native</div>
       </aside>
 
-      <!-- Main Content Area -->
+      <!-- Content Area -->
       <main class="flex-1 flex flex-col h-full bg-[#181818] relative overflow-hidden">
         <button 
           onclick={() => settingsStore.close()}
@@ -228,7 +201,7 @@
 
         <div class="flex-1 overflow-y-auto px-8 py-6 flex flex-col gap-6 custom-scrollbar text-xs">
           
-          <!-- 1. DEDICATED GOOGLE CALENDAR ACCOUNT VIEW -->
+          <!-- 1. GOOGLE CALENDAR ACCOUNT VIEW -->
           {#if settingsStore.activeTab === 'accounts'}
             {@const primaryAccount = settingsStore.accounts.find(a => a.isPrimary) || settingsStore.accounts[0]}
             <div class="flex flex-col gap-5">
@@ -294,13 +267,16 @@
                 <span class="text-zinc-500 text-xs">No meetings</span>
               </div>
 
-              <!-- Calendars List with Actions Menu -->
+              <!-- Calendars List (Three-dots trigger ContextMenu directly) -->
               <div class="flex flex-col gap-2 pt-2">
                 <span class="text-xs font-bold text-zinc-400">Calendars</span>
 
                 <div class="flex flex-col gap-1 bg-[#151515] p-2 rounded-xl border border-[#242424]">
                   {#each calendarState.calendars as cal (cal.id)}
-                    <div class="flex items-center justify-between p-2 rounded-lg hover:bg-[#202020] transition-colors group relative">
+                    <div 
+                      oncontextmenu={(e) => contextMenuStore.openForCalendar(e, cal)}
+                      class="flex items-center justify-between p-2 rounded-lg hover:bg-[#202020] transition-colors group"
+                    >
                       <div class="flex items-center gap-2.5 truncate">
                         <span class="w-3 h-3 rounded-full shrink-0 shadow-sm" style="background-color: {cal.colorHex};"></span>
                         <span class="font-medium text-zinc-200 truncate">{cal.name}</span>
@@ -311,119 +287,13 @@
                         {/if}
                       </div>
 
-                      <!-- Three-Dots Action Button -->
-                      <div class="relative">
-                        <button 
-                          onclick={(e) => {
-                            e.stopPropagation();
-                            activeCalendarMenuId = activeCalendarMenuId === cal.id ? null : cal.id;
-                            showColorSubmenuId = null;
-                          }}
-                          class="p-1 rounded text-zinc-500 hover:text-white hover:bg-[#2b2b2b] transition-colors cursor-pointer"
-                        >
-                          <MoreHorizontal size={14} />
-                        </button>
-
-                        <!-- Contextual Dropdown Menu -->
-                        {#if activeCalendarMenuId === cal.id}
-                          <div 
-                            class="absolute right-0 top-full mt-1 w-56 bg-[#1f1f1f] border border-[#2e2e2e] rounded-xl shadow-2xl p-1 z-50 flex flex-col gap-0.5 text-xs animate-in fade-in zoom-in-95 duration-100"
-                            onclick={(e) => e.stopPropagation()}
-                            role="menu"
-                            tabindex="0"
-                          >
-                            <!-- Color Submenu Trigger -->
-                            <div 
-                              class="relative"
-                              onmouseenter={() => showColorSubmenuId = cal.id}
-                              onmouseleave={() => showColorSubmenuId = null}
-                            >
-                              <button class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#282828] text-zinc-200 text-left transition-colors cursor-pointer">
-                                <div class="flex items-center gap-2">
-                                  <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: {cal.colorHex};"></span>
-                                  <span>Color</span>
-                                </div>
-                                <ChevronRight size={13} class="text-zinc-500" />
-                              </button>
-
-                              {#if showColorSubmenuId === cal.id}
-                                <div class="absolute left-full top-0 ml-1 w-36 bg-[#1f1f1f] border border-[#2e2e2e] rounded-xl shadow-2xl p-1 z-50 flex flex-col gap-0.5">
-                                  {#each calendarPalette as color}
-                                    <button
-                                      onclick={() => {
-                                        calendarState.updateCalendarColor(cal.id, color.hex);
-                                        activeCalendarMenuId = null;
-                                      }}
-                                      class="flex items-center justify-between px-2 py-1 rounded hover:bg-[#282828] text-[11px] transition-colors cursor-pointer"
-                                    >
-                                      <div class="flex items-center gap-2">
-                                        <span class="w-2.5 h-2.5 rounded-full" style="background-color: {color.hex};"></span>
-                                        <span>{color.name}</span>
-                                      </div>
-                                      {#if cal.colorHex.toLowerCase() === color.hex.toLowerCase()}
-                                        <Check size={11} class="text-blue-400" />
-                                      {/if}
-                                    </button>
-                                  {/each}
-                                </div>
-                              {/if}
-                            </div>
-
-                            <!-- Make Default -->
-                            <button
-                              onclick={() => {
-                                if (!cal.isPrimary) {
-                                  calendarState.setDefaultCalendar(cal.id);
-                                  activeCalendarMenuId = null;
-                                }
-                              }}
-                              disabled={cal.isPrimary}
-                              class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left transition-colors
-                                {cal.isPrimary ? 'text-zinc-600 cursor-not-allowed' : 'text-zinc-200 hover:bg-[#282828] cursor-pointer'}"
-                            >
-                              <Square size={13} />
-                              <span>Make default calendar</span>
-                            </button>
-
-                            <!-- Show Only This Calendar -->
-                            <button
-                              onclick={() => {
-                                calendarState.showOnlyCalendar(cal.id);
-                                activeCalendarMenuId = null;
-                              }}
-                              class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-200 hover:bg-[#282828] text-left transition-colors cursor-pointer"
-                            >
-                              <Eye size={13} />
-                              <span>Show only this calendar</span>
-                            </button>
-
-                            <div class="h-px bg-[#282828] my-0.5"></div>
-
-                            <!-- Google Calendar Web Settings -->
-                            <button
-                              onclick={() => openGoogleCalendarWebSettings(cal.name, cal.googleCalendarId)}
-                              class="flex items-center justify-between px-2.5 py-1.5 rounded-lg text-zinc-200 hover:bg-[#282828] text-left transition-colors cursor-pointer"
-                            >
-                              <span>Google Calendar settings</span>
-                              <ExternalLink size={12} class="text-zinc-500" />
-                            </button>
-
-                            <div class="h-px bg-[#282828] my-0.5"></div>
-
-                            <!-- Remove Calendar -->
-                            <button
-                              onclick={() => {
-                                calendarState.removeCalendar(cal.id);
-                                activeCalendarMenuId = null;
-                              }}
-                              class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-rose-400 hover:bg-rose-950/40 text-left transition-colors cursor-pointer"
-                            >
-                              <Trash2 size={13} />
-                              <span>Remove calendar from list</span>
-                            </button>
-                          </div>
-                        {/if}
-                      </div>
+                      <button 
+                        onclick={(e) => contextMenuStore.openForCalendar(e, cal)}
+                        class="p-1 rounded text-zinc-500 hover:text-white hover:bg-[#2b2b2b] transition-colors cursor-pointer"
+                        title="Calendar options"
+                      >
+                        <MoreHorizontal size={14} />
+                      </button>
                     </div>
                   {/each}
                 </div>

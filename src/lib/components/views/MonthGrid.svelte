@@ -6,10 +6,8 @@
   import { dragStore } from '../../stores/dragStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
-  import { generateMonthGrid, getEventsForDay } from '../../utils/dateMath';
+  import { generateMonthGrid } from '../../utils/dateMath';
   import type { CalendarEvent } from '../../../types/event';
-
-  const baseWeekDays = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
   let activeWeekDays = $derived.by(() => {
     let days = settingsStore.startWeekOn === 'Monday'
@@ -24,7 +22,10 @@
 
   const MAX_VISIBLE_EVENTS = 3;
 
-  let rawGridCells = $derived(generateMonthGrid(calendarState.currentDate));
+  let rawGridCells = $derived.by(() => {
+    const weekStartsOn = settingsStore.startWeekOn === 'Monday' ? 1 : 0;
+    return generateMonthGrid(calendarState.currentDate, weekStartsOn, 5);
+  });
   
   let gridCells = $derived.by(() => {
     if (settingsStore.showWeekends) return rawGridCells;
@@ -49,7 +50,7 @@
 
   function formatDisplayTime(isoString: string): string {
     const d = parseISO(isoString);
-    return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mmaaa');
+    return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mmaaa').toLowerCase();
   }
 
   function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
@@ -107,20 +108,22 @@
     calendarState.openOverflow(day, dayEvents, rect);
   }
 
-  // Continuous Rolling Scroll by 1-Week Row Increments (Notion-style)
-  let wheelLock = false;
+  // Smooth, Debounced 1-Row (1-Week) Rolling Stepper
+  let isScrolling = false;
   function handleWheel(e: WheelEvent) {
-    if (wheelLock) return;
-    if (Math.abs(e.deltaY) > 20) {
-      wheelLock = true;
-      if (e.deltaY > 0) {
-        calendarState.setDate(addWeeks(calendarState.currentDate, 1));
-      } else {
-        calendarState.setDate(subWeeks(calendarState.currentDate, 1));
-      }
-      setTimeout(() => {
-        wheelLock = false;
-      }, 100);
+    if (isScrolling) return;
+    if (Math.abs(e.deltaY) > 18) {
+      isScrolling = true;
+      requestAnimationFrame(() => {
+        if (e.deltaY > 0) {
+          calendarState.setDate(addWeeks(calendarState.currentDate, 1));
+        } else {
+          calendarState.setDate(subWeeks(calendarState.currentDate, 1));
+        }
+        setTimeout(() => {
+          isScrolling = false;
+        }, 70);
+      });
     }
   }
 </script>
@@ -129,7 +132,6 @@
   onwheel={handleWheel}
   class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden"
 >
-  <!-- Weekday Header -->
   <div 
     class="grid border-b border-[#242424] bg-[#141414] shrink-0"
     style="grid-template-columns: repeat({colsCount}, minmax(0, 1fr));"
@@ -141,13 +143,12 @@
     {/each}
   </div>
 
-  <!-- Continuous Rolling Month Grid -->
   <div 
     class="flex-1 grid gap-[1px] bg-[#1e1e1e] overflow-hidden no-scrollbar"
     style="grid-template-columns: repeat({colsCount}, minmax(0, 1fr)); grid-template-rows: repeat({totalWeeks}, minmax(0, 1fr));"
   >
     {#each gridCells as cell, i (cell.dateKey)}
-      {@const allDayEvents = getEventsForDay(eventStore.events, cell.date).filter(e => isCalendarVisible(e.calendarId))}
+      {@const allDayEvents = eventStore.getEventsForDateKey(cell.dateKey).filter(e => isCalendarVisible(e.calendarId))}
       {@const visibleEvents = allDayEvents.slice(0, MAX_VISIBLE_EVENTS)}
       {@const overflowCount = allDayEvents.length - MAX_VISIBLE_EVENTS}
       {@const isHighlighted = dragStore.hoveredDateKey === cell.dateKey}
@@ -182,7 +183,6 @@
             {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === cell.dateKey}
             {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
 
-            <!-- 1. All-Day Event Banner (No clashing blue gradients) -->
             {#if event.isAllDay}
               <div
                 data-calendar-event="true"
@@ -200,7 +200,6 @@
                 <span class="truncate pointer-events-none">{event.title || '(No Title)'}</span>
               </div>
             
-            <!-- 2. Timed Event Item (Neutral highlight with event's genuine accent) -->
             {:else}
               <div
                 data-calendar-event="true"
@@ -209,7 +208,7 @@
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
                 class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all
                   {isSelected 
-                    ? 'ring-1 ring-white shadow-lg bg-[#252525]' 
+                    ? 'ring-1 ring-white shadow-lg bg-[#242424]' 
                     : 'bg-[#181818]/95 hover:bg-[#222222] border-[#262626]' }
                   {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
                 style="border-color: {isSelected ? token.hex : '#262626'};"

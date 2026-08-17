@@ -14,7 +14,7 @@
   } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
-  import { format } from 'date-fns';
+  import { format, addWeeks } from 'date-fns';
 
   const appWindow = getCurrentWindow();
   let isProfileMenuOpen = $state(false);
@@ -30,6 +30,15 @@
     return () => {
       window.removeEventListener('pointerdown', handleOutsideClick);
     };
+  });
+
+  // Calculate dominant header title based on middle visible week row in rolling month view
+  let headerTitle = $derived.by(() => {
+    if (calendarState.viewMode === 'month') {
+      const dominantDate = addWeeks(calendarState.currentDate, 2);
+      return format(dominantDate, 'MMMM yyyy');
+    }
+    return format(calendarState.currentDate, 'MMMM yyyy');
   });
 
   function minimize() {
@@ -49,7 +58,6 @@
   data-tauri-drag-region 
   class="h-11 bg-[#161616] border-b border-[#242424] flex items-center justify-between px-3 select-none shrink-0 z-50 relative"
 >
-  <!-- Left Controls -->
   <div class="flex items-center gap-2">
     <button 
       onclick={() => calendarState.toggleSidebar()}
@@ -85,11 +93,10 @@
     </button>
 
     <span class="text-xs font-bold text-zinc-100 ml-2 tracking-tight">
-      {format(calendarState.currentDate, 'MMMM yyyy')}
+      {headerTitle}
     </span>
   </div>
 
-  <!-- Center View Switcher -->
   <div class="flex items-center bg-[#1f1f1f] p-0.5 rounded-lg border border-[#2b2b2b]">
     <button
       onclick={() => calendarState.setViewMode('day')}
@@ -116,9 +123,7 @@
     </button>
   </div>
 
-  <!-- Right: Profile Button with Notion-Style Dropdown & Window Controls -->
   <div class="flex items-center gap-3">
-    <!-- Profile Avatar Dropdown Trigger -->
     <div class="relative" bind:this={menuContainer}>
       <button
         onclick={() => isProfileMenuOpen = !isProfileMenuOpen}
@@ -129,18 +134,15 @@
         </div>
       </button>
 
-      <!-- Profile Dropdown Menu -->
       {#if isProfileMenuOpen}
         <div 
           class="absolute right-0 top-full mt-2 w-64 bg-[#1e1e1e] border border-[#2e2e2e] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.9)] p-1.5 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100"
         >
-          <!-- User info header -->
           <div class="flex flex-col px-3 py-2 border-b border-[#282828] mb-0.5">
             <span class="text-xs font-bold text-zinc-100">{settingsStore.preferredName || 'User'}</span>
             <span class="text-[11px] text-zinc-400 truncate">{settingsStore.email || 'Not connected'}</span>
           </div>
 
-          <!-- Command Menu Item (Opens Command Palette) -->
           <button
             onclick={() => { 
               settingsStore.openCommandMenu(); 
@@ -155,7 +157,6 @@
             <span class="text-[10px] text-zinc-500 font-mono">Ctrl K</span>
           </button>
 
-          <!-- Settings Item -->
           <button
             onclick={() => { 
               settingsStore.open('general'); 
@@ -170,7 +171,6 @@
             <span class="text-[10px] text-zinc-500 font-mono">Ctrl ,</span>
           </button>
 
-          <!-- Manage Calendar Accounts -->
           <button
             onclick={() => { 
               settingsStore.open('accounts'); 
@@ -184,7 +184,6 @@
 
           <div class="h-px bg-[#282828] my-0.5"></div>
 
-          <!-- Log Out Option -->
           <button
             onclick={() => { 
               settingsStore.logout(); 
@@ -201,7 +200,6 @@
 
     <div class="h-4 w-px bg-[#2a2a2a]"></div>
 
-    <!-- Window Controls -->
     <div class="flex items-center gap-0.5">
       <button 
         onclick={minimize}

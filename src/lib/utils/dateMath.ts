@@ -13,7 +13,8 @@ import {
   differenceInWeeks,
   getWeekOfMonth,
   differenceInMinutes,
-  addMinutes
+  addMinutes,
+  addDays
 } from 'date-fns';
 import type { CalendarEvent } from '../../types/event';
 
@@ -32,8 +33,7 @@ export interface RecurrenceDisplay {
 
 /**
  * Standard RFC 5545 RRULE Parser & Formatter.
- * Translates raw Google RRULE definitions (e.g. FREQ=MONTHLY;BYDAY=3SA, FREQ=WEEKLY;BYDAY=TU)
- * into precise Notion-style labels.
+ * Translates raw Google RRULE definitions into Notion-style labels.
  */
 export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): RecurrenceDisplay {
   if (!rruleStr || rruleStr === 'none') {
@@ -103,17 +103,25 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
   return { id: clean, label: 'Repeats (Recurring Series)' };
 }
 
-export function generateMonthGrid(activeDate: Date): DayCell[] {
-  const monthStart = startOfMonth(activeDate);
-  const monthEnd = endOfMonth(monthStart);
-  const calendarStart = startOfWeek(monthStart, { weekStartsOn: 0 });
-  const calendarEnd = endOfWeek(monthEnd, { weekStartsOn: 0 });
+/**
+ * Continuous Rolling Week Month Grid Generator.
+ * Generates a rolling 5-week window anchored to the start of the week.
+ */
+export function generateMonthGrid(
+  activeDate: Date, 
+  weekStartsOn: 0 | 1 = 0, 
+  numWeeks: number = 5
+): DayCell[] {
+  const gridStart = startOfWeek(activeDate, { weekStartsOn });
+  const gridEnd = addDays(gridStart, numWeeks * 7 - 1);
+  const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
 
-  const days = eachDayOfInterval({ start: calendarStart, end: calendarEnd });
+  // Dominant month is calculated from the middle visible row (Row 3)
+  const middleRowDate = addDays(gridStart, 17);
 
   return days.map((date) => ({
     date,
-    isCurrentMonth: isSameMonth(date, activeDate),
+    isCurrentMonth: isSameMonth(date, middleRowDate),
     isCurrentDay: isToday(date),
     dateKey: format(date, 'yyyy-MM-dd')
   }));
@@ -130,21 +138,16 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
   const endDayStart = new Date(end.getFullYear(), end.getMonth(), end.getDate());
   const targetDateKey = format(targetDay, 'yyyy-MM-dd');
 
-  // 1. Cannot occur before its origin start date
   if (targetDayStart < eventDayStart) return false;
 
-  // 2. Suppress date if explicitly excluded
   if (event.exdates && event.exdates.includes(targetDateKey)) {
     return false;
   }
 
-  // 3. Suppress date if past termination cutoff
   if (event.untilDate && targetDateKey >= event.untilDate) {
     return false;
   }
 
-  // 4. If this is a concrete synced Google instance (or standalone non-recurring event),
-  // only show it on its actual scheduled day/range to avoid artificial duplication.
   if (event.recurringEventId || event.googleEventId || !event.rrule || event.rrule === 'none') {
     if (event.isAllDay) {
       return targetDayStart >= eventDayStart && targetDayStart <= endDayStart;
@@ -152,7 +155,6 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
     return isSameDay(start, targetDay);
   }
 
-  // 5. Local app-created recurring series projection
   if (event.rrule === 'daily') return true;
 
   if (event.rrule === 'weekday') {
