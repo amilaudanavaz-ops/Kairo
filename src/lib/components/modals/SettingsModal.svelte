@@ -10,7 +10,8 @@
     Check, 
     Trash2, 
     RefreshCw,
-    ShieldCheck
+    Volume2,
+    Lock
   } from 'lucide-svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
 
@@ -20,14 +21,64 @@
   let isSyncing = $state(false);
   let profileSavedMessage = $state(false);
 
+  // Play synthetic test notification sound without external audio files
+  function playTestSound() {
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+      osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.15); // A5
+
+      gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.35);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.35);
+    } catch (e) {
+      console.warn('AudioContext not permitted yet:', e);
+    }
+  }
+
+  // Request system notification permissions
+  async function testDesktopNotification() {
+    if (settingsStore.playNotificationSound) {
+      playTestSound();
+    }
+    if ('Notification' in window) {
+      if (Notification.permission === 'granted') {
+        new Notification('Kairo Reminder', {
+          body: 'This is a test notification for upcoming calendar meetings.',
+          icon: '/favicon.png'
+        });
+      } else if (Notification.permission !== 'denied') {
+        const perm = await Notification.requestPermission();
+        if (perm === 'granted') {
+          new Notification('Kairo Reminder', {
+            body: 'Desktop notifications enabled successfully!',
+            icon: '/favicon.png'
+          });
+        }
+      }
+    }
+  }
+
   function triggerGoogleSync() {
     isSyncing = true;
     setTimeout(() => {
       isSyncing = false;
-    }, 1200);
+    }, 1000);
   }
 
   function handleSaveProfile() {
+    settingsStore.updateSetting('preferredName', settingsStore.preferredName);
+    settingsStore.updateSetting('username', settingsStore.username);
+    settingsStore.updateSetting('email', settingsStore.email);
     profileSavedMessage = true;
     setTimeout(() => {
       profileSavedMessage = false;
@@ -37,7 +88,7 @@
 
 {#if settingsStore.isOpen}
   <div 
-    class="fixed inset-0 z-[150] bg-black/70 backdrop-blur-[2px] flex items-center justify-center select-none"
+    class="fixed inset-0 z-[150] bg-black/75 backdrop-blur-[2px] flex items-center justify-center select-none"
     onclick={() => settingsStore.close()}
     role="presentation"
   >
@@ -154,17 +205,32 @@
               <div class="flex flex-col gap-3">
                 <label class="flex items-center justify-between cursor-pointer">
                   <span class="text-zinc-300">Show weekends</span>
-                  <input type="checkbox" bind:checked={settingsStore.showWeekends} class="toggle-checkbox" />
+                  <input 
+                    type="checkbox" 
+                    bind:checked={settingsStore.showWeekends} 
+                    onchange={() => settingsStore.updateSetting('showWeekends', String(settingsStore.showWeekends))}
+                    class="toggle-checkbox" 
+                  />
                 </label>
 
                 <label class="flex items-center justify-between cursor-pointer">
                   <span class="text-zinc-300">Show declined events</span>
-                  <input type="checkbox" bind:checked={settingsStore.showDeclinedEvents} class="toggle-checkbox" />
+                  <input 
+                    type="checkbox" 
+                    bind:checked={settingsStore.showDeclinedEvents} 
+                    onchange={() => settingsStore.updateSetting('showDeclinedEvents', String(settingsStore.showDeclinedEvents))}
+                    class="toggle-checkbox" 
+                  />
                 </label>
 
                 <label class="flex items-center justify-between cursor-pointer">
                   <span class="text-zinc-300">Show week numbers</span>
-                  <input type="checkbox" bind:checked={settingsStore.showWeekNumbers} class="toggle-checkbox" />
+                  <input 
+                    type="checkbox" 
+                    bind:checked={settingsStore.showWeekNumbers} 
+                    onchange={() => settingsStore.updateSetting('showWeekNumbers', String(settingsStore.showWeekNumbers))}
+                    class="toggle-checkbox" 
+                  />
                 </label>
               </div>
 
@@ -172,6 +238,7 @@
                 <span class="text-zinc-400">Start week on:</span>
                 <select 
                   bind:value={settingsStore.startWeekOn}
+                  onchange={() => settingsStore.updateSetting('startWeekOn', settingsStore.startWeekOn)}
                   class="w-48 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
                 >
                   <option value="Sunday">Sunday</option>
@@ -187,6 +254,7 @@
                   <span class="text-zinc-400">Language:</span>
                   <select 
                     bind:value={settingsStore.language}
+                    onchange={() => settingsStore.updateSetting('language', settingsStore.language)}
                     class="w-40 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
                   >
                     <option value="English">English</option>
@@ -200,6 +268,7 @@
                   <span class="text-zinc-400">Time format:</span>
                   <select 
                     bind:value={settingsStore.timeFormat}
+                    onchange={() => settingsStore.updateSetting('timeFormat', settingsStore.timeFormat)}
                     class="w-48 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
                   >
                     <option value="12h">12-hour (5:16 PM)</option>
@@ -212,15 +281,15 @@
                 <span class="text-sm font-bold text-zinc-100">Theme</span>
                 <div class="flex items-center gap-6">
                   <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" value="auto" bind:group={settingsStore.theme} class="accent-blue-500" />
+                    <input type="radio" value="auto" bind:group={settingsStore.theme} onchange={() => settingsStore.applyTheme('auto')} class="accent-blue-500" />
                     <span>System</span>
                   </label>
                   <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" value="light" bind:group={settingsStore.theme} class="accent-blue-500" />
+                    <input type="radio" value="light" bind:group={settingsStore.theme} onchange={() => settingsStore.applyTheme('light')} class="accent-blue-500" />
                     <span>Light</span>
                   </label>
                   <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" value="dark" bind:group={settingsStore.theme} class="accent-blue-500" />
+                    <input type="radio" value="dark" bind:group={settingsStore.theme} onchange={() => settingsStore.applyTheme('dark')} class="accent-blue-500" />
                     <span>Dark</span>
                   </label>
                 </div>
@@ -274,14 +343,14 @@
                 </button>
                 {#if profileSavedMessage}
                   <span class="text-emerald-400 text-xs flex items-center gap-1 font-semibold animate-in fade-in">
-                    <Check size={13} /> Saved!
+                    <Check size={13} /> Saved to Database!
                   </span>
                 {/if}
               </div>
             </div>
           {/if}
 
-          <!-- 3. NOTIFICATIONS TAB -->
+          <!-- 3. NOTIFICATIONS TAB WITH REAL SOUND TEST -->
           {#if settingsStore.activeTab === 'notifications'}
             <div class="flex flex-col gap-5">
               <h2 class="text-sm font-bold text-zinc-100">Event Notifications</h2>
@@ -292,30 +361,51 @@
                     <span class="text-zinc-200 font-medium">Desktop Notifications</span>
                     <p class="text-[11px] text-zinc-500">Show system banner alerts before events</p>
                   </div>
-                  <input type="checkbox" bind:checked={settingsStore.notificationsEnabled} class="toggle-checkbox" />
+                  <input 
+                    type="checkbox" 
+                    bind:checked={settingsStore.notificationsEnabled} 
+                    onchange={() => settingsStore.updateSetting('notificationsEnabled', String(settingsStore.notificationsEnabled))}
+                    class="toggle-checkbox" 
+                  />
                 </label>
 
                 <label class="flex items-center justify-between cursor-pointer">
                   <div>
                     <span class="text-zinc-200 font-medium">Play Alert Sound</span>
-                    <p class="text-[11px] text-zinc-500">Play an audio cue when a reminder triggers</p>
+                    <p class="text-[11px] text-zinc-500">Play an audio chime when a reminder triggers</p>
                   </div>
-                  <input type="checkbox" bind:checked={settingsStore.playNotificationSound} class="toggle-checkbox" />
+                  <input 
+                    type="checkbox" 
+                    bind:checked={settingsStore.playNotificationSound} 
+                    onchange={() => settingsStore.updateSetting('playNotificationSound', String(settingsStore.playNotificationSound))}
+                    class="toggle-checkbox" 
+                  />
                 </label>
               </div>
 
-              <div class="flex flex-col gap-1.5">
-                <span class="text-zinc-400">Default Reminder Offset:</span>
-                <select 
-                  bind:value={settingsStore.defaultReminderOffset}
-                  class="w-44 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
+              <div class="flex items-center justify-between">
+                <div class="flex flex-col gap-1">
+                  <span class="text-zinc-400">Default Reminder Offset:</span>
+                  <select 
+                    bind:value={settingsStore.defaultReminderOffset}
+                    onchange={() => settingsStore.updateSetting('defaultReminderOffset', settingsStore.defaultReminderOffset)}
+                    class="w-44 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
+                  >
+                    <option value="5m">5 minutes before</option>
+                    <option value="10m">10 minutes before</option>
+                    <option value="15m">15 minutes before</option>
+                    <option value="30m">30 minutes before</option>
+                    <option value="1h">1 hour before</option>
+                  </select>
+                </div>
+
+                <button
+                  onclick={testDesktopNotification}
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#242424] hover:bg-[#2c2c2c] border border-[#2f2f2f] text-xs font-semibold text-zinc-200 cursor-pointer"
                 >
-                  <option value="5m">5 minutes before</option>
-                  <option value="10m">10 minutes before</option>
-                  <option value="15m">15 minutes before</option>
-                  <option value="30m">30 minutes before</option>
-                  <option value="1h">1 hour before</option>
-                </select>
+                  <Volume2 size={13} />
+                  <span>Test Notification & Sound</span>
+                </button>
               </div>
             </div>
           {/if}
@@ -328,7 +418,12 @@
                   <h2 class="text-sm font-bold text-zinc-100">Menu Bar Widget</h2>
                   <p class="text-[11px] text-zinc-400 mt-0.5">Displays upcoming schedule in the desktop system tray.</p>
                 </div>
-                <input type="checkbox" bind:checked={settingsStore.menuBarEnabled} class="toggle-checkbox" />
+                <input 
+                  type="checkbox" 
+                  bind:checked={settingsStore.menuBarEnabled} 
+                  onchange={() => settingsStore.updateSetting('menuBarEnabled', String(settingsStore.menuBarEnabled))}
+                  class="toggle-checkbox" 
+                />
               </div>
 
               <div class="flex flex-col gap-1.5">
@@ -357,15 +452,15 @@
             </div>
           {/if}
 
-          <!-- 5. CONFERENCING TAB -->
+          <!-- 5. CONFERENCING TAB WITH REAL PMI ZOOM CONFIG -->
           {#if settingsStore.activeTab === 'conferencing'}
             <div class="flex flex-col gap-5">
               <div>
                 <h2 class="text-sm font-bold text-zinc-100">Video Conferencing</h2>
-                <p class="text-[11px] text-zinc-400 mt-0.5">Select your default conferencing provider for 1-click meeting creation.</p>
+                <p class="text-[11px] text-zinc-400 mt-0.5">Select your default conferencing provider and configure personal links.</p>
               </div>
 
-              <div class="flex flex-col gap-2">
+              <div class="flex flex-col gap-3">
                 <!-- Google Meet -->
                 <div class="flex items-center justify-between p-3.5 rounded-xl bg-[#222222] border border-[#2c2c2c]">
                   <div class="flex items-center gap-3">
@@ -375,31 +470,54 @@
                     </svg>
                     <div class="flex flex-col">
                       <span class="font-semibold text-zinc-200">Google Meet</span>
-                      <span class="text-[10px] text-zinc-500">Creates meeting links via Google Calendar</span>
+                      <span class="text-[10px] text-zinc-500">Auto-generates Google Meet links via Google Calendar</span>
                     </div>
                   </div>
-                  <span class="text-blue-400 font-semibold text-xs flex items-center gap-1.5">
-                    <Check size={13} /> Default
-                  </span>
+                  <button
+                    onclick={() => {
+                      settingsStore.defaultConferencing = 'google_meet';
+                      settingsStore.updateSetting('defaultConferencing', 'google_meet');
+                    }}
+                    class="px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer transition-colors
+                      {settingsStore.defaultConferencing === 'google_meet' ? 'bg-blue-600 text-white' : 'bg-[#2a2a2a] text-zinc-300 hover:text-white'}"
+                  >
+                    {settingsStore.defaultConferencing === 'google_meet' ? 'Default' : 'Set as Default'}
+                  </button>
                 </div>
 
-                <!-- Zoom -->
-                <div class="flex items-center justify-between p-3.5 rounded-xl bg-[#222222] border border-[#2c2c2c]">
-                  <div class="flex items-center gap-3">
-                    <svg class="w-5 h-5" viewBox="0 0 24 24">
-                      <path fill="#2D8CFF" d="M4.5 4h10c1.38 0 2.5 1.12 2.5 2.5v7c0 1.38-1.12 2.5-2.5 2.5h-10A2.5 2.5 0 0 1 2 13.5v-7C2 5.12 3.12 4 4.5 4zm14.5 3.5 4-2.5v12l-4-2.5v-7z"/>
-                    </svg>
-                    <div class="flex flex-col">
-                      <span class="font-semibold text-zinc-200">Zoom Meetings</span>
-                      <span class="text-[10px] text-zinc-500">Attach Zoom meeting URLs to new calendar items</span>
+                <!-- Zoom with real PMI Input -->
+                <div class="flex flex-col gap-2 p-3.5 rounded-xl bg-[#222222] border border-[#2c2c2c]">
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                      <svg class="w-5 h-5" viewBox="0 0 24 24">
+                        <path fill="#2D8CFF" d="M4.5 4h10c1.38 0 2.5 1.12 2.5 2.5v7c0 1.38-1.12 2.5-2.5 2.5h-10A2.5 2.5 0 0 1 2 13.5v-7C2 5.12 3.12 4 4.5 4zm14.5 3.5 4-2.5v12l-4-2.5v-7z"/>
+                      </svg>
+                      <div class="flex flex-col">
+                        <span class="font-semibold text-zinc-200">Zoom Meetings</span>
+                        <span class="text-[10px] text-zinc-500">Configure your personal Zoom meeting ID link</span>
+                      </div>
                     </div>
+                    <button
+                      onclick={() => {
+                        settingsStore.defaultConferencing = 'zoom';
+                        settingsStore.updateSetting('defaultConferencing', 'zoom');
+                      }}
+                      class="px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer transition-colors
+                        {settingsStore.defaultConferencing === 'zoom' ? 'bg-blue-600 text-white' : 'bg-[#2a2a2a] text-zinc-300 hover:text-white'}"
+                    >
+                      {settingsStore.defaultConferencing === 'zoom' ? 'Default' : 'Set as Default'}
+                    </button>
                   </div>
-                  <button 
-                    onclick={() => settingsStore.zoomConnected = !settingsStore.zoomConnected}
-                    class="px-3 py-1 bg-[#2e2e2e] hover:bg-[#383838] rounded-lg text-zinc-200 font-medium transition-colors cursor-pointer text-xs"
-                  >
-                    {settingsStore.zoomConnected ? 'Disconnect' : 'Connect'}
-                  </button>
+
+                  <div class="flex items-center gap-2 mt-1">
+                    <input
+                      type="text"
+                      placeholder="Personal Meeting URL (e.g. https://zoom.us/j/123456789)"
+                      bind:value={settingsStore.zoomPmiLink}
+                      onblur={() => settingsStore.updateSetting('zoomPmiLink', settingsStore.zoomPmiLink)}
+                      class="flex-1 bg-[#181818] border border-[#2e2e2e] rounded-lg px-2.5 py-1 text-xs text-zinc-200 focus:outline-none"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -411,7 +529,7 @@
               <div class="flex items-center justify-between">
                 <div>
                   <h2 class="text-sm font-bold text-zinc-100">Connected Accounts</h2>
-                  <p class="text-[11px] text-zinc-400 mt-0.5">Manage two-way sync for calendars and participants directory.</p>
+                  <p class="text-[11px] text-zinc-400 mt-0.5">Manage accounts and sync calendars.</p>
                 </div>
                 <button 
                   onclick={triggerGoogleSync}
@@ -463,7 +581,7 @@
 
               {#if isAddingAccountForm}
                 <div class="flex flex-col gap-2 p-3.5 rounded-xl bg-[#1d1d1d] border border-[#2f2f2f]">
-                  <span class="text-xs font-semibold text-zinc-200">Connect Google Workspace or Personal Account</span>
+                  <span class="text-xs font-semibold text-zinc-200">Connect Account</span>
                   <input 
                     type="text"
                     placeholder="Account Name (e.g. Work Calendar)"
@@ -472,7 +590,7 @@
                   />
                   <input 
                     type="email"
-                    placeholder="Email (e.g. user@gmail.com)"
+                    placeholder="Email address"
                     bind:value={newAccountEmail}
                     class="bg-[#262626] border border-[#333333] rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none"
                   />
@@ -494,7 +612,7 @@
                       }}
                       class="px-3 py-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg shadow cursor-pointer"
                     >
-                      Connect Account
+                      Save Account
                     </button>
                   </div>
                 </div>
@@ -511,69 +629,6 @@
           {/if}
         </div>
       </main>
-    </div>
-  </div>
-{/if}
-
-<!-- Standalone Login Dialog -->
-{#if settingsStore.isLoginModalOpen}
-  <div 
-    class="fixed inset-0 z-[160] bg-black/75 backdrop-blur-[2px] flex items-center justify-center select-none"
-    onclick={() => settingsStore.closeLoginModal()}
-    role="presentation"
-  >
-    <div 
-      class="w-[380px] bg-[#1a1a1a] border border-[#2b2b2b] rounded-2xl shadow-[0_24px_70px_rgba(0,0,0,0.95)] p-6 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150 text-zinc-200"
-      onclick={(e) => e.stopPropagation()}
-      role="dialog"
-    >
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <div class="w-6 h-6 rounded-md bg-blue-600 flex items-center justify-center font-bold text-white text-xs">K</div>
-          <h3 class="font-bold text-base text-zinc-100">Sign in to Kairo</h3>
-        </div>
-        <button onclick={() => settingsStore.closeLoginModal()} class="p-1 text-zinc-400 hover:text-white rounded-lg">
-          <X size={15} />
-        </button>
-      </div>
-
-      <p class="text-xs text-zinc-400">
-        Connect your Google Account to sync calendar events, meetings, and participant contacts.
-      </p>
-
-      <div class="flex flex-col gap-2.5">
-        <input 
-          type="text"
-          placeholder="Display Name (e.g. Amila Vaz)"
-          bind:value={newAccountName}
-          class="bg-[#222222] border border-[#2f2f2f] rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
-        />
-        <input 
-          type="email"
-          placeholder="Google Account Email"
-          bind:value={newAccountEmail}
-          class="bg-[#222222] border border-[#2f2f2f] rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
-        />
-      </div>
-
-      <button
-        onclick={() => {
-          if (newAccountEmail.trim()) {
-            settingsStore.login(newAccountEmail.trim(), newAccountName.trim());
-            newAccountEmail = '';
-            newAccountName = '';
-          }
-        }}
-        class="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl text-xs shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
-      >
-        <svg class="w-4 h-4" viewBox="0 0 24 24">
-          <path fill="#ffffff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-          <path fill="#ffffff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-          <path fill="#ffffff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-          <path fill="#ffffff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-        </svg>
-        <span>Continue with Google</span>
-      </button>
     </div>
   </div>
 {/if}

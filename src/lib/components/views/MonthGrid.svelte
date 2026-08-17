@@ -1,18 +1,41 @@
 <script lang="ts">
-  import { format, parseISO, setHours, setMinutes } from 'date-fns';
+  import { format, parseISO, setHours, setMinutes, getISOWeek } from 'date-fns';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
+  import { settingsStore } from '../../stores/settingsStore.svelte';
   import { dragStore } from '../../stores/dragStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
   import { generateMonthGrid, getEventsForDay } from '../../utils/dateMath';
   import type { CalendarEvent } from '../../../types/event';
 
-  const weekDays = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+  const baseWeekDays = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+
+  let activeWeekDays = $derived.by(() => {
+    let days = settingsStore.startWeekOn === 'Monday'
+      ? ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']
+      : ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+
+    if (!settingsStore.showWeekends) {
+      days = days.filter(d => d !== 'SUN' && d !== 'SAT');
+    }
+    return days;
+  });
+
   const MAX_VISIBLE_EVENTS = 3;
 
-  let gridCells = $derived(generateMonthGrid(calendarState.currentDate));
-  let totalWeeks = $derived(Math.ceil(gridCells.length / 7));
+  let rawGridCells = $derived(generateMonthGrid(calendarState.currentDate));
+  
+  let gridCells = $derived.by(() => {
+    if (settingsStore.showWeekends) return rawGridCells;
+    return rawGridCells.filter(c => {
+      const day = c.date.getDay();
+      return day !== 0 && day !== 6;
+    });
+  });
+
+  let colsCount = $derived(settingsStore.showWeekends ? 7 : 5);
+  let totalWeeks = $derived(Math.ceil(gridCells.length / colsCount));
 
   function getEventToken(event: CalendarEvent) {
     const cal = calendarState.calendars.find((c) => c.id === event.calendarId);
@@ -22,6 +45,11 @@
   function isCalendarVisible(calendarId: string): boolean {
     const cal = calendarState.calendars.find((c) => c.id === calendarId);
     return cal ? cal.isVisible : true;
+  }
+
+  function formatDisplayTime(isoString: string): string {
+    const d = parseISO(isoString);
+    return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mm a');
   }
 
   function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
@@ -45,8 +73,8 @@
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: ['15m'],
-      creatorEmail: 'amilavaz2003@gmail.com',
+      reminders: [settingsStore.defaultReminderOffset],
+      creatorEmail: settingsStore.email || '',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
     };
@@ -96,24 +124,28 @@
   class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden"
 >
   <!-- Weekday Header -->
-  <div class="grid grid-cols-7 border-b border-[#242424] bg-[#141414] shrink-0">
-    {#each weekDays as day}
+  <div 
+    class="grid border-b border-[#242424] bg-[#141414] shrink-0"
+    style="grid-template-columns: repeat({colsCount}, minmax(0, 1fr));"
+  >
+    {#each activeWeekDays as day}
       <div class="py-2 text-center text-[10px] font-bold text-zinc-500 uppercase tracking-wider">
         {day}
       </div>
     {/each}
   </div>
 
-  <!-- Dynamic Month Grid -->
+  <!-- Dynamic Month Grid with Week Numbers -->
   <div 
-    class="flex-1 grid grid-cols-7 gap-[1px] bg-[#1e1e1e] overflow-hidden no-scrollbar"
-    style="grid-template-rows: repeat({totalWeeks}, minmax(0, 1fr));"
+    class="flex-1 grid gap-[1px] bg-[#1e1e1e] overflow-hidden no-scrollbar"
+    style="grid-template-columns: repeat({colsCount}, minmax(0, 1fr)); grid-template-rows: repeat({totalWeeks}, minmax(0, 1fr));"
   >
-    {#each gridCells as cell (cell.dateKey)}
+    {#each gridCells as cell, i (cell.dateKey)}
       {@const allDayEvents = getEventsForDay(eventStore.events, cell.date).filter(e => isCalendarVisible(e.calendarId))}
       {@const visibleEvents = allDayEvents.slice(0, MAX_VISIBLE_EVENTS)}
       {@const overflowCount = allDayEvents.length - MAX_VISIBLE_EVENTS}
       {@const isHighlighted = dragStore.hoveredDateKey === cell.dateKey}
+      {@const showWeekNum = settingsStore.showWeekNumbers && i % colsCount === 0}
 
       <div
         data-day-cell={cell.dateKey}
@@ -132,6 +164,10 @@
           >
             {format(cell.date, 'd')}
           </span>
+
+          {#if showWeekNum}
+            <span class="text-[9px] font-mono text-zinc-600">W{getISOWeek(cell.date)}</span>
+          {/if}
         </div>
 
         <div class="flex-1 flex flex-col gap-1 overflow-hidden">
@@ -181,7 +217,7 @@
                   class="text-[10px] font-semibold mr-1.5 shrink-0 pointer-events-none"
                   style="color: {isSelected ? '#ffffff' : token.timeText};"
                 >
-                  {format(parseISO(event.startTime), 'h:mm a')}
+                  {formatDisplayTime(event.startTime)}
                 </span>
 
                 <span 
