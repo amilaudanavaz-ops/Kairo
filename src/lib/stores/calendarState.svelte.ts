@@ -1,5 +1,5 @@
 import { addMonths, subMonths, addWeeks, subWeeks, addDays, subDays, format, parseISO } from 'date-fns';
-import type { ViewMode, CalendarEvent, DayOverflowItem, CalendarCategory } from '../../types/event';
+import type { ViewMode, CalendarEvent, DayOverflowItem, CalendarCategory, ParticipantContact, LocationSuggestion } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
 
 class CalendarState {
@@ -9,24 +9,49 @@ class CalendarState {
   isInspectorDocked = $state(false);
   isAddAccountModalOpen = $state(false);
   
-  // Instance-level selection tracking
+  // Selection tracking
   selectedEventId = $state<string | null>(null);
-  selectedDateKey = $state<string | null>(null); // Exact 'yyyy-MM-dd' instance selected
+  selectedDateKey = $state<string | null>(null);
   isCreatingNewEvent = $state(false);
   inspectorRect = $state<DOMRect | null>(null);
   overflowData = $state<DayOverflowItem | null>(null);
   clipboardEvent = $state<CalendarEvent | null>(null);
 
-  // Live Master Event
+  // Contacts Directory for Auto-suggest
+  contacts = $state<ParticipantContact[]>([
+    { name: 'Amma', email: 'mangalialuthgama1964@gmail.com' },
+    { name: 'ashely harry', email: 'ashelyharry990@gmail.com' },
+    { name: 'androidapp', email: 'androidapp@imo.im' },
+    { name: 'amila vaz', email: 'amilavaz2003@gmail.com' },
+    { name: 'abuse', email: 'abuse@fb.com' },
+    { name: 'VNOOIR Team', email: 'team@vnooir.agency' },
+    { name: 'Kasun Bandara', email: 'kasun.b@gmail.com' },
+    { name: 'Nisal Senarath', email: 'nisal.s@gmail.com' }
+  ]);
+
+  // Locations Database
+  locations = $state<LocationSuggestion[]>([
+    { title: 'Children Park', subtitle: 'Netolpitiya' },
+    { title: "SOS Children's Village Galle", subtitle: 'Wakwella Road, Galle' },
+    { title: "Children's Park", subtitle: 'B142, Hakmana' },
+    { title: "Children's park", subtitle: 'Karittakanda, Ambalangoda' },
+    { title: 'Children & Maternity Clinic Navimana', subtitle: 'Matara' },
+    { title: 'Colombo City Centre', subtitle: '137 Sir James Pieris Mawatha, Colombo' },
+    { title: 'One Galle Face', subtitle: '1A Centre Road, Galle Face, Colombo' },
+    { title: 'VNOOIR Studio', subtitle: 'Level 4, High Street Building, Colombo' }
+  ]);
+
   selectedEvent = $derived.by(() => {
     if (!this.selectedEventId) return null;
     return eventStore.events.find((e) => e.id === this.selectedEventId) || null;
   });
 
   calendars = $state<CalendarCategory[]>([
-    { id: '1', accountId: 'acc_primary', name: 'Personal & Work', colorId: 'blue', colorHex: '#3b82f6', isPrimary: true, isVisible: true },
-    { id: '2', accountId: 'acc_primary', name: 'Scraping & Dev', colorId: 'amber', colorHex: '#f59e0b', isPrimary: false, isVisible: true },
-    { id: '3', accountId: 'acc_primary', name: 'Holidays', colorId: 'emerald', colorHex: '#10b981', isPrimary: false, isVisible: true }
+    { id: '1', accountId: 'acc_primary', name: 'amilavaz2003@gmail.com', colorId: 'blue', colorHex: '#3b82f6', isPrimary: true, isVisible: true },
+    { id: '2', accountId: 'acc_primary', name: 'Family', colorId: 'amber', colorHex: '#d97706', isPrimary: false, isVisible: true },
+    { id: '3', accountId: 'acc_primary', name: 'ICC Cricket', colorId: 'red', colorHex: '#b91c1c', isPrimary: false, isVisible: true },
+    { id: '4', accountId: 'acc_primary', name: 'VNOOIR', colorId: 'charcoal', colorHex: '#71717a', isPrimary: false, isVisible: true },
+    { id: '5', accountId: 'acc_primary', name: "L'Instant Céleste", colorId: 'amber', colorHex: '#f59e0b', isPrimary: false, isVisible: true }
   ]);
 
   toggleSidebar() {
@@ -65,14 +90,6 @@ class CalendarState {
     this.calendars = this.calendars.map((c) =>
       c.id === calendarId ? { ...c, isVisible: !c.isVisible } : c
     );
-  }
-
-  openAddAccountModal() {
-    this.isAddAccountModalOpen = true;
-  }
-
-  closeAddAccountModal() {
-    this.isAddAccountModalOpen = false;
   }
 
   openInspector(event: CalendarEvent, rect: DOMRect, isNew: boolean = false, dateKey?: string) {

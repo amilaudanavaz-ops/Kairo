@@ -47,15 +47,19 @@
     Files,
     ExternalLink,
     Check,
-    Search
+    Search,
+    ArrowRight,
+    Eye,
+    EyeOff
   } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
+  import { settingsStore } from '../../stores/settingsStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken, NOTION_COLORS } from '../../utils/colors';
   import { generateMonthGrid } from '../../utils/dateMath';
   import { dispatchEventReminder } from '../../utils/notifications';
-  import type { CalendarEvent } from '../../../types/event';
+  import type { CalendarEvent, ParticipantContact, LocationSuggestion } from '../../../types/event';
 
   let inspectorElement: HTMLElement | null = $state(null);
   let draft = $state<CalendarEvent | null>(null);
@@ -67,7 +71,7 @@
   );
   let colorToken = $derived(resolveEventColorToken(draft?.colorOverride || activeCalendar?.colorHex));
 
-  let activeSideMenu = $state<'none' | 'date' | 'start_time' | 'end_time' | 'timezone' | 'repeat' | 'reminders' | 'calendar'>('none');
+  let activeSideMenu = $state<'none' | 'date' | 'start_time' | 'end_time' | 'timezone' | 'repeat' | 'reminders' | 'calendar' | 'participants' | 'conferencing' | 'location'>('none');
   let isTypeDropdownOpen = $state(false);
   let isActionMenuOpen = $state(false);
 
@@ -75,12 +79,30 @@
   let startTimeInput = $state('');
   let endTimeInput = $state('');
   let dateInput = $state('');
-  let participantInput = $state('');
+  let participantQuery = $state('');
+  let locationQuery = $state('');
   let isAddingAttachment = $state(false);
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
-  // Svelte 5 Untracked Effect - Prevents infinite reactive update loops
+  // Filtered Participants Autocomplete (Matching image_143b88.png)
+  let filteredContacts = $derived.by(() => {
+    if (!participantQuery.trim()) return calendarState.contacts;
+    const q = participantQuery.toLowerCase();
+    return calendarState.contacts.filter(c => 
+      c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q)
+    );
+  });
+
+  // Filtered Locations (Matching image_1437e3.png)
+  let filteredLocations = $derived.by(() => {
+    if (!locationQuery.trim()) return calendarState.locations;
+    const q = locationQuery.toLowerCase();
+    return calendarState.locations.filter(l => 
+      l.title.toLowerCase().includes(q) || l.subtitle.toLowerCase().includes(q)
+    );
+  });
+
   $effect(() => {
     const currentEvent = masterEvent;
     const dateKey = calendarState.selectedDateKey;
@@ -116,30 +138,28 @@
         startTimeInput = format(parseISO(projected.startTime), 'h:mm a');
         endTimeInput = format(parseISO(projected.endTime), 'h:mm a');
         dateInput = format(parseISO(projected.startTime), 'EEE MMM d');
+        locationQuery = projected.location || '';
       }
     });
   });
 
-  // Global click-away listener for docked and floating panels
   $effect(() => {
     function handleGlobalPointerDown(e: MouseEvent) {
-      if (contextMenuStore.isRecurrenceModalOpen) return;
+      if (contextMenuStore.isRecurrenceModalOpen || settingsStore.isOpen) return;
 
       const target = e.target as HTMLElement | null;
       if (!target) return;
 
       if (inspectorElement && inspectorElement.contains(target)) return;
-      if (target.closest('.recurrence-modal') || target.closest('.dialog-overlay')) return;
+      if (target.closest('.recurrence-modal') || target.closest('.dialog-overlay') || target.closest('.settings-modal')) return;
 
       if (activeSideMenu !== 'none') {
         activeSideMenu = 'none';
       }
 
       if (calendarState.isInspectorDocked) {
-        // Docked mode: Commit silently without closing the sidebar panel
         commitDraftChanges(false);
       } else {
-        // Floating mode: Close on outside click
         if (target.closest('[data-calendar-event]')) {
           commitDraftChanges(false);
         } else {
@@ -348,76 +368,51 @@
     activeSideMenu = 'none';
   }
 
-  function getPrevOccurrence(rrule: string, currentDate: Date): Date {
-    if (rrule === 'daily') return subDays(currentDate, 1);
-    if (rrule === 'weekday') {
-      let d = subDays(currentDate, 1);
-      while (d.getDay() === 0 || d.getDay() === 6) {
-        d = subDays(d, 1);
-      }
-      return d;
-    }
-    if (rrule === 'weekly') return subWeeks(currentDate, 1);
-    if (rrule === 'biweekly') return subWeeks(currentDate, 2);
-    if (rrule === 'monthly_date' || rrule === 'monthly' || rrule === 'monthly_day') return subMonths(currentDate, 1);
-    if (rrule === 'yearly') return subYears(currentDate, 1);
-    return subWeeks(currentDate, 1);
-  }
-
-  function getNextOccurrence(rrule: string, currentDate: Date): Date {
-    if (rrule === 'daily') return addDays(currentDate, 1);
-    if (rrule === 'weekday') {
-      let d = addDays(currentDate, 1);
-      while (d.getDay() === 0 || d.getDay() === 6) {
-        d = addDays(d, 1);
-      }
-      return d;
-    }
-    if (rrule === 'weekly') return addWeeks(currentDate, 1);
-    if (rrule === 'biweekly') return addWeeks(currentDate, 2);
-    if (rrule === 'monthly_date' || rrule === 'monthly' || rrule === 'monthly_day') return addMonths(currentDate, 1);
-    if (rrule === 'yearly') return addYears(currentDate, 1);
-    return addWeeks(currentDate, 1);
-  }
-
   function navigateOccurrence(direction: 'prev' | 'next') {
     if (!draft || !draft.rrule || draft.rrule === 'none' || !masterEvent) return;
 
     commitDraftChanges(false);
 
     const currentOcc = parseISO(draft.startTime);
-    const targetDate = direction === 'prev' 
-      ? getPrevOccurrence(draft.rrule, currentOcc)
-      : getNextOccurrence(draft.rrule, currentOcc);
+    let targetDate = currentOcc;
+    if (draft.rrule === 'daily') targetDate = direction === 'prev' ? subDays(currentOcc, 1) : addDays(currentOcc, 1);
+    else if (draft.rrule === 'weekly') targetDate = direction === 'prev' ? subWeeks(currentOcc, 1) : addWeeks(currentOcc, 1);
+    else if (draft.rrule === 'biweekly') targetDate = direction === 'prev' ? subWeeks(currentOcc, 2) : addWeeks(currentOcc, 2);
+    else if (draft.rrule.startsWith('monthly')) targetDate = direction === 'prev' ? subMonths(currentOcc, 1) : addMonths(currentOcc, 1);
+    else if (draft.rrule === 'yearly') targetDate = direction === 'prev' ? subYears(currentOcc, 1) : addYears(currentOcc, 1);
 
     const masterStart = parseISO(masterEvent.startTime);
-    if (direction === 'prev' && targetDate < startOfDay(masterStart)) {
-      return;
-    }
+    if (direction === 'prev' && targetDate < startOfDay(masterStart)) return;
 
     const dateKey = format(targetDate, 'yyyy-MM-dd');
     calendarState.selectedDateKey = dateKey;
     calendarState.setDate(targetDate);
   }
 
-  function hasEventChanged(a: CalendarEvent, b: CalendarEvent): boolean {
-    if ((a.title || '') !== (b.title || '')) return true;
-    if (a.startTime !== b.startTime) return true;
-    if (a.endTime !== b.endTime) return true;
-    if ((a.description || '') !== (b.description || '')) return true;
-    if (a.colorOverride !== b.colorOverride) return true;
-    if (a.calendarId !== b.calendarId) return true;
-    if (a.rrule !== b.rrule) return true;
-    if (a.isAllDay !== b.isAllDay) return true;
-    if (a.busyStatus !== b.busyStatus) return true;
-    if (a.visibility !== b.visibility) return true;
-    if (a.timeZone !== b.timeZone) return true;
-    if (a.location !== b.location) return true;
-    if (a.conferencingUrl !== b.conferencingUrl) return true;
-    if (JSON.stringify(a.reminders || []) !== JSON.stringify(b.reminders || [])) return true;
-    if (JSON.stringify(a.participants || []) !== JSON.stringify(b.participants || [])) return true;
-    if (JSON.stringify(a.attachments || []) !== JSON.stringify(b.attachments || [])) return true;
-    return false;
+  function selectParticipant(contact: ParticipantContact) {
+    if (!draft) return;
+    const current = draft.participants || [];
+    if (!current.includes(contact.email)) {
+      updateDraft('participants', [...current, contact.email]);
+    }
+    participantQuery = '';
+    activeSideMenu = 'none';
+  }
+
+  function selectLocation(loc: LocationSuggestion) {
+    if (!draft) return;
+    const formatted = `${loc.title}, ${loc.subtitle}`;
+    updateDraft('location', formatted);
+    locationQuery = formatted;
+    activeSideMenu = 'none';
+  }
+
+  function setGoogleMeet() {
+    if (!draft) return;
+    const meetId = Math.random().toString(36).substring(2, 5) + '-' + Math.random().toString(36).substring(2, 6) + '-' + Math.random().toString(36).substring(2, 5);
+    updateDraft('conferencingUrl', `https://meet.google.com/${meetId}`);
+    updateDraft('conferencingProvider', 'google_meet');
+    activeSideMenu = 'none';
   }
 
   function commitDraftChanges(closeWhenClean: boolean = true) {
@@ -435,107 +430,43 @@
     }
 
     if (!masterEvent.rrule || masterEvent.rrule === 'none') {
-      if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
-        eventStore.updateEvent(draft);
-        initialEventSnapshot = JSON.parse(JSON.stringify(draft));
-      }
+      eventStore.updateEvent(draft);
+      initialEventSnapshot = JSON.parse(JSON.stringify(draft));
       if (closeWhenClean) calendarState.closeInspector();
       return;
     }
 
-    if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
-      contextMenuStore.promptRecurringAction(
-        'update',
-        masterEvent,
-        draft,
-        calendarState.selectedDateKey || undefined,
-        initialEventSnapshot
+    if (initialEventSnapshot) {
+      const hasChanged = (
+        initialEventSnapshot.title !== draft.title ||
+        initialEventSnapshot.startTime !== draft.startTime ||
+        initialEventSnapshot.endTime !== draft.endTime ||
+        initialEventSnapshot.description !== draft.description ||
+        initialEventSnapshot.colorOverride !== draft.colorOverride ||
+        initialEventSnapshot.calendarId !== draft.calendarId ||
+        initialEventSnapshot.rrule !== draft.rrule ||
+        initialEventSnapshot.location !== draft.location ||
+        initialEventSnapshot.conferencingUrl !== draft.conferencingUrl ||
+        JSON.stringify(initialEventSnapshot.participants || []) !== JSON.stringify(draft.participants || [])
       );
-    } else {
-      if (closeWhenClean) calendarState.closeInspector();
+
+      if (hasChanged) {
+        contextMenuStore.promptRecurringAction(
+          'update',
+          masterEvent,
+          draft,
+          calendarState.selectedDateKey || undefined,
+          initialEventSnapshot
+        );
+      } else {
+        if (closeWhenClean) calendarState.closeInspector();
+      }
     }
   }
 
   function handleInspectorClose() {
     commitDraftChanges(true);
     activeSideMenu = 'none';
-  }
-
-  function toggleAllDay() {
-    if (!draft) return;
-    const next = !draft.isAllDay;
-    if (next) {
-      updateDraft('isAllDay', true);
-      updateDraft('startTime', startOfDay(parseISO(draft.startTime)).toISOString());
-      updateDraft('endTime', endOfDay(parseISO(draft.startTime)).toISOString());
-    } else {
-      updateDraft('isAllDay', false);
-      const start = setMinutes(setHours(parseISO(draft.startTime), 9), 0);
-      const end = setMinutes(setHours(parseISO(draft.startTime), 10), 0);
-      updateDraft('startTime', start.toISOString());
-      updateDraft('endTime', end.toISOString());
-      startTimeInput = format(start, 'h:mm a');
-      endTimeInput = format(end, 'h:mm a');
-    }
-  }
-
-  function toggleGoogleMeet() {
-    if (!draft) return;
-    if (draft.conferencingUrl) {
-      updateDraft('conferencingUrl', undefined);
-    } else {
-      updateDraft('conferencingUrl', 'https://meet.google.com/' + Math.random().toString(36).substring(2, 5) + '-' + Math.random().toString(36).substring(2, 6) + '-' + Math.random().toString(36).substring(2, 5));
-    }
-  }
-
-  function addAiMeetingNotes() {
-    if (!draft) return;
-    const template = `\n\n### 🤖 AI Meeting Summary\n* Key Discussion Points:\n* Action Items:\n* Next Follow-up:`;
-    updateDraft('description', (draft.description || '') + template);
-  }
-
-  function addReminder(remId: string) {
-    if (!draft) return;
-    const current = Array.isArray(draft.reminders) ? draft.reminders : [];
-    if (!current.includes(remId)) {
-      updateDraft('reminders', [...current, remId]);
-      dispatchEventReminder(draft);
-    }
-    activeSideMenu = 'none';
-  }
-
-  function removeReminder(remId: string) {
-    if (!draft) return;
-    const current = Array.isArray(draft.reminders) ? draft.reminders : [];
-    updateDraft('reminders', current.filter(r => r !== remId));
-  }
-
-  function calculatePosition(rect: DOMRect | null) {
-    const width = 280;
-    const targetHeight = 480;
-    const topNavOffset = 48;
-    const bottomPadding = 16;
-    const maxAvailableHeight = Math.max(300, window.innerHeight - topNavOffset - bottomPadding);
-    const cardHeight = Math.min(targetHeight, maxAvailableHeight);
-
-    if (!rect) {
-      return `top: ${topNavOffset + 12}px; right: 24px; height: ${cardHeight}px;`;
-    }
-
-    let left = rect.right + 10;
-    if (left + width > window.innerWidth - 16) {
-      left = Math.max(16, rect.left - width - 10);
-    }
-
-    let top = rect.top - 10;
-    if (top + cardHeight > window.innerHeight - bottomPadding) {
-      top = window.innerHeight - bottomPadding - cardHeight;
-    }
-    if (top < topNavOffset) {
-      top = topNavOffset;
-    }
-
-    return `top: ${top}px; left: ${left}px; height: ${cardHeight}px;`;
   }
 </script>
 
@@ -548,7 +479,7 @@
       : 'fixed z-[60] w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
     style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
   >
-    <!-- Top Action Bar -->
+    <!-- Top Header Toolbar -->
     <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0 rounded-t-2xl bg-[#181818]">
       <div class="relative">
         <button 
@@ -658,7 +589,7 @@
       </div>
     </div>
 
-    <!-- Scrollable Form Body -->
+    <!-- Scrollable Body with Clean Native Scrolling -->
     <div class="flex-1 min-h-0 overflow-y-auto px-3.5 py-2.5 flex flex-col gap-2.5 custom-scrollbar">
       <input
         type="text"
@@ -722,7 +653,7 @@
         </div>
       </div>
 
-      <!-- All-Day Toggle Switch -->
+      <!-- All-Day Toggle -->
       <div class="flex items-center justify-between text-xs text-zinc-300 shrink-0">
         <span>All-day</span>
         <button
@@ -789,23 +720,18 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Participants -->
+      <!-- Participants Directory Input (Matching image_143b88.png) -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
-        <div class="flex items-center gap-2 text-zinc-400 truncate">
-          <User size={13} class="shrink-0 text-zinc-500" />
-          <span class="truncate">Created by <strong class="text-zinc-300 font-medium">{draft.creatorEmail || 'amilavaz2003@gmail.com'}</strong></span>
-        </div>
-
         <div class="flex items-center gap-2 text-zinc-400">
           <Users size={13} class="shrink-0 text-zinc-500" />
           <input
             type="text"
             placeholder="Add participant"
-            bind:value={participantInput}
+            bind:value={participantQuery}
+            onfocus={() => activeSideMenu = 'participants'}
             onkeydown={(e) => {
-              if (e.key === 'Enter' && participantInput.trim()) {
-                updateDraft('participants', [...(draft?.participants || []), participantInput.trim()]);
-                participantInput = '';
+              if (e.key === 'Enter' && participantQuery.trim()) {
+                selectParticipant({ name: participantQuery.trim(), email: participantQuery.trim() });
               }
             }}
             class="bg-transparent text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none w-full"
@@ -831,21 +757,19 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Integrations & Metadata -->
+      <!-- Conferencing Provider Row (Matching image_1438c0.png) -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <button 
-          onclick={toggleGoogleMeet}
+          onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'conferencing' ? 'none' : 'conferencing'; }}
           class="flex items-center justify-between text-zinc-400 hover:text-zinc-200 text-left py-0.5 cursor-pointer group"
         >
           <div class="flex items-center gap-2 truncate">
             <Video size={13} class="shrink-0 text-zinc-500 group-hover:text-zinc-300" />
             <span class="truncate {draft.conferencingUrl ? 'text-blue-400 font-semibold underline' : ''}">
-              {draft.conferencingUrl ? 'Google Meet Call' : 'Conferencing'}
+              {draft.conferencingUrl ? (draft.conferencingProvider === 'google_meet' ? 'Google Meet Call' : 'Conferencing Call') : 'Conferencing'}
             </span>
           </div>
-          {#if draft.conferencingUrl}
-            <ExternalLink size={11} class="text-zinc-500 shrink-0" />
-          {/if}
+          <ChevronDown size={12} class="text-zinc-500 shrink-0" />
         </button>
 
         <button 
@@ -856,12 +780,14 @@
           <span>Add AI meeting notes</span>
         </button>
 
+        <!-- Location Search Input (Matching image_1437e3.png) -->
         <div class="flex items-center gap-2 text-zinc-400 py-0.5">
           <MapPin size={13} class="shrink-0 text-zinc-500" />
           <input
             type="text"
             placeholder="Location"
-            value={draft.location || ''}
+            bind:value={locationQuery}
+            onfocus={() => activeSideMenu = 'location'}
             oninput={(e) => updateDraft('location', (e.target as HTMLInputElement).value)}
             class="bg-transparent text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none w-full"
           />
@@ -935,7 +861,7 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Category & Color -->
+      <!-- Calendar Category & Color Button (Matching image_1434e2.png) -->
       <button 
         onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'; }}
         class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
@@ -1003,6 +929,143 @@
     </div>
 
     <!-- ================= UNCLIPPED SIDE-DOCKED MENUS ================= -->
+
+    <!-- 1. Participant Autocomplete Popover (image_143b88.png) -->
+    {#if activeSideMenu === 'participants'}
+      <div 
+        class="absolute top-28 w-68 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[280px]'}"
+      >
+        <div class="max-h-60 overflow-y-auto flex flex-col gap-0.5 custom-scrollbar">
+          {#each filteredContacts as contact}
+            <button
+              onpointerdown={(e) => { e.stopPropagation(); selectParticipant(contact); }}
+              class="flex flex-col px-3 py-1.5 rounded-xl hover:bg-[#282828] text-left transition-colors cursor-pointer group"
+            >
+              <span class="font-semibold text-xs text-zinc-100 group-hover:text-blue-400">{contact.name}</span>
+              <span class="text-[11px] text-zinc-400 truncate">{contact.email}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- 2. Location Autocomplete Popover (image_1437e3.png) -->
+    {#if activeSideMenu === 'location'}
+      <div 
+        class="absolute top-44 w-72 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[300px]'}"
+      >
+        <div class="max-h-60 overflow-y-auto flex flex-col gap-0.5 custom-scrollbar">
+          {#each filteredLocations as loc}
+            <button
+              onpointerdown={(e) => { e.stopPropagation(); selectLocation(loc); }}
+              class="flex flex-col px-3 py-1.5 rounded-xl hover:bg-[#282828] text-left transition-colors cursor-pointer group"
+            >
+              <span class="font-semibold text-xs text-zinc-100 group-hover:text-blue-400">{loc.title}</span>
+              <span class="text-[11px] text-zinc-400 truncate">{loc.subtitle}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- 3. Conferencing Provider Popover (image_1438c0.png) -->
+    {#if activeSideMenu === 'conferencing'}
+      <div 
+        class="absolute top-40 w-54 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[230px]'}"
+      >
+        <button
+          onpointerdown={(e) => { e.stopPropagation(); setGoogleMeet(); }}
+          class="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#282828] text-xs font-semibold text-zinc-200 hover:text-white text-left transition-colors cursor-pointer"
+        >
+          <div class="w-3.5 h-3.5 bg-blue-600 rounded flex items-center justify-center text-white text-[8px] font-bold">M</div>
+          <span>Google Meet</span>
+        </button>
+
+        <div class="flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-zinc-400">
+          <div class="flex items-center gap-2.5">
+            <div class="w-3.5 h-3.5 bg-blue-500 rounded flex items-center justify-center text-white text-[8px] font-bold">Z</div>
+            <span>Zoom</span>
+          </div>
+          <button 
+            onpointerdown={(e) => { e.stopPropagation(); settingsStore.open('conferencing'); activeSideMenu = 'none'; }}
+            class="text-[11px] text-zinc-500 hover:text-blue-400 cursor-pointer"
+          >
+            Connect
+          </button>
+        </div>
+
+        <div class="h-[1px] bg-[#292929] my-0.5"></div>
+
+        <button
+          onpointerdown={(e) => { e.stopPropagation(); settingsStore.open('conferencing'); activeSideMenu = 'none'; }}
+          class="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-[#282828] text-xs font-medium text-zinc-300 hover:text-white text-left transition-colors cursor-pointer"
+        >
+          <ArrowRight size={13} />
+          <span>Manage conferencing</span>
+        </button>
+      </div>
+    {/if}
+
+    <!-- 4. Calendar & Color Popover (image_1434e2.png) -->
+    {#if activeSideMenu === 'calendar'}
+      <div 
+        class="absolute bottom-14 w-62 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-2.5 z-[999] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[256px]'}"
+      >
+        <div class="text-[11px] font-semibold text-zinc-400 px-1 truncate">amilavaz2003@gmail.com</div>
+        
+        <div class="flex flex-col gap-0.5">
+          {#each calendarState.calendars as cal}
+            <div class="flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-[#262626] transition-colors group">
+              <button
+                onpointerdown={(e) => { e.stopPropagation(); updateDraft('calendarId', cal.id); activeSideMenu = 'none'; }}
+                class="flex items-center gap-2 flex-1 text-left cursor-pointer truncate"
+              >
+                <div class="w-3.5 flex items-center justify-center">
+                  {#if draft.calendarId === cal.id}
+                    <Check size={12} class="text-blue-400 shrink-0" />
+                  {/if}
+                </div>
+                <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: {cal.colorHex};"></span>
+                <span class="text-xs text-zinc-200 truncate">{cal.name}</span>
+              </button>
+
+              <button 
+                onpointerdown={(e) => { e.stopPropagation(); calendarState.toggleCalendarVisibility(cal.id); }}
+                class="text-zinc-500 hover:text-zinc-300 p-0.5 rounded cursor-pointer"
+              >
+                {#if cal.isVisible}
+                  <Eye size={12} />
+                {:else}
+                  <EyeOff size={12} />
+                {/if}
+              </button>
+            </div>
+          {/each}
+        </div>
+
+        <div class="h-[1px] bg-[#292929]"></div>
+
+        <div class="text-[10px] font-semibold text-zinc-400 px-1">Event color</div>
+        <div class="flex items-center justify-between px-1">
+          {#each Object.values(NOTION_COLORS) as c}
+            <button
+              onpointerdown={(e) => { e.stopPropagation(); updateDraft('colorOverride', c.id === 'charcoal' ? undefined : c.hex); activeSideMenu = 'none'; }}
+              class="w-4 h-4 rounded-full flex items-center justify-center transition-transform hover:scale-125 cursor-pointer"
+              style="background-color: {c.hex};"
+              title={c.name}
+            >
+              {#if (draft.colorOverride === c.hex) || (!draft.colorOverride && c.id === 'charcoal')}
+                <Check size={9} class="text-white" />
+              {/if}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     <!-- Mini Calendar Popover -->
     {#if activeSideMenu === 'date'}
@@ -1118,50 +1181,6 @@
             {/if}
           </button>
         {/each}
-      </div>
-    {/if}
-
-    <!-- Calendar Category & Swatches Popover -->
-    {#if activeSideMenu === 'calendar'}
-      <div 
-        class="absolute bottom-14 w-58 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2 z-[999] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[240px]'}"
-      >
-        <div class="text-[10px] font-semibold text-zinc-400 px-1">amilavaz2003@gmail.com</div>
-        <div class="flex flex-col gap-0.5">
-          {#each calendarState.calendars as cal}
-            <button
-              onpointerdown={(e) => { e.stopPropagation(); updateDraft('calendarId', cal.id); activeSideMenu = 'none'; }}
-              class="flex items-center justify-between px-2 py-1 rounded text-xs hover:bg-[#2a2a2a] transition-colors cursor-pointer"
-            >
-              <div class="flex items-center gap-2">
-                <span class="w-2.5 h-2.5 rounded-full" style="background-color: {cal.colorHex};"></span>
-                <span class="text-zinc-200">{cal.name}</span>
-              </div>
-              {#if draft.calendarId === cal.id}
-                <Check size={12} class="text-blue-400" />
-              {/if}
-            </button>
-          {/each}
-        </div>
-
-        <div class="h-[1px] bg-[#292929]"></div>
-
-        <div class="text-[10px] font-semibold text-zinc-400 px-1">Event color</div>
-        <div class="flex items-center justify-between px-1">
-          {#each Object.values(NOTION_COLORS) as c}
-            <button
-              onpointerdown={(e) => { e.stopPropagation(); updateDraft('colorOverride', c.id === 'charcoal' ? undefined : c.hex); activeSideMenu = 'none'; }}
-              class="w-3.5 h-3.5 rounded-full flex items-center justify-center transition-transform hover:scale-125 cursor-pointer"
-              style="background-color: {c.hex};"
-              title={c.name}
-            >
-              {#if (draft.colorOverride === c.hex) || (!draft.colorOverride && c.id === 'charcoal')}
-                <Check size={9} class="text-white" />
-              {/if}
-            </button>
-          {/each}
-        </div>
       </div>
     {/if}
 

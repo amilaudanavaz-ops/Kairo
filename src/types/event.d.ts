@@ -15,25 +15,55 @@ export interface CalendarCategory {
   isVisible: boolean;
 }
 
+export interface ParticipantContact {
+  name: string;
+  email: string;
+  avatarUrl?: string;
+}
+
+export interface LocationSuggestion {
+  title: string;
+  subtitle: string;
+}
+
+export interface UserAccount {
+  id: string;
+  email: string;
+  name: string;
+  provider: 'google' | 'notion';
+  avatarUrl?: string;
+  isPrimary: boolean;
+  syncEnabled: boolean;
+}
+
+export type SettingsTab = 
+  | 'general' 
+  | 'profile' 
+  | 'notifications' 
+  | 'menubar' 
+  | 'conferencing' 
+  | 'accounts';
+
 export interface CalendarEvent {
   id: string;
   calendarId: string;
   googleEventId?: string;
-  recurringEventId?: string; // References master parent series if detached
+  recurringEventId?: string;
   originalStartTime?: string;
   title: string;
   description?: string;
   location?: string;
   conferencingUrl?: string;
+  conferencingProvider?: 'google_meet' | 'zoom' | 'custom';
   meetingUrl?: string;
-  startTime: string; // ISO UTC string
-  endTime: string;   // ISO UTC string
+  startTime: string;
+  endTime: string;
   isAllDay: boolean;
   timeZone: string;
-  rrule?: string;    // 'none' | 'daily' | 'weekday' | 'weekly' | 'biweekly' | 'monthly_date' | 'monthly_day' | 'yearly'
-  exdates?: string[]; // Array of 'yyyy-MM-dd' dates where master series is suppressed
-  untilDate?: string; // 'yyyy-MM-dd' cutoff date for "This and following events"
-  occurrenceDate?: string; // 'yyyy-MM-dd' active occurrence key
+  rrule?: string;
+  exdates?: string[];
+  untilDate?: string;
+  occurrenceDate?: string;
   isRecurringInstance?: boolean;
   status: EventStatus;
   busyStatus: BusyStatus;
