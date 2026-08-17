@@ -1,11 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { SettingsTab, UserAccount } from '../../types/event';
+import type { SettingsTab, UserAccount, CalendarCategory } from '../../types/event';
 import { 
   loadDbSettings, 
   persistDbSetting, 
   loadDbAccounts, 
   persistDbAccount, 
   deleteDbAccount, 
+  clearAllDbAccounts,
   persistCalendarCategory 
 } from '../db/database';
 import { calendarState } from './calendarState.svelte';
@@ -15,7 +16,7 @@ class SettingsStore {
   activeTab = $state<SettingsTab>('general');
   isCommandMenuOpen = $state(false);
 
-  // Auth State
+  // Authentication State
   isLoggedIn = $state(false);
   preferredName = $state('');
   email = $state('');
@@ -23,7 +24,7 @@ class SettingsStore {
   avatarUrl = $state('');
   isAuthenticating = $state(false);
 
-  // Preferences
+  // General Preferences
   showWeekends = $state(true);
   showDeclinedEvents = $state(true);
   showWeekNumbers = $state(false);
@@ -34,18 +35,18 @@ class SettingsStore {
   timeFormat = $state<'12h' | '24h'>('12h');
   theme = $state<'auto' | 'light' | 'dark'>('dark');
 
-  // Notifications
+  // Notifications Preferences
   notificationsEnabled = $state(true);
   playNotificationSound = $state(true);
   defaultReminderOffset = $state('15m');
 
-  // Menubar Widget
+  // Menu bar Preferences
   menuBarEnabled = $state(true);
   menuBarDaysSpan = $state<'1 day' | '2 days' | '3 days' | '7 days'>('3 days');
   menuBarIncludeAllDay = $state(false);
   menuBarIncludeNoParticipants = $state(true);
 
-  // Conferencing
+  // Conferencing Preferences
   defaultConferencing = $state<'google_meet' | 'zoom' | 'custom'>('google_meet');
   zoomPmiLink = $state('');
   zoomConnected = $state(false);
@@ -79,7 +80,8 @@ class SettingsStore {
       const storedAccounts = await loadDbAccounts();
       this.accounts = storedAccounts;
 
-      if (storedAccounts.length > 0) {
+      const sessionActive = saved.isLoggedIn === 'true';
+      if (sessionActive && storedAccounts.length > 0) {
         const primary = storedAccounts.find(a => a.isPrimary) || storedAccounts[0];
         this.isLoggedIn = true;
         this.preferredName = primary.name;
@@ -94,7 +96,7 @@ class SettingsStore {
         this.avatarUrl = '';
       }
     } catch (err) {
-      console.error('Failed to load settings:', err);
+      console.error('Failed to load settings from DB:', err);
     }
   }
 
@@ -157,6 +159,7 @@ class SettingsStore {
     this.preferredName = cleanName;
     this.username = cleanEmail.split('@')[0].toLowerCase();
     this.isLoggedIn = true;
+    await this.updateSetting('isLoggedIn', 'true');
     await this.addAccount(cleanEmail, cleanName);
   }
 
@@ -165,7 +168,7 @@ class SettingsStore {
     const exists = this.accounts.some(a => a.email.toLowerCase() === email.toLowerCase());
     if (!exists) {
       const isPrimary = this.accounts.length === 0;
-      const newAcc: UserAccount = {
+      const candidate: UserAccount = {
         id: 'acc_' + Date.now(),
         email: email.trim(),
         name: name.trim() || email.split('@')[0],
@@ -173,20 +176,21 @@ class SettingsStore {
         isPrimary,
         syncEnabled: true
       };
-      this.accounts = [...this.accounts, newAcc];
-      await persistDbAccount(newAcc);
+      
+      const savedAccount = await persistDbAccount(candidate);
+      this.accounts = [...this.accounts, savedAccount];
 
-      const newCal = {
+      const newCal: CalendarCategory = {
         id: 'cal_' + Date.now(),
-        accountId: newAcc.id,
-        name: newAcc.email,
+        accountId: savedAccount.id,
+        name: savedAccount.email,
         colorId: 'blue',
         colorHex: '#3b82f6',
         isPrimary,
         isVisible: true
       };
-      calendarState.calendars = [...calendarState.calendars, newCal];
       await persistCalendarCategory(newCal);
+      calendarState.calendars = [...calendarState.calendars, newCal];
     }
   }
 
@@ -209,7 +213,7 @@ class SettingsStore {
       const profile = authResult.profile;
       const isPrimary = this.accounts.length === 0;
 
-      const newAccount: UserAccount = {
+      const candidate: UserAccount = {
         id: 'acc_' + profile.id,
         email: profile.email,
         name: profile.name || profile.email.split('@')[0],
@@ -219,35 +223,39 @@ class SettingsStore {
         syncEnabled: true
       };
 
-      await persistDbAccount(newAccount, authResult.access_token, authResult.refresh_token);
-      this.accounts = [...this.accounts.filter(a => a.email !== newAccount.email), newAccount];
+      // 1. Save and receive the verified account record with its consistent DB ID
+      const savedAccount = await persistDbAccount(candidate, authResult.access_token, authResult.refresh_token);
+      this.accounts = [...this.accounts.filter(a => a.email !== savedAccount.email), savedAccount];
 
       this.isLoggedIn = true;
-      this.preferredName = newAccount.name;
-      this.email = newAccount.email;
-      this.username = newAccount.email.split('@')[0].toLowerCase();
-      this.avatarUrl = newAccount.avatarUrl || '';
+      await this.updateSetting('isLoggedIn', 'true');
+      this.preferredName = savedAccount.name;
+      this.email = savedAccount.email;
+      this.username = savedAccount.email.split('@')[0].toLowerCase();
+      this.avatarUrl = savedAccount.avatarUrl || '';
 
+      // 2. Persist imported Google Calendars using the verified savedAccount.id
       if (Array.isArray(authResult.calendars) && authResult.calendars.length > 0) {
         for (const cal of authResult.calendars) {
-          const newCal = {
-            id: 'cal_' + cal.id,
-            accountId: newAccount.id,
+          const calId = 'cal_' + cal.id.replace(/[^a-zA-Z0-9_]/g, '_');
+          const newCal: CalendarCategory = {
+            id: calId,
+            accountId: savedAccount.id,
             googleCalendarId: cal.id,
-            name: cal.summary,
+            name: cal.summary || savedAccount.email,
             colorId: 'blue',
             colorHex: cal.background_color || '#3b82f6',
             isPrimary: Boolean(cal.primary),
             isVisible: true
           };
           await persistCalendarCategory(newCal);
-          calendarState.calendars = [...calendarState.calendars.filter(c => c.googleCalendarId !== cal.id), newCal];
+          calendarState.calendars = [...calendarState.calendars.filter(c => c.id !== newCal.id), newCal];
         }
       } else {
-        const defaultCal = {
+        const defaultCal: CalendarCategory = {
           id: 'cal_' + Date.now(),
-          accountId: newAccount.id,
-          name: newAccount.email,
+          accountId: savedAccount.id,
+          name: savedAccount.email,
           colorId: 'blue',
           colorHex: '#3b82f6',
           isPrimary: true,
@@ -272,6 +280,7 @@ class SettingsStore {
     this.email = '';
     this.username = '';
     this.avatarUrl = '';
+    await this.updateSetting('isLoggedIn', 'false');
   }
 
   async removeAccount(id: string): Promise<void> {
@@ -280,6 +289,13 @@ class SettingsStore {
     this.accounts = this.accounts.filter(a => a.id !== id);
     calendarState.calendars = calendarState.calendars.filter(c => c.accountId !== id);
     await deleteDbAccount(id);
+  }
+
+  async deleteAccountAndData(): Promise<void> {
+    await clearAllDbAccounts();
+    await this.logout();
+    this.accounts = [];
+    calendarState.calendars = [];
   }
 
   async setPrimaryAccount(id: string): Promise<void> {

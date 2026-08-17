@@ -7,7 +7,7 @@ export async function getDb(): Promise<Database> {
   if (!dbInstance) {
     dbInstance = await Database.load('sqlite:kairo.db');
 
-    // 1. Ensure Base Tables Exist
+    // 1. Settings Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -15,15 +15,22 @@ export async function getDb(): Promise<Database> {
       );
     `);
 
+    // 2. Accounts Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL DEFAULT '',
         provider TEXT NOT NULL DEFAULT 'google',
+        avatar_url TEXT,
+        access_token TEXT,
+        refresh_token TEXT,
+        is_primary INTEGER NOT NULL DEFAULT 0,
         sync_enabled INTEGER NOT NULL DEFAULT 1
       );
     `);
 
+    // 3. Contacts Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS contacts (
         id TEXT PRIMARY KEY,
@@ -33,6 +40,7 @@ export async function getDb(): Promise<Database> {
       );
     `);
 
+    // 4. Calendars Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS calendars (
         id TEXT PRIMARY KEY,
@@ -46,42 +54,47 @@ export async function getDb(): Promise<Database> {
       );
     `);
 
+    // 5. Events Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
         calendar_id TEXT NOT NULL,
         google_event_id TEXT,
+        recurring_event_id TEXT,
         title TEXT,
         description TEXT,
         location TEXT,
         meeting_url TEXT,
+        conferencing_provider TEXT DEFAULT 'google_meet',
         start_time TEXT NOT NULL,
         end_time TEXT NOT NULL,
         is_all_day INTEGER NOT NULL DEFAULT 0,
         time_zone TEXT NOT NULL,
         rrule TEXT,
+        exdates TEXT,
+        until_date TEXT,
         color_override TEXT,
         status TEXT NOT NULL DEFAULT 'confirmed',
         busy_status TEXT NOT NULL DEFAULT 'busy',
+        visibility TEXT NOT NULL DEFAULT 'default',
         reminders TEXT NOT NULL,
+        creator_email TEXT,
+        participants TEXT,
+        attachments TEXT,
         sync_status TEXT NOT NULL DEFAULT 'synced',
         updated_at TEXT NOT NULL
       );
     `);
 
-    // 2. Self-Healing Schema Migrations for Accounts Table
+    // Self-Healing Column Migrations
     await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN name TEXT NOT NULL DEFAULT '';`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN avatar_url TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN access_token TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN refresh_token TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
-
-    // 3. Self-Healing Schema Migrations for Calendars Table
     await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN google_calendar_id TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN is_visible INTEGER NOT NULL DEFAULT 1;`).catch(() => {});
-
-    // 4. Self-Healing Schema Migrations for Events Table
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN recurring_event_id TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN conferencing_provider TEXT DEFAULT 'google_meet';`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN exdates TEXT;`).catch(() => {});
@@ -131,13 +144,22 @@ export async function loadDbAccounts(): Promise<UserAccount[]> {
   }));
 }
 
-export async function persistDbAccount(acc: UserAccount, accessToken?: string, refreshToken?: string): Promise<void> {
+export async function persistDbAccount(
+  acc: UserAccount, 
+  accessToken?: string, 
+  refreshToken?: string
+): Promise<UserAccount> {
   const db = await getDb();
+  
+  // 1. Resolve existing account ID by email to prevent foreign key mismatches
+  const existing = await db.select<any[]>('SELECT id FROM accounts WHERE email = $1', [acc.email]);
+  const resolvedId = existing.length > 0 ? existing[0].id : acc.id;
+
+  // 2. Perform upsert using the verified account ID
   await db.execute(
     `INSERT INTO accounts (id, email, name, provider, avatar_url, access_token, refresh_token, is_primary, sync_enabled)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     ON CONFLICT(id) DO UPDATE SET
-       email = excluded.email,
+     ON CONFLICT(email) DO UPDATE SET
        name = excluded.name,
        provider = excluded.provider,
        avatar_url = excluded.avatar_url,
@@ -146,7 +168,7 @@ export async function persistDbAccount(acc: UserAccount, accessToken?: string, r
        is_primary = excluded.is_primary,
        sync_enabled = excluded.sync_enabled`,
     [
-      acc.id,
+      resolvedId,
       acc.email,
       acc.name,
       acc.provider,
@@ -157,12 +179,22 @@ export async function persistDbAccount(acc: UserAccount, accessToken?: string, r
       acc.syncEnabled ? 1 : 0
     ]
   );
+
+  return { ...acc, id: resolvedId };
 }
 
 export async function deleteDbAccount(id: string): Promise<void> {
   const db = await getDb();
-  await db.execute('DELETE FROM accounts WHERE id = $1', [id]);
+  await db.execute('DELETE FROM events WHERE calendar_id IN (SELECT id FROM calendars WHERE account_id = $1)', [id]);
   await db.execute('DELETE FROM calendars WHERE account_id = $1', [id]);
+  await db.execute('DELETE FROM accounts WHERE id = $1', [id]);
+}
+
+export async function clearAllDbAccounts(): Promise<void> {
+  const db = await getDb();
+  await db.execute('DELETE FROM events');
+  await db.execute('DELETE FROM calendars');
+  await db.execute('DELETE FROM accounts');
 }
 
 // =================== CONTACTS CRUD ===================
@@ -207,16 +239,34 @@ export async function loadInitialCalendars(): Promise<CalendarCategory[]> {
 
 export async function persistCalendarCategory(cal: CalendarCategory): Promise<void> {
   const db = await getDb();
+  
+  // Guard: Ensure parent account exists in SQLite before inserting calendar
+  const accCheck = await db.select<any[]>('SELECT id FROM accounts WHERE id = $1', [cal.accountId]);
+  if (accCheck.length === 0) {
+    console.warn(`Cannot persist calendar ${cal.id}: Parent account ${cal.accountId} does not exist.`);
+    return;
+  }
+
   await db.execute(
     `INSERT INTO calendars (id, account_id, google_calendar_id, name, color_id, color_hex, is_primary, is_visible)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT(id) DO UPDATE SET
+       account_id = excluded.account_id,
        name = excluded.name,
        color_id = excluded.color_id,
        color_hex = excluded.color_hex,
        is_primary = excluded.is_primary,
        is_visible = excluded.is_visible`,
-    [cal.id, cal.accountId, cal.googleCalendarId || null, cal.name, cal.colorId, cal.colorHex, cal.isPrimary ? 1 : 0, cal.isVisible ? 1 : 0]
+    [
+      cal.id, 
+      cal.accountId, 
+      cal.googleCalendarId || null, 
+      cal.name, 
+      cal.colorId, 
+      cal.colorHex, 
+      cal.isPrimary ? 1 : 0, 
+      cal.isVisible ? 1 : 0
+    ]
   );
 }
 
@@ -291,6 +341,20 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
 
 export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
   const db = await getDb();
+  
+  // Guard: Verify target calendar exists before inserting event
+  const calCheck = await db.select<any[]>('SELECT id FROM calendars WHERE id = $1', [event.calendarId]);
+  let targetCalendarId = event.calendarId;
+  if (calCheck.length === 0) {
+    const anyCal = await db.select<any[]>('SELECT id FROM calendars LIMIT 1');
+    if (anyCal.length > 0) {
+      targetCalendarId = anyCal[0].id;
+    } else {
+      console.warn(`Cannot persist event ${event.id}: No calendars exist.`);
+      return;
+    }
+  }
+
   await db.execute(
     `INSERT INTO events (
       id, calendar_id, google_event_id, recurring_event_id, title, description, location,
@@ -324,7 +388,7 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       updated_at = excluded.updated_at`,
     [
       event.id,
-      event.calendarId,
+      targetCalendarId,
       event.googleEventId || null,
       event.recurringEventId || null,
       event.title,

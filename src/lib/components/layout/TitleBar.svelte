@@ -10,7 +10,6 @@
     Calendar as CalendarIcon,
     Settings,
     LogOut,
-    LogIn,
     Terminal
   } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
@@ -50,7 +49,7 @@
   data-tauri-drag-region 
   class="h-11 bg-[#161616] border-b border-[#242424] flex items-center justify-between px-3 select-none shrink-0 z-50 relative"
 >
-  <!-- Left Controls: Sidebar toggle & Month navigation -->
+  <!-- Left Controls -->
   <div class="flex items-center gap-2">
     <button 
       onclick={() => calendarState.toggleSidebar()}
@@ -126,7 +125,7 @@
         class="flex items-center gap-2 p-0.5 pr-1.5 rounded-full hover:bg-[#242424] transition-colors cursor-pointer border border-transparent hover:border-[#2e2e2e]"
       >
         <div class="w-6 h-6 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-[10px] font-bold text-white shadow">
-          {settingsStore.preferredName ? settingsStore.preferredName.slice(0, 1).toUpperCase() : 'A'}
+          {settingsStore.preferredName ? settingsStore.preferredName.slice(0, 1).toUpperCase() : 'U'}
         </div>
       </button>
 
@@ -137,13 +136,16 @@
         >
           <!-- User info header -->
           <div class="flex flex-col px-3 py-2 border-b border-[#282828] mb-0.5">
-            <span class="text-xs font-bold text-zinc-100">{settingsStore.preferredName}</span>
-            <span class="text-[11px] text-zinc-400 truncate">{settingsStore.email || 'Not signed in'}</span>
+            <span class="text-xs font-bold text-zinc-100">{settingsStore.preferredName || 'User'}</span>
+            <span class="text-[11px] text-zinc-400 truncate">{settingsStore.email || 'Not connected'}</span>
           </div>
 
-          <!-- Command Menu Item -->
+          <!-- Command Menu Item (Opens Command Palette) -->
           <button
-            onclick={() => { isProfileMenuOpen = false; }}
+            onclick={() => { 
+              settingsStore.openCommandMenu(); 
+              isProfileMenuOpen = false; 
+            }}
             class="flex items-center justify-between px-3 py-1.5 text-xs text-zinc-300 hover:text-white hover:bg-[#282828] rounded-xl transition-colors text-left cursor-pointer"
           >
             <div class="flex items-center gap-2">
@@ -155,7 +157,10 @@
 
           <!-- Settings Item -->
           <button
-            onclick={() => { settingsStore.open('general'); isProfileMenuOpen = false; }}
+            onclick={() => { 
+              settingsStore.open('general'); 
+              isProfileMenuOpen = false; 
+            }}
             class="flex items-center justify-between px-3 py-1.5 text-xs text-zinc-300 hover:text-white hover:bg-[#282828] rounded-xl transition-colors text-left cursor-pointer"
           >
             <div class="flex items-center gap-2">
@@ -167,7 +172,10 @@
 
           <!-- Manage Calendar Accounts -->
           <button
-            onclick={() => { settingsStore.open('accounts'); isProfileMenuOpen = false; }}
+            onclick={() => { 
+              settingsStore.open('accounts'); 
+              isProfileMenuOpen = false; 
+            }}
             class="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:text-white hover:bg-[#282828] rounded-xl transition-colors text-left cursor-pointer"
           >
             <CalendarIcon size={14} class="text-zinc-400" />
@@ -176,24 +184,17 @@
 
           <div class="h-px bg-[#282828] my-0.5"></div>
 
-          <!-- Log In / Log Out Option -->
-          {#if settingsStore.isLoggedIn}
-            <button
-              onclick={() => { settingsStore.logout(); isProfileMenuOpen = false; }}
-              class="flex items-center gap-2 px-3 py-1.5 text-xs text-rose-400 hover:bg-rose-950/40 rounded-xl transition-colors text-left cursor-pointer"
-            >
-              <LogOut size={14} />
-              <span>Log out</span>
-            </button>
-          {:else}
-            <button
-              onclick={() => { settingsStore.openLoginModal(); isProfileMenuOpen = false; }}
-              class="flex items-center gap-2 px-3 py-1.5 text-xs text-blue-400 hover:bg-blue-950/40 rounded-xl transition-colors text-left cursor-pointer"
-            >
-              <LogIn size={14} />
-              <span>Log in with Google</span>
-            </button>
-          {/if}
+          <!-- Log Out Option -->
+          <button
+            onclick={() => { 
+              settingsStore.logout(); 
+              isProfileMenuOpen = false; 
+            }}
+            class="flex items-center gap-2 px-3 py-1.5 text-xs text-rose-400 hover:bg-rose-950/40 rounded-xl transition-colors text-left cursor-pointer"
+          >
+            <LogOut size={14} />
+            <span>Log out</span>
+          </button>
         </div>
       {/if}
     </div>
