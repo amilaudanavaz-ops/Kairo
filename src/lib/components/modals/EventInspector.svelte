@@ -50,6 +50,7 @@
   import { dispatchEventReminder } from '../../utils/notifications';
   import type { CalendarEvent } from '../../../types/event';
 
+  let inspectorElement: HTMLElement | null = $state(null);
   let draft = $state<CalendarEvent | null>(null);
   let initialEventSnapshot: CalendarEvent | null = null;
 
@@ -94,6 +95,30 @@
       endTimeInput = format(parseISO(projected.endTime), 'h:mm a');
       dateInput = format(parseISO(projected.startTime), 'EEE MMM d');
     }
+  });
+
+  // Global click-away listener for auto-save and recurrence prompt
+  $effect(() => {
+    function handleGlobalPointerDown(e: MouseEvent) {
+      if (contextMenuStore.isRecurrenceModalOpen) return;
+
+      const target = e.target as Node;
+      if (inspectorElement && !inspectorElement.contains(target)) {
+        if (activeSideMenu !== 'none') {
+          activeSideMenu = 'none';
+        }
+        if (calendarState.isInspectorDocked) {
+          commitDraftChanges();
+        } else {
+          handleInspectorClose();
+        }
+      }
+    }
+
+    window.addEventListener('pointerdown', handleGlobalPointerDown);
+    return () => {
+      window.removeEventListener('pointerdown', handleGlobalPointerDown);
+    };
   });
 
   let sideMenuOnRight = $derived.by(() => {
@@ -290,28 +315,19 @@
     activeSideMenu = 'none';
   }
 
-  function handleInspectorClose() {
-    if (!draft || !masterEvent) {
-      calendarState.closeInspector();
-      activeSideMenu = 'none';
-      return;
-    }
+  function commitDraftChanges() {
+    if (!draft || !masterEvent) return;
 
     if (calendarState.isCreatingNewEvent) {
       eventStore.updateEvent(draft);
-      calendarState.closeInspector();
-      activeSideMenu = 'none';
-      draft = null;
-      initialEventSnapshot = null;
+      calendarState.isCreatingNewEvent = false;
+      initialEventSnapshot = JSON.parse(JSON.stringify(draft));
       return;
     }
 
     if (!masterEvent.rrule || masterEvent.rrule === 'none') {
       eventStore.updateEvent(draft);
-      calendarState.closeInspector();
-      activeSideMenu = 'none';
-      draft = null;
-      initialEventSnapshot = null;
+      initialEventSnapshot = JSON.parse(JSON.stringify(draft));
       return;
     }
 
@@ -335,7 +351,10 @@
         );
       }
     }
+  }
 
+  function handleInspectorClose() {
+    commitDraftChanges();
     calendarState.closeInspector();
     activeSideMenu = 'none';
     draft = null;
@@ -421,33 +440,19 @@
 </script>
 
 {#if draft}
-  {#if !calendarState.isInspectorDocked}
-    <div
-      class="fixed inset-0 z-40 bg-black/20"
-      onclick={handleInspectorClose}
-      role="presentation"
-    ></div>
-  {/if}
-
-  {#if activeSideMenu !== 'none'}
-    <div
-      class="fixed inset-0 z-50 bg-transparent"
-      onclick={() => activeSideMenu = 'none'}
-      role="presentation"
-    ></div>
-  {/if}
-
+  <!-- Inspector Card Component -->
   <aside
+    bind:this={inspectorElement}
     class="{calendarState.isInspectorDocked 
-      ? 'w-[280px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-40 shrink-0 select-text relative' 
-      : 'fixed z-50 w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
+      ? 'w-[280px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-[60] shrink-0 select-text relative overflow-visible' 
+      : 'fixed z-[60] w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
     style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
   >
     <!-- Top Action Bar -->
     <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0 rounded-t-2xl bg-[#181818]">
       <div class="relative">
         <button 
-          onclick={() => isTypeDropdownOpen = !isTypeDropdownOpen}
+          onpointerdown={(e) => { e.stopPropagation(); isTypeDropdownOpen = !isTypeDropdownOpen; }}
           class="flex items-center gap-1 text-xs font-semibold text-zinc-300 hover:text-white px-1.5 py-0.5 rounded hover:bg-[#242424] transition-colors cursor-pointer"
         >
           <span>Event</span>
@@ -455,10 +460,10 @@
         </button>
 
         {#if isTypeDropdownOpen}
-          <div class="absolute left-0 top-full mt-1 w-24 bg-[#202020] border border-[#2e2e2e] rounded-lg shadow-xl p-1 z-50 flex flex-col gap-0.5">
+          <div class="absolute left-0 top-full mt-1 w-24 bg-[#202020] border border-[#2e2e2e] rounded-lg shadow-xl p-1 z-[999] flex flex-col gap-0.5">
             {#each ['Event', 'Task', 'Reminder'] as t}
               <button
-                onclick={() => isTypeDropdownOpen = false}
+                onpointerdown={(e) => { e.stopPropagation(); isTypeDropdownOpen = false; }}
                 class="text-left px-2 py-1 text-xs text-zinc-200 hover:bg-[#2c2c2c] rounded transition-colors cursor-pointer"
               >
                 {t}
@@ -471,16 +476,17 @@
       <div class="flex items-center gap-0.5 text-zinc-400">
         <div class="relative">
           <button 
-            onclick={() => isActionMenuOpen = !isActionMenuOpen}
+            onpointerdown={(e) => { e.stopPropagation(); isActionMenuOpen = !isActionMenuOpen; }}
             class="p-1 hover:text-zinc-200 hover:bg-[#242424] rounded transition-colors cursor-pointer"
           >
             <MoreHorizontal size={14} />
           </button>
 
           {#if isActionMenuOpen}
-            <div class="absolute right-0 top-full mt-1 w-44 bg-[#1f1f1f] border border-[#2e2e2e] rounded-xl shadow-2xl p-1 z-50 flex flex-col gap-0.5">
+            <div class="absolute right-0 top-full mt-1 w-44 bg-[#1f1f1f] border border-[#2e2e2e] rounded-xl shadow-2xl p-1 z-[999] flex flex-col gap-0.5">
               <button 
-                onclick={() => {
+                onpointerdown={(e) => {
+                  e.stopPropagation();
                   if (draft) {
                     calendarState.clipboardEvent = { ...draft };
                     eventStore.deleteEvent(draft.id);
@@ -494,7 +500,8 @@
                 <span class="text-[10px] text-zinc-500 font-mono">Ctrl X</span>
               </button>
               <button 
-                onclick={() => {
+                onpointerdown={(e) => {
+                  e.stopPropagation();
                   if (draft) calendarState.clipboardEvent = { ...draft };
                   isActionMenuOpen = false;
                 }} 
@@ -504,7 +511,8 @@
                 <span class="text-[10px] text-zinc-500 font-mono">Ctrl C</span>
               </button>
               <button 
-                onclick={() => {
+                onpointerdown={(e) => {
+                  e.stopPropagation();
                   if (draft) eventStore.addEvent({ ...draft, id: 'evt_' + Date.now(), title: draft.title + ' (Copy)' });
                   isActionMenuOpen = false;
                 }} 
@@ -515,7 +523,8 @@
               </button>
               <div class="h-[1px] bg-[#292929] my-0.5"></div>
               <button 
-                onclick={() => {
+                onpointerdown={(e) => {
+                  e.stopPropagation();
                   if (draft?.rrule && draft.rrule !== 'none') {
                     contextMenuStore.promptRecurringAction('delete', draft);
                   } else if (draft) {
@@ -534,14 +543,14 @@
         </div>
 
         <button 
-          onclick={() => calendarState.toggleInspectorDock()}
+          onpointerdown={(e) => { e.stopPropagation(); calendarState.toggleInspectorDock(); }}
           class="p-1 hover:text-zinc-200 hover:bg-[#242424] rounded transition-colors cursor-pointer {calendarState.isInspectorDocked ? 'text-blue-400' : ''}"
         >
           <PanelRight size={14} />
         </button>
 
         <button 
-          onclick={handleInspectorClose} 
+          onpointerdown={(e) => { e.stopPropagation(); handleInspectorClose(); }} 
           class="p-1 hover:text-zinc-200 hover:bg-[#242424] rounded transition-colors cursor-pointer"
         >
           <X size={14} />
@@ -559,7 +568,7 @@
         class="w-full bg-transparent text-sm font-semibold text-zinc-100 placeholder-zinc-500 focus:outline-none shrink-0"
       />
 
-      <!-- Time & Notion-style Date Input Row -->
+      <!-- Time & Date Inputs -->
       <div class="flex flex-col gap-1 shrink-0">
         <div class="flex items-center gap-1.5 text-xs">
           <Clock size={14} class="text-zinc-400 shrink-0" />
@@ -592,7 +601,7 @@
           {/if}
         </div>
 
-        <!-- Notion Date Input Pill -->
+        <!-- Notion Date Input Box -->
         <div class="pl-5">
           <input
             type="text"
@@ -613,7 +622,7 @@
         </div>
       </div>
 
-      <!-- All-Day Toggle -->
+      <!-- All-Day Toggle Switch -->
       <div class="flex items-center justify-between text-xs text-zinc-300 shrink-0">
         <span>All-day</span>
         <button
@@ -631,7 +640,7 @@
 
       <!-- Timezone -->
       <button 
-        onclick={() => { activeSideMenu = activeSideMenu === 'timezone' ? 'none' : 'timezone'; timezoneQuery = ''; }}
+        onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'timezone' ? 'none' : 'timezone'; timezoneQuery = ''; }}
         class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
       >
         <div class="flex items-center gap-2 truncate">
@@ -643,7 +652,7 @@
 
       <!-- Recurrence -->
       <button 
-        onclick={() => activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'}
+        onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'; }}
         class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
       >
         <div class="flex items-center gap-2 truncate">
@@ -803,7 +812,7 @@
 
       <!-- Category & Color -->
       <button 
-        onclick={() => activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'}
+        onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'; }}
         class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
       >
         <div class="flex items-center gap-2 truncate">
@@ -838,7 +847,7 @@
       <!-- Reminders -->
       <div class="flex flex-col gap-1 shrink-0">
         <button 
-          onclick={() => activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'}
+          onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'; }}
           class="w-full flex items-center justify-between p-1 rounded hover:bg-[#222222] transition-colors cursor-pointer text-xs text-zinc-400 hover:text-zinc-200"
         >
           <div class="flex items-center gap-1.5">
@@ -868,7 +877,9 @@
       </div>
     </div>
 
-    <!-- ================= NOTION-EXACT MINI CALENDAR POPOVER ================= -->
+    <!-- ================= UNCLIPPED SIDE-DOCKED MENUS (z-[999]) ================= -->
+
+    <!-- Mini Calendar Popover -->
     {#if activeSideMenu === 'date'}
       {@const grid = generateMonthGrid(pickerMonth)}
       <div 
@@ -878,10 +889,10 @@
         <div class="flex items-center justify-between px-1">
           <span class="text-xs font-bold text-zinc-200">{format(pickerMonth, 'MMMM yyyy')}</span>
           <div class="flex items-center gap-1 text-zinc-400">
-            <button onclick={() => pickerMonth = subMonths(pickerMonth, 1)} class="p-1 hover:bg-[#282828] rounded-md hover:text-white cursor-pointer">
+            <button onpointerdown={(e) => { e.stopPropagation(); pickerMonth = subMonths(pickerMonth, 1); }} class="p-1 hover:bg-[#282828] rounded-md hover:text-white cursor-pointer">
               <ChevronLeft size={13} />
             </button>
-            <button onclick={() => pickerMonth = addMonths(pickerMonth, 1)} class="p-1 hover:bg-[#282828] rounded-md hover:text-white cursor-pointer">
+            <button onpointerdown={(e) => { e.stopPropagation(); pickerMonth = addMonths(pickerMonth, 1); }} class="p-1 hover:bg-[#282828] rounded-md hover:text-white cursor-pointer">
               <ChevronRight size={13} />
             </button>
           </div>
@@ -898,7 +909,7 @@
             {@const activeToday = isToday(cell.date)}
             {@const isSelectedDate = isSameDay(cell.date, parseISO(draft.startTime))}
             <button
-              onclick={() => selectNewDate(cell.date)}
+              onpointerdown={(e) => { e.stopPropagation(); selectNewDate(cell.date); }}
               class="h-7 w-7 mx-auto rounded-lg text-xs flex items-center justify-center transition-colors cursor-pointer
                 {activeToday 
                   ? 'bg-[#ea4335] text-white font-bold' 
@@ -924,7 +935,7 @@
       >
         {#each timePresets as preset}
           <button
-            onclick={() => selectPresetTime(isStart, preset)}
+            onpointerdown={(e) => { e.stopPropagation(); selectPresetTime(isStart, preset); }}
             class="px-2.5 py-1 text-xs text-zinc-200 hover:text-white hover:bg-[#2c2c2c] rounded text-left transition-colors font-mono cursor-pointer"
           >
             {preset}
@@ -952,7 +963,7 @@
         <div class="max-h-56 overflow-y-auto flex flex-col gap-0.5 custom-scrollbar">
           {#each filteredTimezones as tz}
             <button
-              onclick={() => { updateDraft('timeZone', tz.tz); activeSideMenu = 'none'; }}
+              onpointerdown={(e) => { e.stopPropagation(); updateDraft('timeZone', tz.tz); activeSideMenu = 'none'; }}
               class="flex items-center justify-between px-2.5 py-1.5 text-xs rounded-lg text-left transition-colors cursor-pointer
                 {draft.timeZone === tz.tz ? 'bg-[#282828] text-blue-400 font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
             >
@@ -972,7 +983,7 @@
       >
         {#each repeatOptions as opt}
           <button
-            onclick={() => { updateDraft('rrule', opt.id); activeSideMenu = 'none'; }}
+            onpointerdown={(e) => { e.stopPropagation(); updateDraft('rrule', opt.id); activeSideMenu = 'none'; }}
             class="flex items-center justify-between px-2.5 py-1.5 text-xs rounded-lg text-left transition-colors cursor-pointer
               {(draft.rrule || 'none') === opt.id ? 'bg-[#282828] text-blue-400 font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
           >
@@ -995,7 +1006,7 @@
         <div class="flex flex-col gap-0.5">
           {#each calendarState.calendars as cal}
             <button
-              onclick={() => { updateDraft('calendarId', cal.id); activeSideMenu = 'none'; }}
+              onpointerdown={(e) => { e.stopPropagation(); updateDraft('calendarId', cal.id); activeSideMenu = 'none'; }}
               class="flex items-center justify-between px-2 py-1 rounded text-xs hover:bg-[#2a2a2a] transition-colors cursor-pointer"
             >
               <div class="flex items-center gap-2">
@@ -1015,7 +1026,7 @@
         <div class="flex items-center justify-between px-1">
           {#each Object.values(NOTION_COLORS) as c}
             <button
-              onclick={() => { updateDraft('colorOverride', c.id === 'charcoal' ? undefined : c.hex); activeSideMenu = 'none'; }}
+              onpointerdown={(e) => { e.stopPropagation(); updateDraft('colorOverride', c.id === 'charcoal' ? undefined : c.hex); activeSideMenu = 'none'; }}
               class="w-3.5 h-3.5 rounded-full flex items-center justify-center transition-transform hover:scale-125 cursor-pointer"
               style="background-color: {c.hex};"
               title={c.name}
@@ -1037,7 +1048,7 @@
       >
         {#each reminderPresets as opt}
           <button
-            onclick={() => addReminder(opt.id)}
+            onpointerdown={(e) => { e.stopPropagation(); addReminder(opt.id); }}
             class="flex items-center justify-between px-2 py-1 text-xs rounded text-left transition-colors cursor-pointer text-zinc-300 hover:bg-[#242424] hover:text-white"
           >
             <span>{opt.label}</span>

@@ -6,6 +6,10 @@ let dbInstance: Database | null = null;
 export async function getDb(): Promise<Database> {
   if (!dbInstance) {
     dbInstance = await Database.load('sqlite:kairo.db');
+    // Ensure columns exist in SQLite schema
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN exdates TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN until_date TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN recurring_event_id TEXT;`).catch(() => {});
   }
   return dbInstance;
 }
@@ -114,9 +118,9 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
   await db.execute(
     `INSERT INTO events (
       id, calendar_id, google_event_id, recurring_event_id, title, description, location,
-      meeting_url, start_time, end_time, is_all_day, time_zone, rrule,
+      meeting_url, start_time, end_time, is_all_day, time_zone, rrule, exdates, until_date,
       color_override, status, busy_status, reminders, sync_status, updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
     ON CONFLICT(id) DO UPDATE SET
       calendar_id = excluded.calendar_id,
       recurring_event_id = excluded.recurring_event_id,
@@ -129,6 +133,8 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       is_all_day = excluded.is_all_day,
       time_zone = excluded.time_zone,
       rrule = excluded.rrule,
+      exdates = excluded.exdates,
+      until_date = excluded.until_date,
       color_override = excluded.color_override,
       busy_status = excluded.busy_status,
       reminders = excluded.reminders,
@@ -148,6 +154,8 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       event.isAllDay ? 1 : 0,
       event.timeZone,
       event.rrule || 'none',
+      JSON.stringify(event.exdates || []),
+      event.untilDate || null,
       event.colorOverride || null,
       event.status,
       event.busyStatus,
