@@ -14,6 +14,7 @@ export interface FieldDiff {
 export interface RecurringActionPayload {
   action: 'update' | 'delete';
   originalEvent: CalendarEvent;
+  initialSnapshot?: CalendarEvent;
   updatedEvent?: CalendarEvent;
   occurrenceDate?: string;
   diffs: FieldDiff[];
@@ -35,20 +36,23 @@ class ContextMenuStore {
     action: 'update' | 'delete', 
     originalEvent: CalendarEvent, 
     updatedEvent?: CalendarEvent,
-    occurrenceDate?: string
+    occurrenceDate?: string,
+    initialSnapshot?: CalendarEvent
   ) {
     const diffs: FieldDiff[] = [];
 
     if (action === 'update' && updatedEvent) {
-      const oldStart = parseISO(originalEvent.startTime);
-      const oldEnd = parseISO(originalEvent.endTime);
+      const base = initialSnapshot || originalEvent;
+
+      const oldStart = parseISO(base.startTime);
+      const oldEnd = parseISO(base.endTime);
       const newStart = parseISO(updatedEvent.startTime);
       const newEnd = parseISO(updatedEvent.endTime);
 
       const oldDateKey = format(oldStart, 'yyyy-MM-dd');
       const newDateKey = format(newStart, 'yyyy-MM-dd');
 
-      // Date & Time Diff calculation
+      // Date / Time Diff
       if (oldDateKey !== newDateKey || oldStart.getTime() !== newStart.getTime() || oldEnd.getTime() !== newEnd.getTime()) {
         const oldFormatted = oldDateKey !== newDateKey 
           ? `${format(oldStart, 'MMM d, h:mm a')}–${format(oldEnd, 'h:mm a')}`
@@ -66,38 +70,55 @@ class ContextMenuStore {
       }
 
       // Title Diff
-      if ((originalEvent.title || '') !== (updatedEvent.title || '')) {
+      if ((base.title || '') !== (updatedEvent.title || '')) {
         diffs.push({
           field: 'Title',
           newValue: updatedEvent.title || '(No Title)',
-          oldValue: originalEvent.title || '(No Title)'
+          oldValue: base.title || '(No Title)'
         });
       }
 
       // Description Diff
-      if ((originalEvent.description || '') !== (updatedEvent.description || '')) {
+      if ((base.description || '') !== (updatedEvent.description || '')) {
         diffs.push({
           field: 'Description',
           newValue: updatedEvent.description ? (updatedEvent.description.slice(0, 40) + '...') : '(empty)',
-          oldValue: originalEvent.description ? (originalEvent.description.slice(0, 40) + '...') : '(empty)'
+          oldValue: base.description ? (base.description.slice(0, 40) + '...') : '(empty)'
         });
       }
 
       // Color Diff
-      if (originalEvent.colorOverride !== updatedEvent.colorOverride) {
+      if (base.colorOverride !== updatedEvent.colorOverride) {
         diffs.push({
           field: 'Color',
           newValue: updatedEvent.colorOverride || 'Default Color',
-          oldValue: originalEvent.colorOverride || 'Default Color'
+          oldValue: base.colorOverride || 'Default Color'
         });
+      }
+
+      // Repeat Diff
+      if (base.rrule !== updatedEvent.rrule) {
+        diffs.push({
+          field: 'Repeat',
+          newValue: updatedEvent.rrule || 'Does not repeat',
+          oldValue: base.rrule || 'Does not repeat'
+        });
+      }
+
+      // ZERO-DIFF GUARD: If no fields actually changed, NEVER open the modal
+      if (diffs.length === 0) {
+        this.isRecurrenceModalOpen = false;
+        this.pendingRecurringAction = null;
+        return;
       }
     }
 
     this.pendingRecurringAction = { 
       action, 
-      originalEvent, 
+      originalEvent,
+      initialSnapshot: initialSnapshot || originalEvent,
       updatedEvent,
-      occurrenceDate: occurrenceDate || originalEvent.occurrenceDate,
+      occurrenceDate: occurrenceDate || (initialSnapshot ? format(parseISO(initialSnapshot.startTime), 'yyyy-MM-dd') : undefined),
       diffs
     };
     this.isRecurrenceModalOpen = true;
@@ -190,7 +211,7 @@ class ContextMenuStore {
     if (!this.targetEvent) return;
     const updated = { ...this.targetEvent, colorOverride: colorHex };
     if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
-      this.promptRecurringAction('update', this.targetEvent, updated, this.targetEvent.occurrenceDate);
+      this.promptRecurringAction('update', this.targetEvent, updated, this.targetEvent.occurrenceDate, this.targetEvent);
     } else {
       eventStore.updateEvent(updated);
     }
@@ -224,7 +245,7 @@ class ContextMenuStore {
   delete() {
     if (!this.targetEvent) return;
     if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
-      this.promptRecurringAction('delete', this.targetEvent, undefined, this.targetEvent.occurrenceDate);
+      this.promptRecurringAction('delete', this.targetEvent, undefined, this.targetEvent.occurrenceDate, this.targetEvent);
     } else {
       eventStore.deleteEvent(this.targetEvent.id);
       if (calendarState.selectedEventId === this.targetEvent.id) {

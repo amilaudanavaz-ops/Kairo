@@ -72,7 +72,8 @@ class DragStore {
             'update',
             masterEvent,
             updatedEvent,
-            this.draggedEvent.occurrenceDate
+            this.draggedEvent.occurrenceDate,
+            this.draggedEvent
           );
         } else {
           eventStore.rescheduleEvent(this.draggedEvent.id, targetDate);

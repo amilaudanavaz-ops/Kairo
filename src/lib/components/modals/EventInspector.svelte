@@ -73,8 +73,15 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
+  // Project occurrence data on event selection
   $effect(() => {
-    if (masterEvent && (!draft || draft.id !== masterEvent.id)) {
+    if (!masterEvent) {
+      draft = null;
+      initialEventSnapshot = null;
+      return;
+    }
+
+    if (!draft || draft.id !== masterEvent.id || draft.occurrenceDate !== calendarState.selectedDateKey) {
       const projected = { ...masterEvent };
       if (calendarState.selectedDateKey && masterEvent.rrule && masterEvent.rrule !== 'none') {
         const [y, m, d] = calendarState.selectedDateKey.split('-').map(Number);
@@ -107,11 +114,7 @@
         if (activeSideMenu !== 'none') {
           activeSideMenu = 'none';
         }
-        if (calendarState.isInspectorDocked) {
-          commitDraftChanges();
-        } else {
-          handleInspectorClose();
-        }
+        commitDraftChanges();
       }
     }
 
@@ -315,50 +318,62 @@
     activeSideMenu = 'none';
   }
 
+  function hasEventChanged(a: CalendarEvent, b: CalendarEvent): boolean {
+    if ((a.title || '') !== (b.title || '')) return true;
+    if (a.startTime !== b.startTime) return true;
+    if (a.endTime !== b.endTime) return true;
+    if ((a.description || '') !== (b.description || '')) return true;
+    if (a.colorOverride !== b.colorOverride) return true;
+    if (a.calendarId !== b.calendarId) return true;
+    if (a.rrule !== b.rrule) return true;
+    if (a.isAllDay !== b.isAllDay) return true;
+    if (a.busyStatus !== b.busyStatus) return true;
+    if (a.visibility !== b.visibility) return true;
+    if (a.timeZone !== b.timeZone) return true;
+    if (a.location !== b.location) return true;
+    if (a.conferencingUrl !== b.conferencingUrl) return true;
+    if (JSON.stringify(a.reminders || []) !== JSON.stringify(b.reminders || [])) return true;
+    if (JSON.stringify(a.participants || []) !== JSON.stringify(b.participants || [])) return true;
+    if (JSON.stringify(a.attachments || []) !== JSON.stringify(b.attachments || [])) return true;
+    return false;
+  }
+
   function commitDraftChanges() {
-    if (!draft || !masterEvent) return;
+    if (!draft || !masterEvent) {
+      calendarState.closeInspector();
+      return;
+    }
 
     if (calendarState.isCreatingNewEvent) {
       eventStore.updateEvent(draft);
-      calendarState.isCreatingNewEvent = false;
-      initialEventSnapshot = JSON.parse(JSON.stringify(draft));
+      calendarState.closeInspector();
       return;
     }
 
     if (!masterEvent.rrule || masterEvent.rrule === 'none') {
-      eventStore.updateEvent(draft);
-      initialEventSnapshot = JSON.parse(JSON.stringify(draft));
+      if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
+        eventStore.updateEvent(draft);
+      }
+      calendarState.closeInspector();
       return;
     }
 
-    if (initialEventSnapshot) {
-      const hasChanged = (
-        initialEventSnapshot.title !== draft.title ||
-        initialEventSnapshot.startTime !== draft.startTime ||
-        initialEventSnapshot.endTime !== draft.endTime ||
-        initialEventSnapshot.description !== draft.description ||
-        initialEventSnapshot.colorOverride !== draft.colorOverride ||
-        initialEventSnapshot.calendarId !== draft.calendarId ||
-        initialEventSnapshot.rrule !== draft.rrule
+    if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
+      contextMenuStore.promptRecurringAction(
+        'update',
+        masterEvent,
+        draft,
+        calendarState.selectedDateKey || undefined,
+        initialEventSnapshot
       );
-
-      if (hasChanged) {
-        contextMenuStore.promptRecurringAction(
-          'update',
-          masterEvent,
-          draft,
-          calendarState.selectedDateKey || undefined
-        );
-      }
+    } else {
+      calendarState.closeInspector();
     }
   }
 
   function handleInspectorClose() {
     commitDraftChanges();
-    calendarState.closeInspector();
     activeSideMenu = 'none';
-    draft = null;
-    initialEventSnapshot = null;
   }
 
   function toggleAllDay() {
@@ -439,7 +454,7 @@
   }
 </script>
 
-{#if draft}
+{#if masterEvent && draft}
   <!-- Inspector Card Component -->
   <aside
     bind:this={inspectorElement}
@@ -877,7 +892,7 @@
       </div>
     </div>
 
-    <!-- ================= UNCLIPPED SIDE-DOCKED MENUS (z-[999]) ================= -->
+    <!-- ================= UNCLIPPED SIDE-DOCKED MENUS ================= -->
 
     <!-- Mini Calendar Popover -->
     {#if activeSideMenu === 'date'}

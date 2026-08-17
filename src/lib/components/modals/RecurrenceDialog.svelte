@@ -9,15 +9,15 @@
   let pending = $derived(contextMenuStore.pendingRecurringAction);
   let showPendingDiffs = $state(true);
 
-  // Check if date or weekday changed
+  // Date or weekday change check
   let isDateChange = $derived.by(() => {
     if (!pending?.updatedEvent) return false;
-    const oldOccKey = pending.occurrenceDate || format(parseISO(pending.originalEvent.startTime), 'yyyy-MM-dd');
+    const base = pending.initialSnapshot || pending.originalEvent;
+    const oldOccKey = pending.occurrenceDate || format(parseISO(base.startTime), 'yyyy-MM-dd');
     const newOccKey = format(parseISO(pending.updatedEvent.startTime), 'yyyy-MM-dd');
     return oldOccKey !== newOccKey;
   });
 
-  // Ensure default scope is 'this'
   $effect(() => {
     if (isDateChange && selectedScope === 'all') {
       selectedScope = 'this';
@@ -48,13 +48,9 @@
       } else {
         eventStore.deleteEvent(master.id);
       }
-
-      if (calendarState.selectedEventId === master.id) {
-        calendarState.closeInspector();
-      }
     } else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // 1. Exclude this specific occurrence from master series to prevent duplicates
+        // 1. Exclude this specific occurrence from master series
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -62,7 +58,7 @@
           updatedAt: new Date().toISOString()
         });
 
-        // 2. Create detached instance linked to series
+        // 2. Create standalone detached instance
         const detached = {
           ...updated,
           id: 'evt_' + Date.now(),
@@ -76,14 +72,14 @@
         };
         eventStore.addEvent(detached);
       } else if (selectedScope === 'following' && occurrenceDate) {
-        // 1. Terminate previous master series before this occurrence
+        // 1. Terminate old series before this date
         eventStore.updateEvent({
           ...master,
           untilDate: occurrenceDate,
           updatedAt: new Date().toISOString()
         });
 
-        // 2. Start new series from this occurrence forward
+        // 2. Start new series from this date forward
         const newSeries = {
           ...updated,
           id: 'evt_' + Date.now(),
@@ -96,7 +92,7 @@
         };
         eventStore.addEvent(newSeries);
       } else {
-        // 3. Update "All events" (shifts time-of-day, title, description, color across series)
+        // 3. Update "All events" across master series
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
         const duration = differenceInMinutes(newEnd, newStart);
@@ -124,6 +120,7 @@
 
     contextMenuStore.isRecurrenceModalOpen = false;
     contextMenuStore.pendingRecurringAction = null;
+    calendarState.closeInspector();
   }
 
   function handleContinueEditing() {
@@ -133,6 +130,7 @@
   function handleDiscard() {
     contextMenuStore.isRecurrenceModalOpen = false;
     contextMenuStore.pendingRecurringAction = null;
+    calendarState.closeInspector();
   }
 </script>
 
@@ -143,7 +141,6 @@
         Edit repeat event “{pending.originalEvent.title || '(No Title)'}”
       </h3>
 
-      <!-- Scope Options -->
       <div class="flex flex-col gap-1.5 text-xs text-zinc-200">
         <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'this' ? 'bg-[#252525] font-semibold text-white' : ''}">
           <input type="radio" name="recurrenceScope" value="this" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
@@ -155,7 +152,6 @@
           <span>This and following events</span>
         </label>
 
-        <!-- "All events" is only available when not changing the date/weekday -->
         {#if !isDateChange}
           <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'all' ? 'bg-[#252525] font-semibold text-white' : ''}">
             <input type="radio" name="recurrenceScope" value="all" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
@@ -164,7 +160,6 @@
         {/if}
       </div>
 
-      <!-- Pending Changes Diff List -->
       {#if pending.diffs && pending.diffs.length > 0}
         <div class="border-t border-[#2a2a2a] pt-3 flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs text-zinc-400 font-medium">
@@ -195,7 +190,6 @@
         </div>
       {/if}
 
-      <!-- Footer Buttons -->
       <div class="flex items-center justify-between pt-3 border-t border-[#292929]">
         <button 
           onclick={handleDiscard}
