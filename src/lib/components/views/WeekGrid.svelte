@@ -22,11 +22,11 @@
     return cal ? cal.isVisible : true;
   }
 
-  function handleEventClick(e: MouseEvent, event: CalendarEvent) {
+  function handleEventClick(e: MouseEvent, event: CalendarEvent, dateKey: string) {
     if (timelineDragStore.isDragging) return;
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    calendarState.openInspector(event, rect);
+    calendarState.openInspector(event, rect, false, dateKey);
   }
 
   function handleEventContextMenu(e: MouseEvent, event: CalendarEvent) {
@@ -61,7 +61,7 @@
     };
 
     eventStore.addEvent(newEvent);
-    calendarState.openInspector(newEvent, rect);
+    calendarState.openInspector(newEvent, rect, true, format(day, 'yyyy-MM-dd'));
   }
 </script>
 
@@ -88,7 +88,6 @@
 
   <!-- Timed Grid Canvas -->
   <div class="flex-1 flex overflow-y-auto relative custom-scrollbar min-h-0">
-    <!-- Time Axis -->
     <div class="w-14 flex flex-col shrink-0 border-r border-[#222222] bg-[#131313]">
       {#each hours as hour}
         <div
@@ -99,7 +98,6 @@
       {/each}
     </div>
 
-    <!-- 7 Day Columns -->
     <div class="flex-1 flex relative h-[1152px]">
       <div class="absolute inset-0 flex flex-col pointer-events-none">
         {#each hours as _}
@@ -119,14 +117,15 @@
           role="gridcell"
           tabindex="0"
         >
-          {#each dayEvents as event (event.id)}
+          {#each dayEvents as event (event.id + '_' + dateKey)}
             {@const style = computeTimedEventStyle(event)}
             {@const token = getEventToken(event)}
-            {@const isSelected = calendarState.selectedEventId === event.id}
+            {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === dateKey}
             {@const isBeingDragged = timelineDragStore.activeEvent?.id === event.id}
 
             <div
-              onclick={(e) => handleEventClick(e, event)}
+              data-calendar-event="true"
+              onclick={(e) => handleEventClick(e, event, dateKey)}
               oncontextmenu={(e) => handleEventContextMenu(e, event)}
               onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, day, 'move')}
               class="absolute left-1 right-1 rounded-lg px-2 py-1 cursor-grab active:cursor-grabbing text-xs transition-all overflow-hidden flex flex-col justify-between group select-none border
@@ -137,7 +136,7 @@
               style="top: {style.top}px; height: {style.height}px; {isSelected ? `background: linear-gradient(135deg, ${token.selectedBg} 0%, rgba(37,99,235,0.85) 100%); border-color: ${token.hex};` : `border-left: 3.5px solid ${token.hex};`}"
               role="button"
               tabindex="0"
-              onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
+              onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, dateKey)}
             >
               <div
                 onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, day, 'resize-top')}

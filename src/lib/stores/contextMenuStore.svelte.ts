@@ -105,7 +105,7 @@ class ContextMenuStore {
         });
       }
 
-      // ZERO-DIFF GUARD: If no fields actually changed, NEVER open the modal
+      // STRICT ZERO-DIFF GUARD: If no properties changed, NEVER open the modal
       if (diffs.length === 0) {
         this.isRecurrenceModalOpen = false;
         this.pendingRecurringAction = null;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { 
     format, 
     parseISO, 
@@ -11,6 +12,12 @@
     addMinutes,
     addMonths,
     subMonths,
+    addDays,
+    subDays,
+    addWeeks,
+    subWeeks,
+    addYears,
+    subYears,
     isSameDay,
     isToday,
     parse
@@ -73,48 +80,71 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
-  // Project occurrence data on event selection
+  // Svelte 5 Untracked Effect - Prevents infinite reactive update loops
   $effect(() => {
-    if (!masterEvent) {
-      draft = null;
-      initialEventSnapshot = null;
+    const currentEvent = masterEvent;
+    const dateKey = calendarState.selectedDateKey;
+
+    if (!currentEvent) {
+      untrack(() => {
+        draft = null;
+        initialEventSnapshot = null;
+      });
       return;
     }
 
-    if (!draft || draft.id !== masterEvent.id || draft.occurrenceDate !== calendarState.selectedDateKey) {
-      const projected = { ...masterEvent };
-      if (calendarState.selectedDateKey && masterEvent.rrule && masterEvent.rrule !== 'none') {
-        const [y, m, d] = calendarState.selectedDateKey.split('-').map(Number);
-        const origStart = parseISO(masterEvent.startTime);
-        const origEnd = parseISO(masterEvent.endTime);
-        const duration = differenceInMinutes(origEnd, origStart);
+    const targetKey = `${currentEvent.id}_${dateKey || ''}`;
 
-        const newStart = new Date(y, m - 1, d, origStart.getHours(), origStart.getMinutes());
-        const newEnd = new Date(newStart.getTime() + duration * 60 * 1000);
-        projected.startTime = newStart.toISOString();
-        projected.endTime = newEnd.toISOString();
-        projected.occurrenceDate = calendarState.selectedDateKey;
+    untrack(() => {
+      if (!draft || `${draft.id}_${draft.occurrenceDate || ''}` !== targetKey) {
+        const projected = { ...currentEvent };
+        if (dateKey && currentEvent.rrule && currentEvent.rrule !== 'none') {
+          const [y, m, d] = dateKey.split('-').map(Number);
+          const origStart = parseISO(currentEvent.startTime);
+          const origEnd = parseISO(currentEvent.endTime);
+          const duration = differenceInMinutes(origEnd, origStart);
+
+          const newStart = new Date(y, m - 1, d, origStart.getHours(), origStart.getMinutes());
+          const newEnd = new Date(newStart.getTime() + duration * 60 * 1000);
+          projected.startTime = newStart.toISOString();
+          projected.endTime = newEnd.toISOString();
+          projected.occurrenceDate = dateKey;
+        }
+        draft = JSON.parse(JSON.stringify(projected));
+        initialEventSnapshot = JSON.parse(JSON.stringify(projected));
+        pickerMonth = parseISO(projected.startTime);
+        startTimeInput = format(parseISO(projected.startTime), 'h:mm a');
+        endTimeInput = format(parseISO(projected.endTime), 'h:mm a');
+        dateInput = format(parseISO(projected.startTime), 'EEE MMM d');
       }
-      draft = JSON.parse(JSON.stringify(projected));
-      initialEventSnapshot = JSON.parse(JSON.stringify(projected));
-      pickerMonth = parseISO(projected.startTime);
-      startTimeInput = format(parseISO(projected.startTime), 'h:mm a');
-      endTimeInput = format(parseISO(projected.endTime), 'h:mm a');
-      dateInput = format(parseISO(projected.startTime), 'EEE MMM d');
-    }
+    });
   });
 
-  // Global click-away listener for auto-save and recurrence prompt
+  // Global click-away listener for docked and floating panels
   $effect(() => {
     function handleGlobalPointerDown(e: MouseEvent) {
       if (contextMenuStore.isRecurrenceModalOpen) return;
 
-      const target = e.target as Node;
-      if (inspectorElement && !inspectorElement.contains(target)) {
-        if (activeSideMenu !== 'none') {
-          activeSideMenu = 'none';
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+
+      if (inspectorElement && inspectorElement.contains(target)) return;
+      if (target.closest('.recurrence-modal') || target.closest('.dialog-overlay')) return;
+
+      if (activeSideMenu !== 'none') {
+        activeSideMenu = 'none';
+      }
+
+      if (calendarState.isInspectorDocked) {
+        // Docked mode: Commit silently without closing the sidebar panel
+        commitDraftChanges(false);
+      } else {
+        // Floating mode: Close on outside click
+        if (target.closest('[data-calendar-event]')) {
+          commitDraftChanges(false);
+        } else {
+          handleInspectorClose();
         }
-        commitDraftChanges();
       }
     }
 
@@ -318,6 +348,58 @@
     activeSideMenu = 'none';
   }
 
+  function getPrevOccurrence(rrule: string, currentDate: Date): Date {
+    if (rrule === 'daily') return subDays(currentDate, 1);
+    if (rrule === 'weekday') {
+      let d = subDays(currentDate, 1);
+      while (d.getDay() === 0 || d.getDay() === 6) {
+        d = subDays(d, 1);
+      }
+      return d;
+    }
+    if (rrule === 'weekly') return subWeeks(currentDate, 1);
+    if (rrule === 'biweekly') return subWeeks(currentDate, 2);
+    if (rrule === 'monthly_date' || rrule === 'monthly' || rrule === 'monthly_day') return subMonths(currentDate, 1);
+    if (rrule === 'yearly') return subYears(currentDate, 1);
+    return subWeeks(currentDate, 1);
+  }
+
+  function getNextOccurrence(rrule: string, currentDate: Date): Date {
+    if (rrule === 'daily') return addDays(currentDate, 1);
+    if (rrule === 'weekday') {
+      let d = addDays(currentDate, 1);
+      while (d.getDay() === 0 || d.getDay() === 6) {
+        d = addDays(d, 1);
+      }
+      return d;
+    }
+    if (rrule === 'weekly') return addWeeks(currentDate, 1);
+    if (rrule === 'biweekly') return addWeeks(currentDate, 2);
+    if (rrule === 'monthly_date' || rrule === 'monthly' || rrule === 'monthly_day') return addMonths(currentDate, 1);
+    if (rrule === 'yearly') return addYears(currentDate, 1);
+    return addWeeks(currentDate, 1);
+  }
+
+  function navigateOccurrence(direction: 'prev' | 'next') {
+    if (!draft || !draft.rrule || draft.rrule === 'none' || !masterEvent) return;
+
+    commitDraftChanges(false);
+
+    const currentOcc = parseISO(draft.startTime);
+    const targetDate = direction === 'prev' 
+      ? getPrevOccurrence(draft.rrule, currentOcc)
+      : getNextOccurrence(draft.rrule, currentOcc);
+
+    const masterStart = parseISO(masterEvent.startTime);
+    if (direction === 'prev' && targetDate < startOfDay(masterStart)) {
+      return;
+    }
+
+    const dateKey = format(targetDate, 'yyyy-MM-dd');
+    calendarState.selectedDateKey = dateKey;
+    calendarState.setDate(targetDate);
+  }
+
   function hasEventChanged(a: CalendarEvent, b: CalendarEvent): boolean {
     if ((a.title || '') !== (b.title || '')) return true;
     if (a.startTime !== b.startTime) return true;
@@ -338,23 +420,26 @@
     return false;
   }
 
-  function commitDraftChanges() {
+  function commitDraftChanges(closeWhenClean: boolean = true) {
     if (!draft || !masterEvent) {
-      calendarState.closeInspector();
+      if (closeWhenClean) calendarState.closeInspector();
       return;
     }
 
     if (calendarState.isCreatingNewEvent) {
       eventStore.updateEvent(draft);
-      calendarState.closeInspector();
+      calendarState.isCreatingNewEvent = false;
+      initialEventSnapshot = JSON.parse(JSON.stringify(draft));
+      if (closeWhenClean) calendarState.closeInspector();
       return;
     }
 
     if (!masterEvent.rrule || masterEvent.rrule === 'none') {
       if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
         eventStore.updateEvent(draft);
+        initialEventSnapshot = JSON.parse(JSON.stringify(draft));
       }
-      calendarState.closeInspector();
+      if (closeWhenClean) calendarState.closeInspector();
       return;
     }
 
@@ -367,12 +452,12 @@
         initialEventSnapshot
       );
     } else {
-      calendarState.closeInspector();
+      if (closeWhenClean) calendarState.closeInspector();
     }
   }
 
   function handleInspectorClose() {
-    commitDraftChanges();
+    commitDraftChanges(true);
     activeSideMenu = 'none';
   }
 
@@ -665,17 +750,42 @@
         <ChevronDown size={12} class="text-zinc-500 shrink-0" />
       </button>
 
-      <!-- Recurrence -->
-      <button 
-        onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'; }}
-        class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
-      >
-        <div class="flex items-center gap-2 truncate">
+      <!-- Recurrence with Notion < > Series Navigators -->
+      <div class="flex items-center justify-between py-0.5 rounded hover:bg-[#222222] transition-colors group">
+        <button 
+          onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'; }}
+          class="flex items-center gap-2 text-xs text-zinc-300 hover:text-white truncate flex-1 cursor-pointer"
+        >
           <Repeat size={13} class="shrink-0 text-zinc-400" />
           <span class="truncate">{repeatLabel}</span>
-        </div>
-        <ChevronDown size={12} class="text-zinc-500 shrink-0" />
-      </button>
+        </button>
+
+        {#if draft.rrule && draft.rrule !== 'none'}
+          <div class="flex items-center gap-0.5 text-zinc-400">
+            <button
+              onpointerdown={(e) => { e.stopPropagation(); navigateOccurrence('prev'); }}
+              class="p-1 hover:text-white hover:bg-[#2c2c2c] rounded transition-colors cursor-pointer"
+              title="Previous occurrence"
+            >
+              <ChevronLeft size={13} />
+            </button>
+            <button
+              onpointerdown={(e) => { e.stopPropagation(); navigateOccurrence('next'); }}
+              class="p-1 hover:text-white hover:bg-[#2c2c2c] rounded transition-colors cursor-pointer"
+              title="Next occurrence"
+            >
+              <ChevronRight size={13} />
+            </button>
+          </div>
+        {:else}
+          <button 
+            onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'; }}
+            class="text-zinc-500 hover:text-zinc-300 p-0.5 cursor-pointer"
+          >
+            <ChevronDown size={12} />
+          </button>
+        {/if}
+      </div>
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 

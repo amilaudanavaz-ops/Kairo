@@ -27,11 +27,11 @@
     getEventsForDay(eventStore.events, currentDay).filter((e) => !e.isAllDay && isCalendarVisible(e.calendarId))
   );
 
-  function handleEventClick(e: MouseEvent, event: CalendarEvent) {
+  function handleEventClick(e: MouseEvent, event: CalendarEvent, dKey: string) {
     if (timelineDragStore.isDragging) return;
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    calendarState.openInspector(event, rect);
+    calendarState.openInspector(event, rect, false, dKey);
   }
 
   function handleEventContextMenu(e: MouseEvent, event: CalendarEvent) {
@@ -66,7 +66,7 @@
     };
 
     eventStore.addEvent(newEvent);
-    calendarState.openInspector(newEvent, rect);
+    calendarState.openInspector(newEvent, rect, true, dateKey);
   }
 </script>
 
@@ -102,14 +102,15 @@
         {/each}
       </div>
 
-      {#each dayEvents as event (event.id)}
+      {#each dayEvents as event (event.id + '_' + dateKey)}
         {@const style = computeTimedEventStyle(event)}
         {@const token = getEventToken(event)}
-        {@const isSelected = calendarState.selectedEventId === event.id}
+        {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === dateKey}
         {@const isBeingDragged = timelineDragStore.activeEvent?.id === event.id}
 
         <div
-          onclick={(e) => handleEventClick(e, event)}
+          data-calendar-event="true"
+          onclick={(e) => handleEventClick(e, event, dateKey)}
           oncontextmenu={(e) => handleEventContextMenu(e, event)}
           onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'move')}
           class="absolute left-4 right-8 rounded-xl p-3 cursor-grab active:cursor-grabbing text-xs transition-all flex flex-col justify-between group select-none border
@@ -120,7 +121,7 @@
           style="top: {style.top}px; height: {style.height}px; {isSelected ? `background: linear-gradient(135deg, ${token.selectedBg} 0%, rgba(37,99,235,0.85) 100%); border-color: ${token.hex};` : `border-left: 4px solid ${token.hex};`}"
           role="button"
           tabindex="0"
-          onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event)}
+          onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, dateKey)}
         >
           <div
             onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'resize-top')}

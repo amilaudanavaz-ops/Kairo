@@ -142,6 +142,7 @@
 
             {#if event.isAllDay}
               <div
+                data-calendar-event="true"
                 onpointerdown={(e) => handlePointerDown(e, event)}
                 onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
@@ -156,8 +157,8 @@
                 <span class="truncate pointer-events-none">{event.title || '(No Title)'}</span>
               </div>
             {:else}
-              <!-- Notion Minimalist Strip with Glass Selection Highlight -->
               <div
+                data-calendar-event="true"
                 onpointerdown={(e) => handlePointerDown(e, event)}
                 onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
@@ -171,13 +172,11 @@
                 tabindex="0"
                 onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, cell.dateKey)}
               >
-                <!-- Left Vertical Curved Pill -->
                 <span 
                   class="w-[3.5px] h-3.5 rounded-full mr-1.5 shrink-0" 
                   style="background-color: {isSelected ? '#ffffff' : token.hex};"
                 ></span>
 
-                <!-- Notion Light Tinted Formatted Time -->
                 <span 
                   class="text-[10px] font-semibold mr-1.5 shrink-0 pointer-events-none"
                   style="color: {isSelected ? '#ffffff' : token.timeText};"
@@ -185,7 +184,6 @@
                   {format(parseISO(event.startTime), 'h:mm a')}
                 </span>
 
-                <!-- Event Title -->
                 <span 
                   class="truncate pointer-events-none font-medium"
                   style="color: {isSelected ? '#ffffff' : '#ededed'};"
