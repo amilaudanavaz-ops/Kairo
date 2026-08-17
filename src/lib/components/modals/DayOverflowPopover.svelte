@@ -5,19 +5,37 @@
   import { eventStore } from '../../stores/eventStore.svelte';
   import { dragStore } from '../../stores/dragStore.svelte';
   import { getEventsForDay } from '../../utils/dateMath';
-  import type { CalendarEvent } from '../../../types/event';
+  import type { CalendarEvent, CalendarCategory } from '../../../types/event';
 
   let overflow = $derived(calendarState.overflowData);
+
+  function findCalendar(calendarId: string): CalendarCategory | undefined {
+    return calendarState.calendars.find(
+      (c: CalendarCategory) => c.id === calendarId || c.googleCalendarId === calendarId
+    );
+  }
+
+  function isCalendarVisible(calendarId: string): boolean {
+    const cal = findCalendar(calendarId);
+    return cal ? cal.isVisible : true;
+  }
+
+  function isEventReadOnly(event: CalendarEvent): boolean {
+    const cal = findCalendar(event.calendarId);
+    return cal?.accessRole === 'reader' || cal?.accessRole === 'freeBusyReader';
+  }
+
   let currentEvents = $derived(
-    overflow ? getEventsForDay(eventStore.events, overflow.date) : []
+    overflow ? getEventsForDay(eventStore.events, overflow.date).filter((e: CalendarEvent) => isCalendarVisible(e.calendarId)) : []
   );
 
   function getCalendarColor(calendarId: string): string {
-    const cal = calendarState.calendars.find((c) => c.id === calendarId);
+    const cal = findCalendar(calendarId);
     return cal?.colorHex ?? '#3b82f6';
   }
 
   function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
+    if (isEventReadOnly(event)) return;
     dragStore.startDrag(e, event, () => {
       calendarState.closeOverflow();
     });
@@ -27,7 +45,6 @@
     if (dragStore.isDragging) return;
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    // Keep overflow open and attach inspector to the clicked task item
     calendarState.openInspector(event, rect);
   }
 
@@ -82,7 +99,7 @@
           calendarState.closeOverflow();
           calendarState.closeInspector();
         }}
-        class="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-[#262626] rounded-md transition-colors"
+        class="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-[#262626] rounded-md transition-colors cursor-pointer"
       >
         <X size={14} />
       </button>
@@ -93,11 +110,13 @@
       {#each currentEvents as event (event.id)}
         {@const color = getCalendarColor(event.calendarId)}
         {@const isSelected = calendarState.selectedEvent?.id === event.id}
+        {@const isReadOnly = isEventReadOnly(event)}
 
         <div
           onpointerdown={(e) => handlePointerDown(e, event)}
           onclick={(e) => handleTaskClick(e, event)}
-          class="flex items-center gap-2 p-2 rounded-lg border cursor-grab active:cursor-grabbing transition-all text-xs group
+          class="flex items-center gap-2 p-2 rounded-lg border transition-all text-xs group
+            {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
             {isSelected 
               ? 'bg-[#262626] border-blue-500/80 ring-1 ring-blue-500/40 shadow-sm' 
               : 'bg-[#1f1f1f] hover:bg-[#252525] border-[#292929]'}"

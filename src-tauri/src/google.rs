@@ -1,12 +1,17 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GoogleTokenResponse {
+    #[serde(alias = "accessToken")]
     pub access_token: String,
+    #[serde(alias = "tokenType")]
     pub token_type: String,
-    pub expires_in: u64,
+    #[serde(alias = "expiresIn")]
+    pub expires_in: Option<u64>,
+    #[serde(alias = "refreshToken")]
     pub refresh_token: Option<String>,
     pub scope: Option<String>,
 }
@@ -15,24 +20,57 @@ pub struct GoogleTokenResponse {
 pub struct GoogleUserProfile {
     pub id: String,
     pub email: String,
-    pub name: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
     pub picture: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GoogleCalendarItem {
     pub id: String,
-    pub summary: String,
-    #[serde(rename = "backgroundColor")]
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(alias = "backgroundColor")]
     pub background_color: Option<String>,
-    #[serde(rename = "foregroundColor")]
+    #[serde(alias = "foregroundColor")]
     pub foreground_color: Option<String>,
     pub primary: Option<bool>,
+    #[serde(alias = "accessRole")]
+    pub access_role: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GoogleCalendarListResponse {
+    #[serde(default)]
     pub items: Vec<GoogleCalendarItem>,
+    #[serde(alias = "nextPageToken")]
+    pub next_page_token: Option<String>,
+    #[serde(alias = "nextSyncToken")]
+    pub next_sync_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NormalizedGoogleEvent {
+    pub google_event_id: String,
+    pub recurring_event_id: Option<String>,
+    pub original_start_time: Option<String>,
+    pub rrule: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub meeting_url: Option<String>,
+    pub conferencing_provider: Option<String>,
+    pub start_time: String,
+    pub end_time: String,
+    pub is_all_day: bool,
+    pub time_zone: String,
+    pub status: String,
+    pub busy_status: String,
+    pub color_override: Option<String>,
+    pub etag: Option<String>,
+    pub participants: Vec<String>,
+    pub reminders: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,12 +93,10 @@ pub async fn start_google_auth(
         urlencoding::encode(redirect_uri)
     );
 
-    // 1. Open default browser to Google's consent screen
     if let Err(e) = open::that(&auth_url) {
         return Err(format!("Failed to open browser: {}", e));
     }
 
-    // 2. Start local TCP loopback listener on port 8080
     let listener = TcpListener::bind("127.0.0.1:8080")
         .map_err(|e| format!("Failed to bind local loopback port 8080: {}", e))?;
 
@@ -97,7 +133,6 @@ pub async fn start_google_auth(
 
     let code = auth_code.ok_or_else(|| "Failed to capture Google authorization code".to_string())?;
 
-    // 3. Exchange code for access & refresh tokens
     let http_client = reqwest::Client::new();
     let token_params = [
         ("code", code.as_str()),
@@ -124,7 +159,6 @@ pub async fn start_google_auth(
         .await
         .map_err(|e| format!("Failed to parse token response: {}", e))?;
 
-    // 4. Fetch Profile
     let profile_res = http_client
         .get("https://www.googleapis.com/oauth2/v2/userinfo")
         .bearer_auth(&token_data.access_token)
@@ -137,7 +171,6 @@ pub async fn start_google_auth(
         .await
         .map_err(|e| format!("Failed to parse profile JSON: {}", e))?;
 
-    // 5. Fetch User's Google Calendar List
     let calendars_res = http_client
         .get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
         .bearer_auth(&token_data.access_token)
@@ -146,7 +179,11 @@ pub async fn start_google_auth(
 
     let calendars = match calendars_res {
         Ok(res) => {
-            let list: GoogleCalendarListResponse = res.json().await.unwrap_or(GoogleCalendarListResponse { items: vec![] });
+            let list: GoogleCalendarListResponse = res.json().await.unwrap_or(GoogleCalendarListResponse {
+                items: vec![],
+                next_page_token: None,
+                next_sync_token: None,
+            });
             list.items
         }
         Err(_) => vec![],
@@ -158,4 +195,297 @@ pub async fn start_google_auth(
         refresh_token: token_data.refresh_token,
         calendars,
     })
+}
+
+#[tauri::command]
+pub async fn refresh_google_token(
+    client_id: String,
+    client_secret: String,
+    refresh_token: String,
+) -> Result<GoogleTokenResponse, String> {
+    let http_client = reqwest::Client::new();
+    let params = [
+        ("client_id", client_id.as_str()),
+        ("client_secret", client_secret.as_str()),
+        ("refresh_token", refresh_token.as_str()),
+        ("grant_type", "refresh_token"),
+    ];
+
+    let res = http_client
+        .post("https://oauth2.googleapis.com/token")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Token refresh request error: {}", e))?;
+
+    if !res.status().is_success() {
+        let err = res.text().await.unwrap_or_default();
+        return Err(format!("Token refresh failed: {}", err));
+    }
+
+    res.json::<GoogleTokenResponse>()
+        .await
+        .map_err(|e| format!("Failed to parse refreshed token: {}", e))
+}
+
+#[tauri::command]
+pub async fn fetch_google_calendars(
+    access_token: String,
+) -> Result<Vec<GoogleCalendarItem>, String> {
+    let http_client = reqwest::Client::new();
+    let res = http_client
+        .get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
+        .bearer_auth(&access_token)
+        .send()
+        .await
+        .map_err(|e| format!("Calendar list fetch error: {}", e))?;
+
+    if !res.status().is_success() {
+        let err = res.text().await.unwrap_or_default();
+        return Err(format!("Failed to retrieve calendars: {}", err));
+    }
+
+    let list: GoogleCalendarListResponse = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse calendar list: {}", e))?;
+
+    Ok(list.items)
+}
+
+#[tauri::command]
+pub async fn fetch_google_events(
+    access_token: String,
+    calendar_id: String,
+    time_min: Option<String>,
+    time_max: Option<String>,
+) -> Result<Vec<NormalizedGoogleEvent>, String> {
+    let http_client = reqwest::Client::new();
+    let encoded_cal_id = urlencoding::encode(&calendar_id);
+    let mut url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&orderBy=startTime&maxResults=2500",
+        encoded_cal_id
+    );
+
+    if let Some(min) = time_min {
+        url.push_str(&format!("&timeMin={}", urlencoding::encode(&min)));
+    }
+    if let Some(max) = time_max {
+        url.push_str(&format!("&timeMax={}", urlencoding::encode(&max)));
+    }
+
+    let res = http_client
+        .get(&url)
+        .bearer_auth(&access_token)
+        .send()
+        .await
+        .map_err(|e| format!("Events fetch network error: {}", e))?;
+
+    if !res.status().is_success() {
+        let err_text = res.text().await.unwrap_or_default();
+        return Err(format!("Google API error for calendar {}: {}", calendar_id, err_text));
+    }
+
+    let json_val: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Google JSON: {}", e))?;
+
+    let items_array = match json_val.get("items").and_then(|i| i.as_array()) {
+        Some(arr) => arr,
+        None => return Ok(vec![]),
+    };
+
+    // 1. Collect all parent recurringEventId strings to retrieve their true RRULE definitions
+    let mut recurring_ids: HashSet<String> = HashSet::new();
+    for item in items_array {
+        if let Some(r_id) = item.get("recurringEventId").and_then(|r| r.as_str()) {
+            recurring_ids.insert(r_id.to_string());
+        }
+    }
+
+    // 2. Fetch master recurring series metadata (rrule, descriptions) for parents
+    let mut parent_metadata: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    for parent_id in recurring_ids {
+        let parent_url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
+            encoded_cal_id,
+            urlencoding::encode(&parent_id)
+        );
+
+        if let Ok(p_res) = http_client.get(&parent_url).bearer_auth(&access_token).send().await {
+            if let Ok(p_val) = p_res.json::<serde_json::Value>().await {
+                let mut found_rrule: Option<String> = None;
+                if let Some(rec_arr) = p_val.get("recurrence").and_then(|r| r.as_array()) {
+                    for r in rec_arr {
+                        if let Some(r_str) = r.as_str() {
+                            if r_str.starts_with("RRULE:") || r_str.starts_with("FREQ=") {
+                                found_rrule = Some(r_str.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+                let p_desc = p_val.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+                parent_metadata.insert(parent_id, (found_rrule, p_desc));
+            }
+        }
+    }
+
+    let mut events = Vec::new();
+
+    for item in items_array {
+        let status = item.get("status").and_then(|s| s.as_str()).unwrap_or("confirmed");
+        if status == "cancelled" {
+            continue;
+        }
+
+        let google_event_id = match item.get("id").and_then(|i| i.as_str()) {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+
+        let summary = item.get("summary").and_then(|s| s.as_str()).unwrap_or("(No Title)").to_string();
+        let mut description = item.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+        let location = item.get("location").and_then(|l| l.as_str()).map(|s| s.to_string());
+
+        // Extract Meeting & Conferencing links
+        let mut meeting_url: Option<String> = None;
+        let mut conferencing_provider = "google_meet".to_string();
+
+        if let Some(hangout) = item.get("hangoutLink").and_then(|h| h.as_str()) {
+            meeting_url = Some(hangout.to_string());
+            conferencing_provider = "google_meet".to_string();
+        } else if let Some(conf_data) = item.get("conferenceData") {
+            if let Some(entry_points) = conf_data.get("entryPoints").and_then(|e| e.as_array()) {
+                for ep in entry_points {
+                    if ep.get("entryPointType").and_then(|t| t.as_str()) == Some("video") {
+                        if let Some(uri) = ep.get("uri").and_then(|u| u.as_str()) {
+                            meeting_url = Some(uri.to_string());
+                            if uri.contains("zoom.us") {
+                                conferencing_provider = "zoom".to_string();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let recurring_event_id = item.get("recurringEventId").and_then(|r| r.as_str()).map(|s| s.to_string());
+
+        // Extract original start time for recurring exceptions
+        let original_start_time = item.get("originalStartTime").and_then(|orig| {
+            orig.get("dateTime").or_else(|| orig.get("date")).and_then(|d| d.as_str()).map(|s| s.to_string())
+        });
+
+        // Determine true RRULE from parent event or current item
+        let mut rrule: Option<String> = None;
+        if let Some(ref p_id) = recurring_event_id {
+            if let Some((parent_rrule, parent_desc)) = parent_metadata.get(p_id) {
+                if let Some(ref pr) = parent_rrule {
+                    rrule = Some(pr.clone());
+                }
+                if description.is_none() {
+                    description = parent_desc.clone();
+                }
+            }
+        }
+
+        if rrule.is_none() {
+            if let Some(rec_arr) = item.get("recurrence").and_then(|r| r.as_array()) {
+                for r in rec_arr {
+                    if let Some(r_str) = r.as_str() {
+                        if r_str.starts_with("RRULE:") || r_str.starts_with("FREQ=") {
+                            rrule = Some(r_str.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let color_override = item.get("colorId").and_then(|c| c.as_str()).map(|s| s.to_string());
+        let transparency = item.get("transparency").and_then(|t| t.as_str());
+        let busy_status = if transparency == Some("transparent") { "free".to_string() } else { "busy".to_string() };
+
+        // Attendees
+        let mut participants = Vec::new();
+        if let Some(attendees) = item.get("attendees").and_then(|a| a.as_array()) {
+            for att in attendees {
+                if let Some(email) = att.get("email").and_then(|e| e.as_str()) {
+                    participants.push(email.to_string());
+                } else if let Some(name) = att.get("displayName").and_then(|n| n.as_str()) {
+                    participants.push(name.to_string());
+                }
+            }
+        }
+
+        // Reminders
+        let mut reminders = Vec::new();
+        if let Some(rem_obj) = item.get("reminders") {
+            if let Some(overrides) = rem_obj.get("overrides").and_then(|o| o.as_array()) {
+                for ov in overrides {
+                    if let Some(mins) = ov.get("minutes").and_then(|m| m.as_u64()) {
+                        reminders.push(format!("{}m", mins));
+                    }
+                }
+            }
+        }
+        if reminders.is_empty() {
+            reminders.push("15m".to_string());
+        }
+
+        // Timestamps
+        let start_obj = item.get("start");
+        let (start_time, is_all_day, tz) = if let Some(st) = start_obj {
+            let tz = st.get("timeZone").and_then(|t| t.as_str()).unwrap_or("UTC").to_string();
+            if let Some(dt) = st.get("dateTime").and_then(|d| d.as_str()) {
+                (dt.to_string(), false, tz)
+            } else if let Some(d) = st.get("date").and_then(|d| d.as_str()) {
+                (format!("{}T00:00:00Z", d), true, tz)
+            } else {
+                ("1970-01-01T00:00:00Z".to_string(), false, "UTC".to_string())
+            }
+        } else {
+            ("1970-01-01T00:00:00Z".to_string(), false, "UTC".to_string())
+        };
+
+        let end_obj = item.get("end");
+        let end_time = if let Some(et) = end_obj {
+            if let Some(dt) = et.get("dateTime").and_then(|d| d.as_str()) {
+                dt.to_string()
+            } else if let Some(d) = et.get("date").and_then(|d| d.as_str()) {
+                format!("{}T23:59:59Z", d)
+            } else {
+                start_time.clone()
+            }
+        } else {
+            start_time.clone()
+        };
+
+        events.push(NormalizedGoogleEvent {
+            google_event_id,
+            recurring_event_id,
+            original_start_time,
+            rrule,
+            title: summary,
+            description,
+            location,
+            meeting_url,
+            conferencing_provider: Some(conferencing_provider),
+            start_time,
+            end_time,
+            is_all_day,
+            time_zone: tz,
+            status: status.to_string(),
+            busy_status,
+            color_override,
+            etag: item.get("etag").and_then(|e| e.as_str()).map(|s| s.to_string()),
+            participants,
+            reminders,
+        });
+    }
+
+    Ok(events)
 }

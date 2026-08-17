@@ -30,7 +30,6 @@
     Clock, 
     Globe, 
     Repeat, 
-    User, 
     Users, 
     Video, 
     Sparkles, 
@@ -45,21 +44,21 @@
     Scissors,
     Copy,
     Files,
-    ExternalLink,
     Check,
     Search,
     ArrowRight,
     Eye,
-    EyeOff
+    EyeOff,
+    Lock
   } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken, NOTION_COLORS } from '../../utils/colors';
-  import { generateMonthGrid } from '../../utils/dateMath';
+  import { generateMonthGrid, formatRRuleLabel } from '../../utils/dateMath';
   import { dispatchEventReminder } from '../../utils/notifications';
-  import type { CalendarEvent, ParticipantContact, LocationSuggestion } from '../../../types/event';
+  import type { CalendarEvent, CalendarCategory, ParticipantContact, LocationSuggestion } from '../../../types/event';
 
   let inspectorElement: HTMLElement | null = $state(null);
   let draft = $state<CalendarEvent | null>(null);
@@ -67,7 +66,10 @@
 
   let masterEvent = $derived(calendarState.selectedEvent);
   let activeCalendar = $derived(
-    calendarState.calendars.find((c) => c.id === (draft?.calendarId || masterEvent?.calendarId)) || calendarState.calendars[0]
+    calendarState.calendars.find((c: CalendarCategory) => c.id === (draft?.calendarId || masterEvent?.calendarId)) || calendarState.calendars[0]
+  );
+  let isReadOnly = $derived(
+    activeCalendar?.accessRole === 'reader' || activeCalendar?.accessRole === 'freeBusyReader'
   );
   let colorToken = $derived(resolveEventColorToken(draft?.colorOverride || activeCalendar?.colorHex));
 
@@ -85,11 +87,12 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
-  // Live Location Suggestions via OpenStreetMap Photon Engine (100% Free, Zero API Keys)
+  // Live Location Suggestions via OpenStreetMap Photon Engine
   let liveLocations = $state<LocationSuggestion[]>([]);
   let locationFetchTimeout: number | undefined;
 
   function handleLocationInput(val: string) {
+    if (isReadOnly) return;
     locationQuery = val;
     updateDraft('location', val);
     clearTimeout(locationFetchTimeout);
@@ -109,8 +112,7 @@
           }));
         }
       } catch {
-        // Fallback to local suggestions
-        liveLocations = calendarState.locations.filter(l => 
+        liveLocations = calendarState.locations.filter((l: LocationSuggestion) => 
           l.title.toLowerCase().includes(val.toLowerCase())
         );
       }
@@ -120,7 +122,7 @@
   let filteredContacts = $derived.by(() => {
     if (!participantQuery.trim()) return calendarState.contacts;
     const q = participantQuery.toLowerCase();
-    return calendarState.contacts.filter(c => 
+    return calendarState.contacts.filter((c: ParticipantContact) => 
       c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q)
     );
   });
@@ -233,13 +235,14 @@
 
   let repeatOptions = $derived.by(() => {
     if (!draft) return [];
-    const d = parseISO(draft.startTime);
+    // If an original start time exists (e.g. moved occurrence), use it to generate the proper default day slots
+    const d = draft.originalStartTime ? parseISO(draft.originalStartTime) : parseISO(draft.startTime);
     const dayName = format(d, 'EEE');
     const dayOfMonth = format(d, 'do');
     const monthDay = format(d, 'MMM d');
     const weekNum = ['1st', '2nd', '3rd', '4th', '5th'][getWeekOfMonth(d) - 1] || 'last';
 
-    return [
+    const list = [
       { id: 'none', label: 'Does not repeat' },
       { id: 'daily', label: 'Every day' },
       { id: 'weekday', label: 'Every weekday', sub: 'Mon – Fri' },
@@ -249,6 +252,35 @@
       { id: 'monthly_day', label: `Every month`, sub: `on the ${weekNum} ${dayName}` },
       { id: 'yearly', label: `Every year`, sub: `on ${monthDay}` }
     ];
+
+    // If Google supplied a specific custom RRULE (e.g. monthly on 3rd Sat), add it as an exact option if not already present
+    if (draft.rrule && draft.rrule !== 'none') {
+      const parsed = formatRRuleLabel(draft.rrule, d);
+      const exists = list.some(o => o.id === parsed.id || (o.label === parsed.label && o.sub === parsed.sub));
+      if (!exists && parsed.id !== 'none') {
+        list.push({ id: draft.rrule, label: parsed.label, sub: parsed.sub });
+      }
+    }
+
+    return list;
+  });
+
+  let parsedRRuleDisplay = $derived.by(() => {
+    if (!draft) return { id: 'none', label: 'Does not repeat' };
+    if (draft.rrule && draft.rrule !== 'none') {
+      const refDate = draft.originalStartTime ? parseISO(draft.originalStartTime) : parseISO(draft.startTime);
+      return formatRRuleLabel(draft.rrule, refDate);
+    }
+    if (draft.recurringEventId || draft.isRecurringInstance) {
+      return { id: 'weekly', label: 'Every week', sub: `on ${format(parseISO(draft.startTime), 'EEE')}` };
+    }
+    return { id: 'none', label: 'Does not repeat' };
+  });
+
+  let repeatLabel = $derived.by(() => {
+    const d = parsedRRuleDisplay;
+    if (d.id === 'none') return d.label;
+    return d.sub ? `${d.label} ${d.sub}` : d.label;
   });
 
   const reminderPresets = [
@@ -271,14 +303,8 @@
     return mins > 0 ? `${hrs}h ${mins}min` : `${hrs}h`;
   });
 
-  let repeatLabel = $derived.by(() => {
-    const target = repeatOptions.find(opt => opt.id === (draft?.rrule || 'none'));
-    if (!target) return 'Does not repeat';
-    return target.sub ? `${target.label} ${target.sub}` : target.label;
-  });
-
   function updateDraft<K extends keyof CalendarEvent>(field: K, value: CalendarEvent[K]) {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     draft = { ...draft, [field]: value, updatedAt: new Date().toISOString() };
   }
 
@@ -296,7 +322,7 @@
   }
 
   function applyCustomTime(isStart: boolean, timeStr: string) {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const parsed = parseTime12h(timeStr);
     if (!parsed) return;
 
@@ -330,12 +356,13 @@
   }
 
   function selectPresetTime(isStart: boolean, preset: string) {
+    if (isReadOnly) return;
     applyCustomTime(isStart, preset);
     activeSideMenu = 'none';
   }
 
   function applyCustomDate(str: string) {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     try {
       let parsed: Date | null = null;
       const clean = str.trim();
@@ -365,7 +392,7 @@
   }
 
   function selectNewDate(targetDay: Date) {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const baseStart = parseISO(draft.startTime);
     const baseEnd = parseISO(draft.endTime);
     const duration = differenceInMinutes(baseEnd, baseStart);
@@ -392,17 +419,48 @@
   }
 
   function navigateOccurrence(direction: 'prev' | 'next') {
-    if (!draft || !draft.rrule || draft.rrule === 'none' || !masterEvent) return;
+    if (!draft || (!draft.recurringEventId && parsedRRuleDisplay.id === 'none') || !masterEvent) return;
 
     commitDraftChanges(false);
 
+    // If recurring instances are synced from Google, jump directly between concrete sibling instances
+    if (draft.recurringEventId) {
+      const siblings = eventStore.events
+        .filter((e: CalendarEvent) => e.recurringEventId === draft?.recurringEventId && e.calendarId === draft?.calendarId)
+        .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+
+      const currentIdx = siblings.findIndex((s) => s.id === draft?.id);
+      if (currentIdx !== -1) {
+        const nextIdx = direction === 'next' ? currentIdx + 1 : currentIdx - 1;
+        if (nextIdx >= 0 && nextIdx < siblings.length) {
+          const targetEvent = siblings[nextIdx];
+          const targetDate = parseISO(targetEvent.startTime);
+          const dateKey = format(targetDate, 'yyyy-MM-dd');
+          calendarState.selectedEventId = targetEvent.id;
+          calendarState.selectedDateKey = dateKey;
+          calendarState.setDate(targetDate);
+          return;
+        }
+      }
+    }
+
+    // Fallback for local recurring series
     const currentOcc = parseISO(draft.startTime);
     let targetDate = currentOcc;
-    if (draft.rrule === 'daily') targetDate = direction === 'prev' ? subDays(currentOcc, 1) : addDays(currentOcc, 1);
-    else if (draft.rrule === 'weekly') targetDate = direction === 'prev' ? subWeeks(currentOcc, 1) : addWeeks(currentOcc, 1);
-    else if (draft.rrule === 'biweekly') targetDate = direction === 'prev' ? subWeeks(currentOcc, 2) : addWeeks(currentOcc, 2);
-    else if (draft.rrule.startsWith('monthly')) targetDate = direction === 'prev' ? subMonths(currentOcc, 1) : addMonths(currentOcc, 1);
-    else if (draft.rrule === 'yearly') targetDate = direction === 'prev' ? subYears(currentOcc, 1) : addYears(currentOcc, 1);
+    const ruleId = parsedRRuleDisplay.id;
+
+    if (ruleId === 'daily') targetDate = direction === 'prev' ? subDays(currentOcc, 1) : addDays(currentOcc, 1);
+    else if (ruleId === 'weekday') {
+      let d = direction === 'prev' ? subDays(currentOcc, 1) : addDays(currentOcc, 1);
+      while (d.getDay() === 0 || d.getDay() === 6) {
+        d = direction === 'prev' ? subDays(d, 1) : addDays(d, 1);
+      }
+      targetDate = d;
+    }
+    else if (ruleId === 'biweekly') targetDate = direction === 'prev' ? subWeeks(currentOcc, 2) : addWeeks(currentOcc, 2);
+    else if (ruleId.startsWith('monthly')) targetDate = direction === 'prev' ? subMonths(currentOcc, 1) : addMonths(currentOcc, 1);
+    else if (ruleId === 'yearly') targetDate = direction === 'prev' ? subYears(currentOcc, 1) : addYears(currentOcc, 1);
+    else targetDate = direction === 'prev' ? subWeeks(currentOcc, 1) : addWeeks(currentOcc, 1);
 
     const masterStart = parseISO(masterEvent.startTime);
     if (direction === 'prev' && targetDate < startOfDay(masterStart)) return;
@@ -413,7 +471,7 @@
   }
 
   function selectParticipant(contact: ParticipantContact) {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const current = draft.participants || [];
     if (!current.includes(contact.email)) {
       updateDraft('participants', [...current, contact.email]);
@@ -423,7 +481,7 @@
   }
 
   function selectLocation(loc: LocationSuggestion) {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const formatted = `${loc.title}, ${loc.subtitle}`;
     updateDraft('location', formatted);
     locationQuery = formatted;
@@ -431,7 +489,7 @@
   }
 
   function setGoogleMeet() {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const meetId = Math.random().toString(36).substring(2, 5) + '-' + Math.random().toString(36).substring(2, 6) + '-' + Math.random().toString(36).substring(2, 5);
     updateDraft('conferencingUrl', `https://meet.google.com/${meetId}`);
     updateDraft('conferencingProvider', 'google_meet');
@@ -439,7 +497,7 @@
   }
 
   function setZoom() {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const zoomId = Math.floor(100000000 + Math.random() * 900000000);
     updateDraft('conferencingUrl', `https://zoom.us/j/${zoomId}`);
     updateDraft('conferencingProvider', 'zoom');
@@ -447,7 +505,7 @@
   }
 
   function toggleAllDay() {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const next = !draft.isAllDay;
     if (next) {
       updateDraft('isAllDay', true);
@@ -465,13 +523,13 @@
   }
 
   function addAiMeetingNotes() {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const template = `\n\n### 🤖 AI Meeting Summary\n* Key Discussion Points:\n* Action Items:\n* Next Follow-up:`;
     updateDraft('description', (draft.description || '') + template);
   }
 
   function addReminder(remId: string) {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const current = Array.isArray(draft.reminders) ? draft.reminders : [];
     if (!current.includes(remId)) {
       updateDraft('reminders', [...current, remId]);
@@ -481,9 +539,9 @@
   }
 
   function removeReminder(remId: string) {
-    if (!draft) return;
+    if (!draft || isReadOnly) return;
     const current = Array.isArray(draft.reminders) ? draft.reminders : [];
-    updateDraft('reminders', current.filter(r => r !== remId));
+    updateDraft('reminders', current.filter((r: string) => r !== remId));
   }
 
   function calculatePosition(rect: DOMRect | null): string {
@@ -535,7 +593,7 @@
   }
 
   function commitDraftChanges(closeWhenClean: boolean = true) {
-    if (!draft || !masterEvent) {
+    if (!draft || !masterEvent || isReadOnly) {
       if (closeWhenClean) calendarState.closeInspector();
       return;
     }
@@ -586,26 +644,37 @@
   >
     <!-- Top Header Toolbar -->
     <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0 rounded-t-2xl bg-[#181818]">
-      <div class="relative">
-        <button 
-          onpointerdown={(e) => { e.stopPropagation(); isTypeDropdownOpen = !isTypeDropdownOpen; }}
-          class="flex items-center gap-1 text-xs font-semibold text-zinc-300 hover:text-white px-1.5 py-0.5 rounded hover:bg-[#242424] transition-colors cursor-pointer"
-        >
-          <span>Event</span>
-          <ChevronDown size={12} />
-        </button>
+      <div class="flex items-center gap-1.5">
+        <div class="relative">
+          <button 
+            onpointerdown={(e) => { if (!isReadOnly) { e.stopPropagation(); isTypeDropdownOpen = !isTypeDropdownOpen; } }}
+            class="flex items-center gap-1 text-xs font-semibold text-zinc-300 hover:text-white px-1.5 py-0.5 rounded hover:bg-[#242424] transition-colors {isReadOnly ? 'cursor-default' : 'cursor-pointer'}"
+          >
+            <span>Event</span>
+            {#if !isReadOnly}
+              <ChevronDown size={12} />
+            {/if}
+          </button>
 
-        {#if isTypeDropdownOpen}
-          <div class="absolute left-0 top-full mt-1 w-24 bg-[#202020] border border-[#2e2e2e] rounded-lg shadow-xl p-1 z-999 flex flex-col gap-0.5">
-            {#each ['Event', 'Task', 'Reminder'] as t}
-              <button
-                onpointerdown={(e) => { e.stopPropagation(); isTypeDropdownOpen = false; }}
-                class="text-left px-2 py-1 text-xs text-zinc-200 hover:bg-[#2c2c2c] rounded transition-colors cursor-pointer"
-              >
-                {t}
-              </button>
-            {/each}
-          </div>
+          {#if isTypeDropdownOpen && !isReadOnly}
+            <div class="absolute left-0 top-full mt-1 w-24 bg-[#202020] border border-[#2e2e2e] rounded-lg shadow-xl p-1 z-999 flex flex-col gap-0.5">
+              {#each ['Event', 'Task', 'Reminder'] as t}
+                <button
+                  onpointerdown={(e) => { e.stopPropagation(); isTypeDropdownOpen = false; }}
+                  class="text-left px-2 py-1 text-xs text-zinc-200 hover:bg-[#2c2c2c] rounded transition-colors cursor-pointer"
+                >
+                  {t}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        {#if isReadOnly}
+          <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-[10px] font-semibold text-zinc-400 select-none">
+            <Lock size={10} />
+            <span>Read-only</span>
+          </span>
         {/if}
       </div>
 
@@ -620,21 +689,23 @@
 
           {#if isActionMenuOpen}
             <div class="absolute right-0 top-full mt-1 w-44 bg-[#1f1f1f] border border-[#2e2e2e] rounded-xl shadow-2xl p-1 z-999 flex flex-col gap-0.5">
-              <button 
-                onpointerdown={(e) => {
-                  e.stopPropagation();
-                  if (draft) {
-                    calendarState.clipboardEvent = { ...draft };
-                    eventStore.deleteEvent(draft.id);
-                  }
-                  handleInspectorClose();
-                  isActionMenuOpen = false;
-                }} 
-                class="flex items-center justify-between px-2.5 py-1.5 text-xs text-zinc-200 hover:bg-[#2c2c2c] rounded-lg transition-colors cursor-pointer"
-              >
-                <div class="flex items-center gap-2"><Scissors size={13} /><span>Cut</span></div>
-                <span class="text-[10px] text-zinc-500 font-mono">Ctrl X</span>
-              </button>
+              {#if !isReadOnly}
+                <button 
+                  onpointerdown={(e) => {
+                    e.stopPropagation();
+                    if (draft) {
+                      calendarState.clipboardEvent = { ...draft };
+                      eventStore.deleteEvent(draft.id);
+                    }
+                    handleInspectorClose();
+                    isActionMenuOpen = false;
+                  }} 
+                  class="flex items-center justify-between px-2.5 py-1.5 text-xs text-zinc-200 hover:bg-[#2c2c2c] rounded-lg transition-colors cursor-pointer"
+                >
+                  <div class="flex items-center gap-2"><Scissors size={13} /><span>Cut</span></div>
+                  <span class="text-[10px] text-zinc-500 font-mono">Ctrl X</span>
+                </button>
+              {/if}
               <button 
                 onpointerdown={(e) => {
                   e.stopPropagation();
@@ -646,34 +717,36 @@
                 <div class="flex items-center gap-2"><Copy size={13} /><span>Copy</span></div>
                 <span class="text-[10px] text-zinc-500 font-mono">Ctrl C</span>
               </button>
-              <button 
-                onpointerdown={(e) => {
-                  e.stopPropagation();
-                  if (draft) eventStore.addEvent({ ...draft, id: 'evt_' + Date.now(), title: draft.title + ' (Copy)' });
-                  isActionMenuOpen = false;
-                }} 
-                class="flex items-center justify-between px-2.5 py-1.5 text-xs text-zinc-200 hover:bg-[#2c2c2c] rounded-lg transition-colors cursor-pointer"
-              >
-                <div class="flex items-center gap-2"><Files size={13} /><span>Duplicate</span></div>
-                <span class="text-[10px] text-zinc-500 font-mono">Ctrl D</span>
-              </button>
-              <div class="h-px bg-[#292929] my-0.5"></div>
-              <button 
-                onpointerdown={(e) => {
-                  e.stopPropagation();
-                  if (draft?.rrule && draft.rrule !== 'none') {
-                    contextMenuStore.promptRecurringAction('delete', draft);
-                  } else if (draft) {
-                    eventStore.deleteEvent(draft.id);
-                    handleInspectorClose();
-                  }
-                  isActionMenuOpen = false;
-                }} 
-                class="flex items-center justify-between px-2.5 py-1.5 text-xs text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
-              >
-                <div class="flex items-center gap-2"><Trash2 size={13} /><span>Delete</span></div>
-                <span class="text-[10px] text-rose-500 font-mono">Del</span>
-              </button>
+              {#if !isReadOnly}
+                <button 
+                  onpointerdown={(e) => {
+                    e.stopPropagation();
+                    if (draft) eventStore.addEvent({ ...draft, id: 'evt_' + Date.now(), title: draft.title + ' (Copy)' });
+                    isActionMenuOpen = false;
+                  }} 
+                  class="flex items-center justify-between px-2.5 py-1.5 text-xs text-zinc-200 hover:bg-[#2c2c2c] rounded-lg transition-colors cursor-pointer"
+                >
+                  <div class="flex items-center gap-2"><Files size={13} /><span>Duplicate</span></div>
+                  <span class="text-[10px] text-zinc-500 font-mono">Ctrl D</span>
+                </button>
+                <div class="h-px bg-[#292929] my-0.5"></div>
+                <button 
+                  onpointerdown={(e) => {
+                    e.stopPropagation();
+                    if (draft?.rrule && draft.rrule !== 'none') {
+                      contextMenuStore.promptRecurringAction('delete', draft);
+                    } else if (draft) {
+                      eventStore.deleteEvent(draft.id);
+                      handleInspectorClose();
+                    }
+                    isActionMenuOpen = false;
+                  }} 
+                  class="flex items-center justify-between px-2.5 py-1.5 text-xs text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
+                >
+                  <div class="flex items-center gap-2"><Trash2 size={13} /><span>Delete</span></div>
+                  <span class="text-[10px] text-rose-500 font-mono">Del</span>
+                </button>
+              {/if}
             </div>
           {/if}
         </div>
@@ -700,8 +773,9 @@
         type="text"
         placeholder="Add title"
         value={draft.title}
+        disabled={isReadOnly}
         oninput={(e) => updateDraft('title', (e.target as HTMLInputElement).value)}
-        class="w-full bg-transparent text-sm font-semibold text-zinc-100 placeholder-zinc-500 focus:outline-none shrink-0"
+        class="w-full bg-transparent text-sm font-semibold text-zinc-100 placeholder-zinc-500 focus:outline-none shrink-0 {isReadOnly ? 'cursor-default opacity-90' : ''}"
       />
 
       <!-- Time & Date Inputs -->
@@ -713,20 +787,22 @@
             <input
               type="text"
               bind:value={startTimeInput}
-              onfocus={() => activeSideMenu = 'start_time'}
+              disabled={isReadOnly}
+              onfocus={() => !isReadOnly && (activeSideMenu = 'start_time')}
               onblur={() => applyCustomTime(true, startTimeInput)}
               onkeydown={(e) => e.key === 'Enter' && applyCustomTime(true, startTimeInput)}
-              class="w-20 bg-[#222222] hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 rounded-md px-2 py-1 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
+              class="w-20 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-2 py-1 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
             />
             <span class="text-zinc-500 text-xs">→</span>
             
             <input
               type="text"
               bind:value={endTimeInput}
-              onfocus={() => activeSideMenu = 'end_time'}
+              disabled={isReadOnly}
+              onfocus={() => !isReadOnly && (activeSideMenu = 'end_time')}
               onblur={() => applyCustomTime(false, endTimeInput)}
               onkeydown={(e) => e.key === 'Enter' && applyCustomTime(false, endTimeInput)}
-              class="w-20 bg-[#222222] hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 rounded-md px-2 py-1 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
+              class="w-20 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-2 py-1 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
             />
 
             {#if durationText}
@@ -742,9 +818,12 @@
           <input
             type="text"
             bind:value={dateInput}
+            disabled={isReadOnly}
             onfocus={() => {
-              activeSideMenu = 'date';
-              if (draft) pickerMonth = parseISO(draft.startTime);
+              if (!isReadOnly && draft) {
+                activeSideMenu = 'date';
+                pickerMonth = parseISO(draft.startTime);
+              }
             }}
             onblur={() => applyCustomDate(dateInput)}
             onkeydown={(e) => {
@@ -753,7 +832,7 @@
                 activeSideMenu = 'none';
               }
             }}
-            class="w-28 bg-[#222222] hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 {activeSideMenu === 'date' ? 'bg-[#1a2333] ring-1 ring-blue-500 text-white' : 'text-zinc-200'} rounded-md px-2 py-1 text-xs font-semibold focus:outline-none transition-all cursor-pointer"
+            class="w-28 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 cursor-pointer'} {activeSideMenu === 'date' ? 'bg-[#1a2333] ring-1 ring-blue-500 text-white' : 'text-zinc-200'} rounded-md px-2 py-1 text-xs font-semibold focus:outline-none transition-all"
           />
         </div>
       </div>
@@ -764,8 +843,9 @@
         <button
           type="button"
           aria-label="Toggle all day event"
+          disabled={isReadOnly}
           onclick={toggleAllDay}
-          class="w-7 h-4 rounded-full transition-colors relative flex items-center p-0.5 cursor-pointer
+          class="w-7 h-4 rounded-full transition-colors relative flex items-center p-0.5 {isReadOnly ? 'opacity-60 cursor-default' : 'cursor-pointer'}
             {draft.isAllDay ? 'bg-blue-600' : 'bg-[#2b2b2b]'}"
         >
           <div
@@ -777,27 +857,31 @@
 
       <!-- Timezone -->
       <button 
-        onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'timezone' ? 'none' : 'timezone'; timezoneQuery = ''; }}
-        class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
+        disabled={isReadOnly}
+        onpointerdown={(e) => { if (!isReadOnly) { e.stopPropagation(); activeSideMenu = activeSideMenu === 'timezone' ? 'none' : 'timezone'; timezoneQuery = ''; } }}
+        class="w-full flex items-center justify-between text-xs text-zinc-300 {isReadOnly ? 'cursor-default' : 'hover:text-white hover:bg-[#222222] cursor-pointer'} py-0.5 rounded transition-colors shrink-0"
       >
         <div class="flex items-center gap-2 truncate">
           <Globe size={13} class="shrink-0 text-zinc-400" />
           <span class="truncate">{draft.timeZone || 'GMT+5:30 Colombo'}</span>
         </div>
-        <ChevronDown size={12} class="text-zinc-500 shrink-0" />
+        {#if !isReadOnly}
+          <ChevronDown size={12} class="text-zinc-500 shrink-0" />
+        {/if}
       </button>
 
       <!-- Recurrence with Notion < > Series Navigators -->
-      <div class="flex items-center justify-between py-0.5 rounded hover:bg-[#222222] transition-colors group">
+      <div class="flex items-center justify-between py-0.5 rounded {isReadOnly ? '' : 'hover:bg-[#222222]'} transition-colors group">
         <button 
-          onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'; }}
-          class="flex items-center gap-2 text-xs text-zinc-300 hover:text-white truncate flex-1 cursor-pointer"
+          disabled={isReadOnly}
+          onpointerdown={(e) => { if (!isReadOnly) { e.stopPropagation(); activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'; } }}
+          class="flex items-center gap-2 text-xs text-zinc-300 {isReadOnly ? 'cursor-default' : 'hover:text-white cursor-pointer'} truncate flex-1"
         >
           <Repeat size={13} class="shrink-0 text-zinc-400" />
           <span class="truncate">{repeatLabel}</span>
         </button>
 
-        {#if draft.rrule && draft.rrule !== 'none'}
+        {#if parsedRRuleDisplay.id !== 'none' || draft.recurringEventId || draft.isRecurringInstance}
           <div class="flex items-center gap-0.5 text-zinc-400">
             <button
               onpointerdown={(e) => { e.stopPropagation(); navigateOccurrence('prev'); }}
@@ -814,7 +898,7 @@
               <ChevronRight size={13} />
             </button>
           </div>
-        {:else}
+        {:else if !isReadOnly}
           <button 
             onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'; }}
             class="text-zinc-500 hover:text-zinc-300 p-0.5 cursor-pointer"
@@ -832,15 +916,16 @@
           <Users size={13} class="shrink-0 text-zinc-500" />
           <input
             type="text"
-            placeholder="Add participant"
+            placeholder={isReadOnly ? "No participants" : "Add participant"}
+            disabled={isReadOnly}
             bind:value={participantQuery}
-            onfocus={() => activeSideMenu = 'participants'}
+            onfocus={() => !isReadOnly && (activeSideMenu = 'participants')}
             onkeydown={(e) => {
               if (e.key === 'Enter' && participantQuery.trim()) {
                 selectParticipant({ name: participantQuery.trim(), email: participantQuery.trim() });
               }
             }}
-            class="bg-transparent text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none w-full"
+            class="bg-transparent text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none w-full {isReadOnly ? 'cursor-default' : ''}"
           />
         </div>
 
@@ -849,12 +934,14 @@
             {#each draft.participants as p, i}
               <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#252525] border border-[#2f2f2f] text-[10px] text-zinc-300">
                 <span>{p}</span>
-                <button 
-                  onclick={() => updateDraft('participants', draft?.participants?.filter((_, idx) => idx !== i))}
-                  class="hover:text-rose-400 cursor-pointer"
-                >
-                  <X size={10} />
-                </button>
+                {#if !isReadOnly}
+                  <button 
+                    onclick={() => updateDraft('participants', draft?.participants?.filter((_: string, idx: number) => idx !== i))}
+                    class="hover:text-rose-400 cursor-pointer"
+                  >
+                    <X size={10} />
+                  </button>
+                {/if}
               </span>
             {/each}
           </div>
@@ -866,8 +953,9 @@
       <!-- Conferencing Provider Row with Real SVG Icons -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <button 
-          onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'conferencing' ? 'none' : 'conferencing'; }}
-          class="flex items-center justify-between text-zinc-400 hover:text-zinc-200 text-left py-0.5 cursor-pointer group"
+          disabled={isReadOnly}
+          onpointerdown={(e) => { if (!isReadOnly) { e.stopPropagation(); activeSideMenu = activeSideMenu === 'conferencing' ? 'none' : 'conferencing'; } }}
+          class="flex items-center justify-between text-zinc-400 {isReadOnly ? 'cursor-default' : 'hover:text-zinc-200 cursor-pointer'} text-left py-0.5 group"
         >
           <div class="flex items-center gap-2 truncate">
             {#if draft.conferencingProvider === 'google_meet'}
@@ -883,20 +971,34 @@
               <Video size={13} class="shrink-0 text-zinc-500 group-hover:text-zinc-300" />
             {/if}
 
-            <span class="truncate {draft.conferencingUrl ? 'text-blue-400 font-semibold underline' : ''}">
-              {draft.conferencingUrl ? (draft.conferencingProvider === 'google_meet' ? 'Google Meet Call' : 'Zoom Call') : 'Conferencing'}
-            </span>
+            {#if draft.conferencingUrl}
+              <a 
+                href={draft.conferencingUrl} 
+                target="_blank" 
+                rel="noreferrer"
+                onclick={(e) => e.stopPropagation()}
+                class="truncate text-blue-400 font-semibold underline hover:text-blue-300"
+              >
+                {draft.conferencingProvider === 'google_meet' ? 'Google Meet Call' : 'Zoom Call'}
+              </a>
+            {:else}
+              <span class="truncate">Conferencing</span>
+            {/if}
           </div>
-          <ChevronDown size={12} class="text-zinc-500 shrink-0" />
+          {#if !isReadOnly}
+            <ChevronDown size={12} class="text-zinc-500 shrink-0" />
+          {/if}
         </button>
 
-        <button 
-          onclick={addAiMeetingNotes}
-          class="flex items-center gap-2 text-zinc-400 hover:text-zinc-200 text-left py-0.5 cursor-pointer"
-        >
-          <Sparkles size={13} class="shrink-0 text-amber-500/80" />
-          <span>Add AI meeting notes</span>
-        </button>
+        {#if !isReadOnly}
+          <button 
+            onclick={addAiMeetingNotes}
+            class="flex items-center gap-2 text-zinc-400 hover:text-zinc-200 text-left py-0.5 cursor-pointer"
+          >
+            <Sparkles size={13} class="shrink-0 text-amber-500/80" />
+            <span>Add AI meeting notes</span>
+          </button>
+        {/if}
 
         <!-- Location Search Input with Live OpenStreetMap Photon -->
         <div class="flex items-center gap-2 text-zinc-400 py-0.5">
@@ -904,54 +1006,59 @@
           <input
             type="text"
             placeholder="Location"
+            disabled={isReadOnly}
             bind:value={locationQuery}
-            onfocus={() => activeSideMenu = 'location'}
+            onfocus={() => !isReadOnly && (activeSideMenu = 'location')}
             oninput={(e) => handleLocationInput((e.target as HTMLInputElement).value)}
-            class="bg-transparent text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none w-full"
+            class="bg-transparent text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none w-full {isReadOnly ? 'cursor-default' : ''}"
           />
         </div>
 
         <div class="flex flex-col gap-1">
-          {#if !isAddingAttachment}
-            <button 
-              onclick={() => isAddingAttachment = true}
-              class="flex items-center gap-2 text-zinc-400 hover:text-zinc-200 text-left py-0.5 cursor-pointer"
-            >
-              <Paperclip size={13} class="shrink-0 text-zinc-500" />
-              <span>Add links and attachments</span>
-            </button>
-          {:else}
-            <div class="flex items-center gap-1.5 pl-5">
-              <input
-                type="text"
-                placeholder="Paste URL (press Enter)"
-                bind:value={attachmentInput}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' && attachmentInput.trim()) {
-                    updateDraft('attachments', [...(draft?.attachments || []), attachmentInput.trim()]);
-                    attachmentInput = '';
-                    isAddingAttachment = false;
-                  }
-                }}
-                class="bg-[#141414] border border-[#2b2b2b] rounded px-1.5 py-0.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500 w-full"
-              />
-              <button onclick={() => isAddingAttachment = false} class="text-zinc-500 hover:text-zinc-300">
-                <X size={12} />
+          {#if !isReadOnly}
+            {#if !isAddingAttachment}
+              <button 
+                onclick={() => isAddingAttachment = true}
+                class="flex items-center gap-2 text-zinc-400 hover:text-zinc-200 text-left py-0.5 cursor-pointer"
+              >
+                <Paperclip size={13} class="shrink-0 text-zinc-500" />
+                <span>Add links and attachments</span>
               </button>
-            </div>
+            {:else}
+              <div class="flex items-center gap-1.5 pl-5">
+                <input
+                  type="text"
+                  placeholder="Paste URL (press Enter)"
+                  bind:value={attachmentInput}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' && attachmentInput.trim()) {
+                      updateDraft('attachments', [...(draft?.attachments || []), attachmentInput.trim()]);
+                      attachmentInput = '';
+                      isAddingAttachment = false;
+                    }
+                  }}
+                  class="bg-[#141414] border border-[#2b2b2b] rounded px-1.5 py-0.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500 w-full"
+                />
+                <button onclick={() => isAddingAttachment = false} class="text-zinc-500 hover:text-zinc-300">
+                  <X size={12} />
+                </button>
+              </div>
+            {/if}
           {/if}
 
           {#if draft.attachments && draft.attachments.length > 0}
             <div class="flex flex-col gap-1 pl-5">
               {#each draft.attachments as att, i}
                 <div class="flex items-center justify-between p-1 rounded bg-[#202020] border border-[#2b2b2b] text-[10px] text-blue-400 truncate">
-                  <span class="truncate underline cursor-pointer">{att}</span>
-                  <button 
-                    onclick={() => updateDraft('attachments', draft?.attachments?.filter((_, idx) => idx !== i))}
-                    class="text-zinc-500 hover:text-rose-400 shrink-0 ml-1"
-                  >
-                    <X size={11} />
-                  </button>
+                  <a href={att} target="_blank" rel="noreferrer" class="truncate underline cursor-pointer hover:text-blue-300">{att}</a>
+                  {#if !isReadOnly}
+                    <button 
+                      onclick={() => updateDraft('attachments', draft?.attachments?.filter((_: string, idx: number) => idx !== i))}
+                      class="text-zinc-500 hover:text-rose-400 shrink-0 ml-1 cursor-pointer"
+                    >
+                      <X size={11} />
+                    </button>
+                  {/if}
                 </div>
               {/each}
             </div>
@@ -969,10 +1076,11 @@
         </div>
         <textarea
           rows="3"
-          placeholder="Add description or notes..."
+          placeholder={isReadOnly ? "No description" : "Add description or notes..."}
+          disabled={isReadOnly}
           value={draft.description || ''}
           oninput={(e) => updateDraft('description', (e.target as HTMLTextAreaElement).value)}
-          class="w-full bg-[#1c1c1c] border border-[#282828] rounded-lg p-2 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500 resize-none custom-scrollbar"
+          class="w-full bg-[#1c1c1c] border border-[#282828] rounded-lg p-2 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none {isReadOnly ? 'cursor-default opacity-85' : 'focus:border-blue-500'} resize-none custom-scrollbar"
         ></textarea>
       </div>
 
@@ -980,22 +1088,26 @@
 
       <!-- Calendar Category Button -->
       <button 
-        onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'; }}
-        class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
+        disabled={isReadOnly}
+        onpointerdown={(e) => { if (!isReadOnly) { e.stopPropagation(); activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'; } }}
+        class="w-full flex items-center justify-between p-1 rounded-md {isReadOnly ? 'cursor-default' : 'hover:bg-[#222222] cursor-pointer'} transition-colors shrink-0"
       >
         <div class="flex items-center gap-2 truncate">
           <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: {colorToken.hex};"></span>
           <span class="text-xs font-semibold text-zinc-200 truncate">{activeCalendar.name}</span>
         </div>
-        <ChevronDown size={12} class="text-zinc-500 shrink-0" />
+        {#if !isReadOnly}
+          <ChevronDown size={12} class="text-zinc-500 shrink-0" />
+        {/if}
       </button>
 
       <!-- Status & Visibility -->
       <div class="flex items-center justify-between text-xs text-zinc-300 shrink-0">
         <select
           value={draft.busyStatus}
+          disabled={isReadOnly}
           onchange={(e) => updateDraft('busyStatus', (e.target as HTMLSelectElement).value as any)}
-          class="bg-[#1f1f1f] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none cursor-pointer"
+          class="bg-[#1f1f1f] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none {isReadOnly ? 'cursor-default opacity-70' : 'cursor-pointer'}"
         >
           <option value="busy" class="bg-[#181818]">Busy</option>
           <option value="free" class="bg-[#181818]">Free</option>
@@ -1003,8 +1115,9 @@
 
         <select
           value={draft.visibility || 'default'}
+          disabled={isReadOnly}
           onchange={(e) => updateDraft('visibility', (e.target as HTMLSelectElement).value as any)}
-          class="bg-[#1f1f1f] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none cursor-pointer"
+          class="bg-[#1f1f1f] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none {isReadOnly ? 'cursor-default opacity-70' : 'cursor-pointer'}"
         >
           <option value="default" class="bg-[#181818]">Default visibility</option>
           <option value="public" class="bg-[#181818]">Public</option>
@@ -1015,14 +1128,17 @@
       <!-- Reminders -->
       <div class="flex flex-col gap-1 shrink-0">
         <button 
-          onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'; }}
-          class="w-full flex items-center justify-between p-1 rounded hover:bg-[#222222] transition-colors cursor-pointer text-xs text-zinc-400 hover:text-zinc-200"
+          disabled={isReadOnly}
+          onpointerdown={(e) => { if (!isReadOnly) { e.stopPropagation(); activeSideMenu = activeSideMenu === 'reminders' ? 'none' : 'reminders'; } }}
+          class="w-full flex items-center justify-between p-1 rounded {isReadOnly ? 'cursor-default' : 'hover:bg-[#222222] cursor-pointer hover:text-zinc-200'} transition-colors text-xs text-zinc-400"
         >
           <div class="flex items-center gap-1.5">
             <Bell size={13} class="text-zinc-500" />
             <span class="font-medium">Reminders</span>
           </div>
-          <Plus size={13} class="text-zinc-500" />
+          {#if !isReadOnly}
+            <Plus size={13} class="text-zinc-500" />
+          {/if}
         </button>
 
         {#if draft.reminders && draft.reminders.length > 0}
@@ -1031,13 +1147,15 @@
               {@const label = reminderPresets.find(r => r.id === rem)?.label || rem}
               <div class="flex items-center justify-between py-0.5 text-xs text-zinc-300 hover:text-white group">
                 <span>{label}</span>
-                <button 
-                  onclick={() => removeReminder(rem)}
-                  class="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-500 hover:text-rose-400 transition-opacity cursor-pointer"
-                  title="Remove reminder"
-                >
-                  <X size={11} />
-                </button>
+                {#if !isReadOnly}
+                  <button 
+                    onclick={() => removeReminder(rem)}
+                    class="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-500 hover:text-rose-400 transition-opacity cursor-pointer"
+                    title="Remove reminder"
+                  >
+                    <X size={11} />
+                  </button>
+                {/if}
               </div>
             {/each}
           </div>
@@ -1048,7 +1166,7 @@
     <!-- ================= UNCLIPPED SIDE-DOCKED MENUS ================= -->
 
     <!-- 1. Participant Autocomplete Popover -->
-    {#if activeSideMenu === 'participants'}
+    {#if activeSideMenu === 'participants' && !isReadOnly}
       <div 
         class="absolute top-28 w-68 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-70'}"
@@ -1067,8 +1185,8 @@
       </div>
     {/if}
 
-    <!-- 2. Location Autocomplete Popover (with Live OpenStreetMap Photon API) -->
-    {#if activeSideMenu === 'location'}
+    <!-- 2. Location Autocomplete Popover -->
+    {#if activeSideMenu === 'location' && !isReadOnly}
       <div 
         class="absolute top-44 w-72 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-75'}"
@@ -1087,8 +1205,8 @@
       </div>
     {/if}
 
-    <!-- 3. Conferencing Provider Popover with Official SVGs -->
-    {#if activeSideMenu === 'conferencing'}
+    <!-- 3. Conferencing Provider Popover -->
+    {#if activeSideMenu === 'conferencing' && !isReadOnly}
       <div 
         class="absolute top-40 w-54 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-57.5'}"
@@ -1129,19 +1247,21 @@
     {/if}
 
     <!-- 4. Calendar & Color Popover -->
-    {#if activeSideMenu === 'calendar'}
+    {#if activeSideMenu === 'calendar' && !isReadOnly}
       <div 
         class="absolute bottom-14 w-62 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-2.5 z-999 flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-64'}"
       >
-        <div class="text-[11px] font-semibold text-zinc-400 px-1 truncate">amilavaz2003@gmail.com</div>
+        <div class="text-[11px] font-semibold text-zinc-400 px-1 truncate">{activeCalendar?.name || 'Calendars'}</div>
         
         <div class="flex flex-col gap-0.5">
           {#each calendarState.calendars as cal}
+            {@const isCalReadOnly = cal.accessRole === 'reader' || cal.accessRole === 'freeBusyReader'}
             <div class="flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-[#262626] transition-colors group">
               <button
-                onpointerdown={(e) => { e.stopPropagation(); updateDraft('calendarId', cal.id); activeSideMenu = 'none'; }}
-                class="flex items-center gap-2 flex-1 text-left cursor-pointer truncate"
+                disabled={isCalReadOnly}
+                onpointerdown={(e) => { if (!isCalReadOnly) { e.stopPropagation(); updateDraft('calendarId', cal.id); activeSideMenu = 'none'; } }}
+                class="flex items-center gap-2 flex-1 text-left {isCalReadOnly ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} truncate"
               >
                 <div class="w-3.5 flex items-center justify-center">
                   {#if draft.calendarId === cal.id}
@@ -1150,6 +1270,9 @@
                 </div>
                 <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: {cal.colorHex};"></span>
                 <span class="text-xs text-zinc-200 truncate">{cal.name}</span>
+                {#if isCalReadOnly}
+                  <Lock size={10} class="text-zinc-500 shrink-0" />
+                {/if}
               </button>
 
               <button 
@@ -1187,7 +1310,7 @@
     {/if}
 
     <!-- 5. Mini Calendar Popover -->
-    {#if activeSideMenu === 'date'}
+    {#if activeSideMenu === 'date' && !isReadOnly}
       {@const grid = generateMonthGrid(pickerMonth)}
       <div 
         class="absolute top-14 w-60 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-3 z-999 flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
@@ -1234,7 +1357,7 @@
     {/if}
 
     <!-- 6. Time Interval Pickers -->
-    {#if activeSideMenu === 'start_time' || activeSideMenu === 'end_time'}
+    {#if (activeSideMenu === 'start_time' || activeSideMenu === 'end_time') && !isReadOnly}
       {@const isStart = activeSideMenu === 'start_time'}
       <div 
         class="absolute top-10 w-38 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-999 max-h-68 overflow-y-auto custom-scrollbar flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
@@ -1252,7 +1375,7 @@
     {/if}
 
     <!-- 7. Timezone Popover -->
-    {#if activeSideMenu === 'timezone'}
+    {#if activeSideMenu === 'timezone' && !isReadOnly}
       <div 
         class="absolute top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2 z-999 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-67.5'}"
@@ -1281,21 +1404,29 @@
       </div>
     {/if}
 
-    <!-- 8. Recurrence Popover -->
-    {#if activeSideMenu === 'repeat'}
+    <!-- 8. Recurrence Popover with Exact Checked Highlight -->
+    {#if activeSideMenu === 'repeat' && !isReadOnly}
       <div 
-        class="absolute top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-57.5'}"
+        class="absolute top-32 w-56 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-60'}"
       >
         {#each repeatOptions as opt}
+          {@const isChecked = parsedRRuleDisplay.id === opt.id || (draft?.rrule === opt.id) || (opt.label === parsedRRuleDisplay.label && opt.sub === parsedRRuleDisplay.sub)}
           <button
             onpointerdown={(e) => { e.stopPropagation(); updateDraft('rrule', opt.id); activeSideMenu = 'none'; }}
             class="flex items-center justify-between px-2.5 py-1.5 text-xs rounded-lg text-left transition-colors cursor-pointer
-              {(draft.rrule || 'none') === opt.id ? 'bg-[#282828] text-blue-400 font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
+              {isChecked ? 'bg-[#282828] text-white font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
           >
-            <span>{opt.label}</span>
+            <div class="flex items-center gap-2">
+              <div class="w-3 flex items-center justify-center">
+                {#if isChecked}
+                  <Check size={12} class="text-blue-400 shrink-0" />
+                {/if}
+              </div>
+              <span>{opt.label}</span>
+            </div>
             {#if opt.sub}
-              <span class="text-[10px] text-zinc-500">{opt.sub}</span>
+              <span class="text-[10px] text-zinc-500 font-normal">{opt.sub}</span>
             {/if}
           </button>
         {/each}
@@ -1303,7 +1434,7 @@
     {/if}
 
     <!-- 9. Reminders Popover -->
-    {#if activeSideMenu === 'reminders'}
+    {#if activeSideMenu === 'reminders' && !isReadOnly}
       <div 
         class="absolute bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-50'}"

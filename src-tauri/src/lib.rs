@@ -24,6 +24,9 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             google::start_google_auth,
+            google::refresh_google_token,
+            google::fetch_google_calendars,
+            google::fetch_google_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kairo calendar application");

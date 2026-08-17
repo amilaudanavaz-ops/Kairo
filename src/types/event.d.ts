@@ -13,6 +13,7 @@ export interface CalendarCategory {
   colorHex: string;
   isPrimary: boolean;
   isVisible: boolean;
+  accessRole?: string;
 }
 
 export interface ParticipantContact {
@@ -81,4 +82,4 @@ export interface DayOverflowItem {
   date: Date;
   events: CalendarEvent[];
   anchorRect: DOMRect;
-} 
+}

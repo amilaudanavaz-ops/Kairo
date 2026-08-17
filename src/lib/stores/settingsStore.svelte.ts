@@ -10,6 +10,7 @@ import {
   persistCalendarCategory 
 } from '../db/database';
 import { calendarState } from './calendarState.svelte';
+import { eventStore } from './eventStore.svelte';
 
 class SettingsStore {
   isOpen = $state(false);
@@ -82,7 +83,7 @@ class SettingsStore {
 
       const sessionActive = saved.isLoggedIn === 'true';
       if (sessionActive && storedAccounts.length > 0) {
-        const primary = storedAccounts.find(a => a.isPrimary) || storedAccounts[0];
+        const primary = storedAccounts.find((a: UserAccount) => a.isPrimary) || storedAccounts[0];
         this.isLoggedIn = true;
         this.preferredName = primary.name;
         this.email = primary.email;
@@ -165,7 +166,7 @@ class SettingsStore {
 
   async addAccount(email: string, name: string = 'Google User'): Promise<void> {
     if (!email.trim()) return;
-    const exists = this.accounts.some(a => a.email.toLowerCase() === email.toLowerCase());
+    const exists = this.accounts.some((a: UserAccount) => a.email.toLowerCase() === email.toLowerCase());
     if (!exists) {
       const isPrimary = this.accounts.length === 0;
       const candidate: UserAccount = {
@@ -187,7 +188,8 @@ class SettingsStore {
         colorId: 'blue',
         colorHex: '#3b82f6',
         isPrimary,
-        isVisible: true
+        isVisible: true,
+        accessRole: 'owner'
       };
       await persistCalendarCategory(newCal);
       calendarState.calendars = [...calendarState.calendars, newCal];
@@ -211,7 +213,7 @@ class SettingsStore {
       });
 
       const profile = authResult.profile;
-      const isPrimary = this.accounts.length === 0;
+      const isPrimaryAccount = this.accounts.length === 0;
 
       const candidate: UserAccount = {
         id: 'acc_' + profile.id,
@@ -219,13 +221,15 @@ class SettingsStore {
         name: profile.name || profile.email.split('@')[0],
         provider: 'google',
         avatarUrl: profile.picture,
-        isPrimary,
+        isPrimary: isPrimaryAccount,
         syncEnabled: true
       };
 
-      // 1. Save and receive the verified account record with its consistent DB ID
-      const savedAccount = await persistDbAccount(candidate, authResult.access_token, authResult.refresh_token);
-      this.accounts = [...this.accounts.filter(a => a.email !== savedAccount.email), savedAccount];
+      const tokenAccess = authResult.accessToken || authResult.access_token;
+      const tokenRefresh = authResult.refreshToken || authResult.refresh_token;
+
+      const savedAccount = await persistDbAccount(candidate, tokenAccess, tokenRefresh);
+      this.accounts = [...this.accounts.filter((a: UserAccount) => a.email !== savedAccount.email), savedAccount];
 
       this.isLoggedIn = true;
       await this.updateSetting('isLoggedIn', 'true');
@@ -234,38 +238,51 @@ class SettingsStore {
       this.username = savedAccount.email.split('@')[0].toLowerCase();
       this.avatarUrl = savedAccount.avatarUrl || '';
 
-      // 2. Persist imported Google Calendars using the verified savedAccount.id
-      if (Array.isArray(authResult.calendars) && authResult.calendars.length > 0) {
-        for (const cal of authResult.calendars) {
+      const incomingCalendars = authResult.calendars || [];
+      if (Array.isArray(incomingCalendars) && incomingCalendars.length > 0) {
+        // Enforce strictly one default calendar: match Google's primary or the first calendar
+        const hasExplicitPrimary = incomingCalendars.some((c: any) => c.primary === true);
+
+        // If this is the primary account, clear any existing primary flags to maintain mutual exclusivity
+        if (isPrimaryAccount) {
+          calendarState.calendars = calendarState.calendars.map((c: CalendarCategory) => ({
+            ...c,
+            isPrimary: false
+          }));
+        }
+
+        for (let i = 0; i < incomingCalendars.length; i++) {
+          const cal = incomingCalendars[i];
           const calId = 'cal_' + cal.id.replace(/[^a-zA-Z0-9_]/g, '_');
+          const colorHex = cal.backgroundColor || cal.background_color || '#3b82f6';
+          const accessRole = cal.accessRole || cal.access_role || 'owner';
+          
+          const isCalPrimary = hasExplicitPrimary 
+            ? Boolean(cal.primary) 
+            : (i === 0 && isPrimaryAccount);
+
           const newCal: CalendarCategory = {
             id: calId,
             accountId: savedAccount.id,
             googleCalendarId: cal.id,
             name: cal.summary || savedAccount.email,
-            colorId: 'blue',
-            colorHex: cal.background_color || '#3b82f6',
-            isPrimary: Boolean(cal.primary),
-            isVisible: true
+            colorId: 'google_custom',
+            colorHex,
+            isPrimary: isCalPrimary,
+            isVisible: true,
+            accessRole
           };
+
           await persistCalendarCategory(newCal);
-          calendarState.calendars = [...calendarState.calendars.filter(c => c.id !== newCal.id), newCal];
+          calendarState.calendars = [
+            ...calendarState.calendars.filter((c: CalendarCategory) => c.id !== newCal.id && c.googleCalendarId !== newCal.googleCalendarId),
+            newCal
+          ];
         }
-      } else {
-        const defaultCal: CalendarCategory = {
-          id: 'cal_' + Date.now(),
-          accountId: savedAccount.id,
-          name: savedAccount.email,
-          colorId: 'blue',
-          colorHex: '#3b82f6',
-          isPrimary: true,
-          isVisible: true
-        };
-        await persistCalendarCategory(defaultCal);
-        calendarState.calendars = [...calendarState.calendars, defaultCal];
       }
 
       this.close();
+      await eventStore.syncGoogleEvents();
     } catch (err) {
       console.error('Google OAuth error:', err);
       alert(`Google Sign-In error: ${err}`);
@@ -284,10 +301,10 @@ class SettingsStore {
   }
 
   async removeAccount(id: string): Promise<void> {
-    const acc = this.accounts.find(a => a.id === id);
+    const acc = this.accounts.find((a: UserAccount) => a.id === id);
     if (!acc || acc.isPrimary) return;
-    this.accounts = this.accounts.filter(a => a.id !== id);
-    calendarState.calendars = calendarState.calendars.filter(c => c.accountId !== id);
+    this.accounts = this.accounts.filter((a: UserAccount) => a.id !== id);
+    calendarState.calendars = calendarState.calendars.filter((c: CalendarCategory) => c.accountId !== id);
     await deleteDbAccount(id);
   }
 
@@ -299,14 +316,14 @@ class SettingsStore {
   }
 
   async setPrimaryAccount(id: string): Promise<void> {
-    this.accounts = this.accounts.map(a => ({
+    this.accounts = this.accounts.map((a: UserAccount) => ({
       ...a,
       isPrimary: a.id === id
     }));
     for (const a of this.accounts) {
       await persistDbAccount(a);
     }
-    const primary = this.accounts.find(a => a.id === id);
+    const primary = this.accounts.find((a: UserAccount) => a.id === id);
     if (primary) {
       this.preferredName = primary.name;
       this.email = primary.email;

@@ -25,9 +25,10 @@
       await settingsStore.init();
       const cals = await loadInitialCalendars();
       if (cals.length > 0) {
-        calendarState.calendars = cals;
+        calendarState.setCalendars(cals);
       }
       await eventStore.initDatabase();
+      await eventStore.syncGoogleEvents();
     } catch (err) {
       console.error('Failed to initialize application:', err);
     }
@@ -37,14 +38,12 @@
     const handleKeyDown = (e: KeyboardEvent) => {
       const activeTag = (document.activeElement?.tagName || '').toLowerCase();
       
-      // Command menu shortcut (Ctrl + K)
       if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
         e.preventDefault();
         settingsStore.toggleCommandMenu();
         return;
       }
 
-      // Settings shortcut (Ctrl + ,)
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
         settingsStore.open('general');
@@ -53,7 +52,6 @@
 
       if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
 
-      // View mode shortcuts
       if (e.key === 'm' || e.key === 'M') calendarState.setViewMode('month');
       if (e.key === 'w' || e.key === 'W') calendarState.setViewMode('week');
       if (e.key === 'd' || e.key === 'D') calendarState.setViewMode('day');
@@ -61,17 +59,14 @@
         if (settingsStore.pressTAction === 'today') calendarState.setToday();
       }
       
-      // Quick event creation
       if (e.key === 'c' || e.key === 'C') {
         const today = new Date();
         contextMenuStore.targetDate = today;
         contextMenuStore.createEventAtCell();
       }
 
-      // Sidebar inspector toggle
       if (e.key === '\\') calendarState.toggleInspectorDock();
 
-      // Escape key clears modals
       if (e.key === 'Escape') {
         settingsStore.closeCommandMenu();
         settingsStore.close();
@@ -117,13 +112,11 @@
         {/if}
       </section>
 
-      <!-- Docked Inspector -->
       {#if calendarState.isInspectorDocked && calendarState.selectedEvent}
         <EventInspector />
       {/if}
     </div>
 
-    <!-- Floating Inspector & Modals -->
     <DayOverflowPopover />
     {#if !calendarState.isInspectorDocked && calendarState.selectedEvent}
       <EventInspector />
@@ -134,7 +127,6 @@
     <CommandMenu />
     <AddAccountModal />
 
-    <!-- Drag Preview Chip -->
     {#if dragStore.isDragging && dragStore.draggedEvent}
       <div
         class="fixed pointer-events-none z-999 px-3 py-1.5 rounded-lg bg-[#242424] border border-blue-500/80 shadow-2xl text-xs font-semibold text-white flex items-center gap-2 transform -translate-x-1/2 -translate-y-1/2"

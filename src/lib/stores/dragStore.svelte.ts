@@ -4,10 +4,10 @@ import { contextMenuStore } from './contextMenuStore.svelte';
 import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes } from 'date-fns';
 
 class DragStore {
-  isDragging = $state(false);
+  isDragging = $state<boolean>(false);
   draggedEvent = $state<CalendarEvent | null>(null);
-  currentX = $state(0);
-  currentY = $state(0);
+  currentX = $state<number>(0);
+  currentY = $state<number>(0);
   hoveredDateKey = $state<string | null>(null);
 
   startDrag(e: PointerEvent, event: CalendarEvent, onDragInitiated?: () => void) {
@@ -37,7 +37,7 @@ class DragStore {
         this.currentY = moveEvent.clientY;
 
         const elements = document.elementsFromPoint(moveEvent.clientX, moveEvent.clientY);
-        const dayCell = elements.find((el) => el.hasAttribute('data-day-cell'));
+        const dayCell = elements.find((el: Element) => el.hasAttribute('data-day-cell'));
         this.hoveredDateKey = dayCell ? dayCell.getAttribute('data-day-cell') : null;
       }
     };
@@ -51,7 +51,7 @@ class DragStore {
         const targetDate = new Date(year, month - 1, day);
         
         if (this.draggedEvent.rrule && this.draggedEvent.rrule !== 'none') {
-          const masterEvent = eventStore.events.find(e => e.id === this.draggedEvent?.id) || this.draggedEvent;
+          const masterEvent = eventStore.events.find((e: CalendarEvent) => e.id === this.draggedEvent?.id) || this.draggedEvent;
           
           const origStart = parseISO(this.draggedEvent.startTime);
           const origEnd = parseISO(this.draggedEvent.endTime);

@@ -2,29 +2,41 @@
   import { format, parseISO } from 'date-fns';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
+  import { settingsStore } from '../../stores/settingsStore.svelte';
   import { timelineDragStore } from '../../stores/timelineDragStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
   import { getEventsForDay } from '../../utils/dateMath';
-  import { computeTimedEventStyle, snapPointerToTime, HOUR_HEIGHT_PX } from '../../utils/timeMath';
-  import type { CalendarEvent } from '../../../types/event';
+  import { computeTimedEventStyle, snapPointerToTime } from '../../utils/timeMath';
+  import type { CalendarEvent, CalendarCategory } from '../../../types/event';
 
   let currentDay = $derived(calendarState.currentDate);
   let dateKey = $derived(format(currentDay, 'yyyy-MM-dd'));
   const hours = Array.from({ length: 24 }, (_, i) => i);
 
-  function getEventToken(event: CalendarEvent) {
-    const cal = calendarState.calendars.find((c) => c.id === event.calendarId);
-    return resolveEventColorToken(event.colorOverride || cal?.colorHex);
+  function findCalendar(calendarId: string): CalendarCategory | undefined {
+    return calendarState.calendars.find(
+      (c: CalendarCategory) => c.id === calendarId || c.googleCalendarId === calendarId
+    );
   }
 
   function isCalendarVisible(calendarId: string): boolean {
-    const cal = calendarState.calendars.find((c) => c.id === calendarId);
+    const cal = findCalendar(calendarId);
     return cal ? cal.isVisible : true;
   }
 
+  function isEventReadOnly(event: CalendarEvent): boolean {
+    const cal = findCalendar(event.calendarId);
+    return cal?.accessRole === 'reader' || cal?.accessRole === 'freeBusyReader';
+  }
+
+  function getEventToken(event: CalendarEvent) {
+    const cal = findCalendar(event.calendarId);
+    return resolveEventColorToken(event.colorOverride || cal?.colorHex);
+  }
+
   let dayEvents = $derived(
-    getEventsForDay(eventStore.events, currentDay).filter((e) => !e.isAllDay && isCalendarVisible(e.calendarId))
+    getEventsForDay(eventStore.events, currentDay).filter((e: CalendarEvent) => !e.isAllDay && isCalendarVisible(e.calendarId))
   );
 
   function handleEventClick(e: MouseEvent, event: CalendarEvent, dKey: string) {
@@ -48,19 +60,23 @@
     const startTime = snapPointerToTime(offsetY, currentDay);
     const endTime = new Date(startTime.getTime() + 60 * 60 * 1000);
 
+    const targetCal = calendarState.calendars.find((c: CalendarCategory) => c.isPrimary && c.accessRole !== 'reader') 
+      || calendarState.calendars.find((c: CalendarCategory) => c.accessRole !== 'reader') 
+      || calendarState.calendars[0];
+
     const newEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
-      calendarId: calendarState.calendars[0]?.id || '1',
+      calendarId: targetCal?.id || '1',
       title: '',
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
       isAllDay: false,
-      timeZone: 'GMT+5:30 Colombo',
+      timeZone: 'UTC',
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
-      reminders: ['15m'],
-      creatorEmail: 'amilavaz2003@gmail.com',
+      reminders: [settingsStore.defaultReminderOffset],
+      creatorEmail: settingsStore.email || '',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
     };
@@ -107,13 +123,15 @@
         {@const token = getEventToken(event)}
         {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === dateKey}
         {@const isBeingDragged = timelineDragStore.activeEvent?.id === event.id}
+        {@const isReadOnly = isEventReadOnly(event)}
 
         <div
           data-calendar-event="true"
           onclick={(e) => handleEventClick(e, event, dateKey)}
           oncontextmenu={(e) => handleEventContextMenu(e, event)}
-          onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'move')}
-          class="absolute left-4 right-8 rounded-xl p-3 cursor-grab active:cursor-grabbing text-xs transition-all flex flex-col justify-between group select-none border
+          onpointerdown={(e) => !isReadOnly && timelineDragStore.startTimelineDrag(e, event, currentDay, 'move')}
+          class="absolute left-4 right-8 rounded-xl p-3 text-xs transition-all flex flex-col justify-between group select-none border
+            {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
             {isSelected 
               ? 'ring-2 ring-white/80 shadow-[0_0_20px_rgba(59,130,246,0.6)] font-bold' 
               : 'bg-[#181818] hover:bg-[#202020] border-[#282828]' }
@@ -123,14 +141,16 @@
           tabindex="0"
           onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, dateKey)}
         >
-          <div
-            onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'resize-top')}
-            class="absolute top-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-white/40 transition-colors"
-            role="slider"
-            aria-label="Resize event start time"
-            aria-valuenow={style.top}
-            tabindex="0"
-          ></div>
+          {#if !isReadOnly}
+            <div
+              onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'resize-top')}
+              class="absolute top-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-white/40 transition-colors"
+              role="slider"
+              aria-label="Resize event start time"
+              aria-valuenow={style.top}
+              tabindex="0"
+            ></div>
+          {/if}
 
           <div class="flex items-center justify-between pointer-events-none">
             <span class="font-bold text-sm truncate" style="color: {isSelected ? '#ffffff' : '#ededed'};">
@@ -141,14 +161,16 @@
             </span>
           </div>
 
-          <div
-            onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'resize-bottom')}
-            class="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-white/40 transition-colors"
-            role="slider"
-            aria-label="Resize event duration"
-            aria-valuenow={style.height}
-            tabindex="0"
-          ></div>
+          {#if !isReadOnly}
+            <div
+              onpointerdown={(e) => timelineDragStore.startTimelineDrag(e, event, currentDay, 'resize-bottom')}
+              class="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-white/40 transition-colors"
+              role="slider"
+              aria-label="Resize event duration"
+              aria-valuenow={style.height}
+              tabindex="0"
+            ></div>
+          {/if}
         </div>
       {/each}
 

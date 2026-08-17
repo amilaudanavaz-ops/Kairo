@@ -24,6 +24,85 @@ export interface DayCell {
   dateKey: string;
 }
 
+export interface RecurrenceDisplay {
+  id: string;
+  label: string;
+  sub?: string;
+}
+
+/**
+ * Standard RFC 5545 RRULE Parser & Formatter.
+ * Translates raw Google RRULE definitions (e.g. FREQ=MONTHLY;BYDAY=3SA, FREQ=WEEKLY;BYDAY=TU)
+ * into precise Notion-style labels.
+ */
+export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): RecurrenceDisplay {
+  if (!rruleStr || rruleStr === 'none') {
+    return { id: 'none', label: 'Does not repeat' };
+  }
+
+  const clean = rruleStr.replace(/^RRULE:/i, '').trim();
+  const parts: Record<string, string> = {};
+  for (const p of clean.split(';')) {
+    const [k, v] = p.split('=');
+    if (k && v) parts[k.toUpperCase()] = v.toUpperCase();
+  }
+
+  const freq = parts['FREQ'] || '';
+  const interval = parseInt(parts['INTERVAL'] || '1', 10);
+  const byday = parts['BYDAY'] || '';
+  const bymonthday = parts['BYMONTHDAY'] || '';
+
+  const daysMap: Record<string, string> = {
+    MO: 'Mon', TU: 'Tue', WE: 'Wed', TH: 'Thu', FR: 'Fri', SA: 'Sat', SU: 'Sun'
+  };
+
+  const posMap: Record<string, string> = {
+    '1': '1st', '2': '2nd', '3': '3rd', '4': '4th', '5': '5th', '-1': 'last'
+  };
+
+  if (freq === 'DAILY') {
+    if (interval === 1) return { id: 'daily', label: 'Every day' };
+    return { id: 'daily', label: `Every ${interval} days` };
+  }
+
+  if (freq === 'WEEKLY') {
+    if (byday === 'MO,TU,WE,TH,FR') {
+      return { id: 'weekday', label: 'Every weekday', sub: 'Mon – Fri' };
+    }
+
+    const dayNames = byday.split(',').filter(Boolean).map(code => daysMap[code] || code);
+    const dayText = dayNames.join(', ');
+
+    if (interval === 1) {
+      return { id: 'weekly', label: 'Every week', sub: dayText ? `on ${dayText}` : undefined };
+    }
+    if (interval === 2) {
+      return { id: 'biweekly', label: 'Every 2 weeks', sub: dayText ? `on ${dayText}` : undefined };
+    }
+    return { id: `every_${interval}_weeks`, label: `Every ${interval} weeks`, sub: dayText ? `on ${dayText}` : undefined };
+  }
+
+  if (freq === 'MONTHLY') {
+    const match = byday.match(/^(-?\d+)?([A-Z]{2})$/);
+    if (match && match[2] && daysMap[match[2]]) {
+      const posNum = match[1] || '1';
+      const posStr = posMap[posNum] || `${posNum}th`;
+      const dayStr = daysMap[match[2]];
+      return { id: 'monthly_day', label: 'Every month', sub: `on the ${posStr} ${dayStr}` };
+    }
+    if (bymonthday) {
+      return { id: 'monthly_date', label: 'Every month', sub: `on the ${bymonthday}th` };
+    }
+    return { id: 'monthly', label: 'Every month' };
+  }
+
+  if (freq === 'YEARLY') {
+    return { id: 'yearly', label: 'Every year' };
+  }
+
+  return { id: clean, label: 'Repeats (Recurring Series)' };
+}
+
 export function generateMonthGrid(activeDate: Date): DayCell[] {
   const monthStart = startOfMonth(activeDate);
   const monthEnd = endOfMonth(monthStart);
@@ -41,34 +120,39 @@ export function generateMonthGrid(activeDate: Date): DayCell[] {
 }
 
 /**
- * Evaluates whether an event occurs on a target day, respecting recurrence rules,
- * exclusion dates (exdates), and termination cutoffs (untilDate).
+ * Evaluates whether an event occurs on a target day.
  */
 export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean {
   const start = parseISO(event.startTime);
+  const end = parseISO(event.endTime);
   const targetDayStart = new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate());
   const eventDayStart = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const endDayStart = new Date(end.getFullYear(), end.getMonth(), end.getDate());
   const targetDateKey = format(targetDay, 'yyyy-MM-dd');
 
   // 1. Cannot occur before its origin start date
   if (targetDayStart < eventDayStart) return false;
 
-  // 2. Suppress date if explicitly excluded (e.g. modified via "This event")
+  // 2. Suppress date if explicitly excluded
   if (event.exdates && event.exdates.includes(targetDateKey)) {
     return false;
   }
 
-  // 3. Suppress date if past termination cutoff (e.g. modified via "This and following")
+  // 3. Suppress date if past termination cutoff
   if (event.untilDate && targetDateKey >= event.untilDate) {
     return false;
   }
 
-  // 4. Non-recurring standalone events
-  if (!event.rrule || event.rrule === 'none') {
+  // 4. If this is a concrete synced Google instance (or standalone non-recurring event),
+  // only show it on its actual scheduled day/range to avoid artificial duplication.
+  if (event.recurringEventId || event.googleEventId || !event.rrule || event.rrule === 'none') {
+    if (event.isAllDay) {
+      return targetDayStart >= eventDayStart && targetDayStart <= endDayStart;
+    }
     return isSameDay(start, targetDay);
   }
 
-  // 5. Recurrence rule evaluation
+  // 5. Local app-created recurring series projection
   if (event.rrule === 'daily') return true;
 
   if (event.rrule === 'weekday') {
@@ -101,16 +185,19 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
   return isSameDay(start, targetDay);
 }
 
-/**
- * Returns all active and recurring events for a specific calendar day,
- * attaching the exact occurrence date to each instance.
- */
 export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEvent[] {
   const dateKey = format(day, 'yyyy-MM-dd');
 
   return events
     .filter((event) => eventOccursOnDay(event, day))
     .map((event) => {
+      if (event.recurringEventId || event.googleEventId || !event.rrule || event.rrule === 'none') {
+        return {
+          ...event,
+          occurrenceDate: dateKey
+        };
+      }
+
       const origStart = parseISO(event.startTime);
       const origEnd = parseISO(event.endTime);
       const duration = differenceInMinutes(origEnd, origStart);
@@ -127,7 +214,7 @@ export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEve
         startTime: newStart.toISOString(),
         endTime: newEnd.toISOString(),
         occurrenceDate: dateKey,
-        isRecurringInstance: Boolean(event.rrule && event.rrule !== 'none')
+        isRecurringInstance: true
       };
     });
 }

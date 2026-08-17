@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { format, parseISO, setHours, setMinutes, getISOWeek } from 'date-fns';
+  import { format, parseISO, setHours, setMinutes, getISOWeek, isValid } from 'date-fns';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
@@ -7,7 +7,7 @@
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
   import { generateMonthGrid, getEventsForDay } from '../../utils/dateMath';
-  import type { CalendarEvent } from '../../../types/event';
+  import type { CalendarEvent, CalendarCategory } from '../../../types/event';
 
   const baseWeekDays = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
@@ -17,18 +17,18 @@
       : ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
     if (!settingsStore.showWeekends) {
-      days = days.filter(d => d !== 'SUN' && d !== 'SAT');
+      days = days.filter((d: string) => d !== 'SUN' && d !== 'SAT');
     }
     return days;
   });
 
-  const MAX_VISIBLE_EVENTS = 3;
+  const MAX_VISIBLE_EVENTS = 4;
 
   let rawGridCells = $derived(generateMonthGrid(calendarState.currentDate));
   
   let gridCells = $derived.by(() => {
     if (settingsStore.showWeekends) return rawGridCells;
-    return rawGridCells.filter(c => {
+    return rawGridCells.filter((c: any) => {
       const day = c.date.getDay();
       return day !== 0 && day !== 6;
     });
@@ -37,22 +37,39 @@
   let colsCount = $derived(settingsStore.showWeekends ? 7 : 5);
   let totalWeeks = $derived(Math.ceil(gridCells.length / colsCount));
 
-  function getEventToken(event: CalendarEvent) {
-    const cal = calendarState.calendars.find((c) => c.id === event.calendarId);
-    return resolveEventColorToken(event.colorOverride || cal?.colorHex);
+  function findCalendar(calendarId: string): CalendarCategory | undefined {
+    return calendarState.calendars.find(
+      (c: CalendarCategory) => c.id === calendarId || c.googleCalendarId === calendarId
+    );
   }
 
   function isCalendarVisible(calendarId: string): boolean {
-    const cal = calendarState.calendars.find((c) => c.id === calendarId);
+    const cal = findCalendar(calendarId);
     return cal ? cal.isVisible : true;
   }
 
+  function isEventReadOnly(event: CalendarEvent): boolean {
+    const cal = findCalendar(event.calendarId);
+    return cal?.accessRole === 'reader' || cal?.accessRole === 'freeBusyReader';
+  }
+
+  function getEventToken(event: CalendarEvent) {
+    const cal = findCalendar(event.calendarId);
+    return resolveEventColorToken(event.colorOverride || cal?.colorHex);
+  }
+
   function formatDisplayTime(isoString: string): string {
-    const d = parseISO(isoString);
-    return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mm a');
+    try {
+      const d = parseISO(isoString);
+      if (!isValid(d)) return '';
+      return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mm a');
+    } catch {
+      return '';
+    }
   }
 
   function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
+    if (isEventReadOnly(event)) return;
     dragStore.startDrag(e, event);
   }
 
@@ -62,14 +79,18 @@
     const startTime = setMinutes(setHours(date, currentNow.getHours()), 0);
     const endTime = setMinutes(setHours(date, currentNow.getHours() + 1), 0);
 
+    const targetCal = calendarState.calendars.find((c: CalendarCategory) => c.isPrimary && c.accessRole !== 'reader') 
+      || calendarState.calendars.find((c: CalendarCategory) => c.accessRole !== 'reader') 
+      || calendarState.calendars[0];
+
     const newEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
-      calendarId: calendarState.calendars[0]?.id || '1',
+      calendarId: targetCal?.id || '1',
       title: '',
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
       isAllDay: false,
-      timeZone: 'GMT+5:30 Colombo',
+      timeZone: 'UTC',
       status: 'confirmed',
       busyStatus: 'busy',
       visibility: 'default',
@@ -141,9 +162,9 @@
     style="grid-template-columns: repeat({colsCount}, minmax(0, 1fr)); grid-template-rows: repeat({totalWeeks}, minmax(0, 1fr));"
   >
     {#each gridCells as cell, i (cell.dateKey)}
-      {@const allDayEvents = getEventsForDay(eventStore.events, cell.date).filter(e => isCalendarVisible(e.calendarId))}
-      {@const visibleEvents = allDayEvents.slice(0, MAX_VISIBLE_EVENTS)}
-      {@const overflowCount = allDayEvents.length - MAX_VISIBLE_EVENTS}
+      {@const dayEvents = getEventsForDay(eventStore.events, cell.date).filter((e: CalendarEvent) => isCalendarVisible(e.calendarId))}
+      {@const visibleEvents = dayEvents.slice(0, MAX_VISIBLE_EVENTS)}
+      {@const overflowCount = dayEvents.length - MAX_VISIBLE_EVENTS}
       {@const isHighlighted = dragStore.hoveredDateKey === cell.dateKey}
       {@const showWeekNum = settingsStore.showWeekNumbers && i % colsCount === 0}
 
@@ -175,6 +196,7 @@
             {@const token = getEventToken(event)}
             {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === cell.dateKey}
             {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
+            {@const isReadOnly = isEventReadOnly(event)}
 
             {#if event.isAllDay}
               <div
@@ -182,7 +204,8 @@
                 onpointerdown={(e) => handlePointerDown(e, event)}
                 onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
-                class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-all
+                class="px-2 py-0.5 rounded text-[11px] font-semibold truncate transition-all
+                  {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
                   {isSelected ? 'ring-2 ring-white/80 shadow-[0_0_15px_rgba(59,130,246,0.5)]' : ''}
                   {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
                 style="background-color: {isSelected ? token.selectedBg : token.bannerBg}; border: 1px solid {token.bannerBorder}; color: {token.selectedText};"
@@ -198,7 +221,8 @@
                 onpointerdown={(e) => handlePointerDown(e, event)}
                 onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                 oncontextmenu={(e) => handleEventContextMenu(e, event)}
-                class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all
+                class="px-1.5 py-0.5 rounded text-[11px] truncate flex items-center border transition-all
+                  {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
                   {isSelected 
                     ? 'shadow-[0_0_16px_rgba(59,130,246,0.6)] ring-1 ring-white/70 font-semibold' 
                     : 'bg-[#181818]/95 hover:bg-[#222222] border-[#262626]' }
@@ -232,7 +256,7 @@
 
           {#if overflowCount > 0}
             <button
-              onclick={(e) => handleOverflowClick(e, cell.date, allDayEvents)}
+              onclick={(e) => handleOverflowClick(e, cell.date, dayEvents)}
               class="text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#202020] px-1.5 py-0.5 rounded text-left transition-colors flex items-center gap-1 mt-auto cursor-pointer"
             >
               <span>{overflowCount} more</span>

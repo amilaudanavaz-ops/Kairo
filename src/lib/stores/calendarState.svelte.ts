@@ -1,6 +1,7 @@
 import { addMonths, subMonths, addWeeks, subWeeks, addDays, subDays, format, parseISO } from 'date-fns';
 import type { ViewMode, CalendarEvent, DayOverflowItem, CalendarCategory, ParticipantContact, LocationSuggestion } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
+import { persistCalendarCategory } from '../db/database';
 
 class CalendarState {
   currentDate = $state(new Date());
@@ -23,18 +24,24 @@ class CalendarState {
   // Locations Database
   locations = $state<LocationSuggestion[]>([]);
 
-  selectedEvent = $derived.by(() => {
+  // Calendars list
+  calendars = $state<CalendarCategory[]>([]);
+
+  selectedEvent = $derived.by<CalendarEvent | null>(() => {
     if (!this.selectedEventId) return null;
-    return eventStore.events.find((e) => e.id === this.selectedEventId) || null;
+    return eventStore.events.find((e: CalendarEvent) => e.id === this.selectedEventId) ?? null;
   });
 
-  calendars = $state<CalendarCategory[]>([
-    { id: '1', accountId: 'acc_primary', name: 'amilavaz2003@gmail.com', colorId: 'blue', colorHex: '#3b82f6', isPrimary: true, isVisible: true },
-    { id: '2', accountId: 'acc_primary', name: 'Family', colorId: 'amber', colorHex: '#d97706', isPrimary: false, isVisible: true },
-    { id: '3', accountId: 'acc_primary', name: 'ICC Cricket', colorId: 'red', colorHex: '#b91c1c', isPrimary: false, isVisible: true },
-    { id: '4', accountId: 'acc_primary', name: 'VNOOIR', colorId: 'charcoal', colorHex: '#71717a', isPrimary: false, isVisible: true },
-    { id: '5', accountId: 'acc_primary', name: "L'Instant Céleste", colorId: 'amber', colorHex: '#f59e0b', isPrimary: false, isVisible: true }
-  ]);
+  setCalendars(newCals: CalendarCategory[]) {
+    const map = new Map<string, CalendarCategory>();
+    for (const c of newCals) {
+      const key = c.googleCalendarId || c.id;
+      if (!map.has(key)) {
+        map.set(key, c);
+      }
+    }
+    this.calendars = Array.from(map.values());
+  }
 
   toggleSidebar() {
     this.isSidebarOpen = !this.isSidebarOpen;
@@ -69,9 +76,14 @@ class CalendarState {
   }
 
   toggleCalendarVisibility(calendarId: string) {
-    this.calendars = this.calendars.map((c) =>
-      c.id === calendarId ? { ...c, isVisible: !c.isVisible } : c
-    );
+    this.calendars = this.calendars.map((c: CalendarCategory) => {
+      if (c.id === calendarId) {
+        const updated = { ...c, isVisible: !c.isVisible };
+        persistCalendarCategory(updated).catch(console.error);
+        return updated;
+      }
+      return c;
+    });
   }
 
   openAddAccountModal() {
