@@ -85,7 +85,7 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
-  // Filtered Participants Autocomplete (Matching image_143b88.png)
+  // 1. Filtered Participants (Autocomplete directory)
   let filteredContacts = $derived.by(() => {
     if (!participantQuery.trim()) return calendarState.contacts;
     const q = participantQuery.toLowerCase();
@@ -94,7 +94,7 @@
     );
   });
 
-  // Filtered Locations (Matching image_1437e3.png)
+  // 2. Filtered Locations (Live suggestions)
   let filteredLocations = $derived.by(() => {
     if (!locationQuery.trim()) return calendarState.locations;
     const q = locationQuery.toLowerCase();
@@ -103,6 +103,7 @@
     );
   });
 
+  // 3. Sync draft state with untracked effect to avoid circular reactivity
   $effect(() => {
     const currentEvent = masterEvent;
     const dateKey = calendarState.selectedDateKey;
@@ -143,6 +144,7 @@
     });
   });
 
+  // 4. Global click-away handler
   $effect(() => {
     function handleGlobalPointerDown(e: MouseEvent) {
       if (contextMenuStore.isRecurrenceModalOpen || settingsStore.isOpen) return;
@@ -415,6 +417,104 @@
     activeSideMenu = 'none';
   }
 
+  function toggleGoogleMeet() {
+    if (!draft) return;
+    if (draft.conferencingUrl) {
+      updateDraft('conferencingUrl', undefined);
+      updateDraft('conferencingProvider', undefined);
+    } else {
+      setGoogleMeet();
+    }
+  }
+
+  function toggleAllDay() {
+    if (!draft) return;
+    const next = !draft.isAllDay;
+    if (next) {
+      updateDraft('isAllDay', true);
+      updateDraft('startTime', startOfDay(parseISO(draft.startTime)).toISOString());
+      updateDraft('endTime', endOfDay(parseISO(draft.startTime)).toISOString());
+    } else {
+      updateDraft('isAllDay', false);
+      const start = setMinutes(setHours(parseISO(draft.startTime), 9), 0);
+      const end = setMinutes(setHours(parseISO(draft.startTime), 10), 0);
+      updateDraft('startTime', start.toISOString());
+      updateDraft('endTime', end.toISOString());
+      startTimeInput = format(start, 'h:mm a');
+      endTimeInput = format(end, 'h:mm a');
+    }
+  }
+
+  function addAiMeetingNotes() {
+    if (!draft) return;
+    const template = `\n\n### 🤖 AI Meeting Summary\n* Key Discussion Points:\n* Action Items:\n* Next Follow-up:`;
+    updateDraft('description', (draft.description || '') + template);
+  }
+
+  function addReminder(remId: string) {
+    if (!draft) return;
+    const current = Array.isArray(draft.reminders) ? draft.reminders : [];
+    if (!current.includes(remId)) {
+      updateDraft('reminders', [...current, remId]);
+      dispatchEventReminder(draft);
+    }
+    activeSideMenu = 'none';
+  }
+
+  function removeReminder(remId: string) {
+    if (!draft) return;
+    const current = Array.isArray(draft.reminders) ? draft.reminders : [];
+    updateDraft('reminders', current.filter(r => r !== remId));
+  }
+
+  function calculatePosition(rect: DOMRect | null): string {
+    const width = 280;
+    const targetHeight = 480;
+    const topNavOffset = 48;
+    const bottomPadding = 16;
+    const maxAvailableHeight = Math.max(300, window.innerHeight - topNavOffset - bottomPadding);
+    const cardHeight = Math.min(targetHeight, maxAvailableHeight);
+
+    if (!rect) {
+      return `top: ${topNavOffset + 12}px; right: 24px; height: ${cardHeight}px;`;
+    }
+
+    let left = rect.right + 10;
+    if (left + width > window.innerWidth - 16) {
+      left = Math.max(16, rect.left - width - 10);
+    }
+
+    let top = rect.top - 10;
+    if (top + cardHeight > window.innerHeight - bottomPadding) {
+      top = window.innerHeight - bottomPadding - cardHeight;
+    }
+    if (top < topNavOffset) {
+      top = topNavOffset;
+    }
+
+    return `top: ${top}px; left: ${left}px; height: ${cardHeight}px;`;
+  }
+
+  function hasEventChanged(a: CalendarEvent, b: CalendarEvent): boolean {
+    if ((a.title || '') !== (b.title || '')) return true;
+    if (a.startTime !== b.startTime) return true;
+    if (a.endTime !== b.endTime) return true;
+    if ((a.description || '') !== (b.description || '')) return true;
+    if (a.colorOverride !== b.colorOverride) return true;
+    if (a.calendarId !== b.calendarId) return true;
+    if (a.rrule !== b.rrule) return true;
+    if (a.isAllDay !== b.isAllDay) return true;
+    if (a.busyStatus !== b.busyStatus) return true;
+    if (a.visibility !== b.visibility) return true;
+    if (a.timeZone !== b.timeZone) return true;
+    if (a.location !== b.location) return true;
+    if (a.conferencingUrl !== b.conferencingUrl) return true;
+    if (JSON.stringify(a.reminders || []) !== JSON.stringify(b.reminders || [])) return true;
+    if (JSON.stringify(a.participants || []) !== JSON.stringify(b.participants || [])) return true;
+    if (JSON.stringify(a.attachments || []) !== JSON.stringify(b.attachments || [])) return true;
+    return false;
+  }
+
   function commitDraftChanges(closeWhenClean: boolean = true) {
     if (!draft || !masterEvent) {
       if (closeWhenClean) calendarState.closeInspector();
@@ -430,37 +530,24 @@
     }
 
     if (!masterEvent.rrule || masterEvent.rrule === 'none') {
-      eventStore.updateEvent(draft);
-      initialEventSnapshot = JSON.parse(JSON.stringify(draft));
+      if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
+        eventStore.updateEvent(draft);
+        initialEventSnapshot = JSON.parse(JSON.stringify(draft));
+      }
       if (closeWhenClean) calendarState.closeInspector();
       return;
     }
 
-    if (initialEventSnapshot) {
-      const hasChanged = (
-        initialEventSnapshot.title !== draft.title ||
-        initialEventSnapshot.startTime !== draft.startTime ||
-        initialEventSnapshot.endTime !== draft.endTime ||
-        initialEventSnapshot.description !== draft.description ||
-        initialEventSnapshot.colorOverride !== draft.colorOverride ||
-        initialEventSnapshot.calendarId !== draft.calendarId ||
-        initialEventSnapshot.rrule !== draft.rrule ||
-        initialEventSnapshot.location !== draft.location ||
-        initialEventSnapshot.conferencingUrl !== draft.conferencingUrl ||
-        JSON.stringify(initialEventSnapshot.participants || []) !== JSON.stringify(draft.participants || [])
+    if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
+      contextMenuStore.promptRecurringAction(
+        'update',
+        masterEvent,
+        draft,
+        calendarState.selectedDateKey || undefined,
+        initialEventSnapshot
       );
-
-      if (hasChanged) {
-        contextMenuStore.promptRecurringAction(
-          'update',
-          masterEvent,
-          draft,
-          calendarState.selectedDateKey || undefined,
-          initialEventSnapshot
-        );
-      } else {
-        if (closeWhenClean) calendarState.closeInspector();
-      }
+    } else {
+      if (closeWhenClean) calendarState.closeInspector();
     }
   }
 
@@ -475,8 +562,8 @@
   <aside
     bind:this={inspectorElement}
     class="{calendarState.isInspectorDocked 
-      ? 'w-[280px] h-full border-l border-[#262626] bg-[#161616] flex flex-col z-[60] shrink-0 select-text relative overflow-visible' 
-      : 'fixed z-[60] w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
+      ? 'w-70 h-full border-l border-[#262626] bg-[#161616] flex flex-col z-60 shrink-0 select-text relative overflow-visible' 
+      : 'fixed z-60 w-70 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
     style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
   >
     <!-- Top Header Toolbar -->
@@ -491,7 +578,7 @@
         </button>
 
         {#if isTypeDropdownOpen}
-          <div class="absolute left-0 top-full mt-1 w-24 bg-[#202020] border border-[#2e2e2e] rounded-lg shadow-xl p-1 z-[999] flex flex-col gap-0.5">
+          <div class="absolute left-0 top-full mt-1 w-24 bg-[#202020] border border-[#2e2e2e] rounded-lg shadow-xl p-1 z-999 flex flex-col gap-0.5">
             {#each ['Event', 'Task', 'Reminder'] as t}
               <button
                 onpointerdown={(e) => { e.stopPropagation(); isTypeDropdownOpen = false; }}
@@ -514,7 +601,7 @@
           </button>
 
           {#if isActionMenuOpen}
-            <div class="absolute right-0 top-full mt-1 w-44 bg-[#1f1f1f] border border-[#2e2e2e] rounded-xl shadow-2xl p-1 z-[999] flex flex-col gap-0.5">
+            <div class="absolute right-0 top-full mt-1 w-44 bg-[#1f1f1f] border border-[#2e2e2e] rounded-xl shadow-2xl p-1 z-999 flex flex-col gap-0.5">
               <button 
                 onpointerdown={(e) => {
                   e.stopPropagation();
@@ -552,7 +639,7 @@
                 <div class="flex items-center gap-2"><Files size={13} /><span>Duplicate</span></div>
                 <span class="text-[10px] text-zinc-500 font-mono">Ctrl D</span>
               </button>
-              <div class="h-[1px] bg-[#292929] my-0.5"></div>
+              <div class="h-px bg-[#292929] my-0.5"></div>
               <button 
                 onpointerdown={(e) => {
                   e.stopPropagation();
@@ -658,6 +745,7 @@
         <span>All-day</span>
         <button
           type="button"
+          aria-label="Toggle all day event"
           onclick={toggleAllDay}
           class="w-7 h-4 rounded-full transition-colors relative flex items-center p-0.5 cursor-pointer
             {draft.isAllDay ? 'bg-blue-600' : 'bg-[#2b2b2b]'}"
@@ -718,9 +806,9 @@
         {/if}
       </div>
 
-      <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
+      <div class="h-px bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Participants Directory Input (Matching image_143b88.png) -->
+      <!-- Participants Directory Input -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <div class="flex items-center gap-2 text-zinc-400">
           <Users size={13} class="shrink-0 text-zinc-500" />
@@ -755,9 +843,9 @@
         {/if}
       </div>
 
-      <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
+      <div class="h-px bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Conferencing Provider Row (Matching image_1438c0.png) -->
+      <!-- Conferencing Provider Row -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <button 
           onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'conferencing' ? 'none' : 'conferencing'; }}
@@ -780,7 +868,7 @@
           <span>Add AI meeting notes</span>
         </button>
 
-        <!-- Location Search Input (Matching image_1437e3.png) -->
+        <!-- Location Search Input -->
         <div class="flex items-center gap-2 text-zinc-400 py-0.5">
           <MapPin size={13} class="shrink-0 text-zinc-500" />
           <input
@@ -816,7 +904,6 @@
                   }
                 }}
                 class="bg-[#141414] border border-[#2b2b2b] rounded px-1.5 py-0.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500 w-full"
-                autofocus
               />
               <button onclick={() => isAddingAttachment = false} class="text-zinc-500 hover:text-zinc-300">
                 <X size={12} />
@@ -842,7 +929,7 @@
         </div>
       </div>
 
-      <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
+      <div class="h-px bg-[#242424] -mx-1 shrink-0"></div>
 
       <!-- Description -->
       <div class="flex flex-col gap-1 text-xs shrink-0">
@@ -859,9 +946,9 @@
         ></textarea>
       </div>
 
-      <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
+      <div class="h-px bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Calendar Category & Color Button (Matching image_1434e2.png) -->
+      <!-- Calendar Category & Color Button -->
       <button 
         onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'; }}
         class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
@@ -930,11 +1017,11 @@
 
     <!-- ================= UNCLIPPED SIDE-DOCKED MENUS ================= -->
 
-    <!-- 1. Participant Autocomplete Popover (image_143b88.png) -->
+    <!-- 1. Participant Autocomplete Popover -->
     {#if activeSideMenu === 'participants'}
       <div 
-        class="absolute top-28 w-68 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[280px]'}"
+        class="absolute top-28 w-68 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-70'}"
       >
         <div class="max-h-60 overflow-y-auto flex flex-col gap-0.5 custom-scrollbar">
           {#each filteredContacts as contact}
@@ -950,11 +1037,11 @@
       </div>
     {/if}
 
-    <!-- 2. Location Autocomplete Popover (image_1437e3.png) -->
+    <!-- 2. Location Autocomplete Popover -->
     {#if activeSideMenu === 'location'}
       <div 
-        class="absolute top-44 w-72 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[300px]'}"
+        class="absolute top-44 w-72 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-75'}"
       >
         <div class="max-h-60 overflow-y-auto flex flex-col gap-0.5 custom-scrollbar">
           {#each filteredLocations as loc}
@@ -970,11 +1057,11 @@
       </div>
     {/if}
 
-    <!-- 3. Conferencing Provider Popover (image_1438c0.png) -->
+    <!-- 3. Conferencing Provider Popover -->
     {#if activeSideMenu === 'conferencing'}
       <div 
-        class="absolute top-40 w-54 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[230px]'}"
+        class="absolute top-40 w-54 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-57.5'}"
       >
         <button
           onpointerdown={(e) => { e.stopPropagation(); setGoogleMeet(); }}
@@ -997,7 +1084,7 @@
           </button>
         </div>
 
-        <div class="h-[1px] bg-[#292929] my-0.5"></div>
+        <div class="h-px bg-[#292929] my-0.5"></div>
 
         <button
           onpointerdown={(e) => { e.stopPropagation(); settingsStore.open('conferencing'); activeSideMenu = 'none'; }}
@@ -1009,11 +1096,11 @@
       </div>
     {/if}
 
-    <!-- 4. Calendar & Color Popover (image_1434e2.png) -->
+    <!-- 4. Calendar & Color Popover -->
     {#if activeSideMenu === 'calendar'}
       <div 
-        class="absolute bottom-14 w-62 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-2.5 z-[999] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[256px]'}"
+        class="absolute bottom-14 w-62 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-2.5 z-999 flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-64'}"
       >
         <div class="text-[11px] font-semibold text-zinc-400 px-1 truncate">amilavaz2003@gmail.com</div>
         
@@ -1047,7 +1134,7 @@
           {/each}
         </div>
 
-        <div class="h-[1px] bg-[#292929]"></div>
+        <div class="h-px bg-[#292929]"></div>
 
         <div class="text-[10px] font-semibold text-zinc-400 px-1">Event color</div>
         <div class="flex items-center justify-between px-1">
@@ -1067,12 +1154,12 @@
       </div>
     {/if}
 
-    <!-- Mini Calendar Popover -->
+    <!-- 5. Mini Calendar Popover -->
     {#if activeSideMenu === 'date'}
       {@const grid = generateMonthGrid(pickerMonth)}
       <div 
-        class="absolute top-14 w-60 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-3 z-[999] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[250px]'}"
+        class="absolute top-14 w-60 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-3 z-999 flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-62.5'}"
       >
         <div class="flex items-center justify-between px-1">
           <span class="text-xs font-bold text-zinc-200">{format(pickerMonth, 'MMMM yyyy')}</span>
@@ -1114,12 +1201,12 @@
       </div>
     {/if}
 
-    <!-- Time Interval Pickers -->
+    <!-- 6. Time Interval Pickers -->
     {#if activeSideMenu === 'start_time' || activeSideMenu === 'end_time'}
       {@const isStart = activeSideMenu === 'start_time'}
       <div 
-        class="absolute top-10 w-38 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-[999] max-h-68 overflow-y-auto custom-scrollbar flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[160px]'}"
+        class="absolute top-10 w-38 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-999 max-h-68 overflow-y-auto custom-scrollbar flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-40'}"
       >
         {#each timePresets as preset}
           <button
@@ -1132,11 +1219,11 @@
       </div>
     {/if}
 
-    <!-- Timezone Popover -->
+    <!-- 7. Timezone Popover -->
     {#if activeSideMenu === 'timezone'}
       <div 
-        class="absolute top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2 z-[999] flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[270px]'}"
+        class="absolute top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2 z-999 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-67.5'}"
       >
         <div class="flex items-center gap-2 px-2 py-1 bg-[#141414] border border-[#2a2a2a] rounded-lg">
           <Search size={12} class="text-zinc-500" />
@@ -1145,7 +1232,6 @@
             placeholder="Search timezone..."
             bind:value={timezoneQuery}
             class="bg-transparent text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none w-full"
-            autofocus
           />
         </div>
         <div class="max-h-56 overflow-y-auto flex flex-col gap-0.5 custom-scrollbar">
@@ -1163,11 +1249,11 @@
       </div>
     {/if}
 
-    <!-- Recurrence Popover -->
+    <!-- 8. Recurrence Popover -->
     {#if activeSideMenu === 'repeat'}
       <div 
-        class="absolute top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1.5 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[230px]'}"
+        class="absolute top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-57.5'}"
       >
         {#each repeatOptions as opt}
           <button
@@ -1184,11 +1270,11 @@
       </div>
     {/if}
 
-    <!-- Reminders Popover -->
+    <!-- 9. Reminders Popover -->
     {#if activeSideMenu === 'reminders'}
       <div 
-        class="absolute bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
-          {sideMenuOnRight ? 'left-full ml-2' : '-left-[200px]'}"
+        class="absolute bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-50'}"
       >
         {#each reminderPresets as opt}
           <button

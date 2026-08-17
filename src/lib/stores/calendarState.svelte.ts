@@ -17,7 +17,7 @@ class CalendarState {
   overflowData = $state<DayOverflowItem | null>(null);
   clipboardEvent = $state<CalendarEvent | null>(null);
 
-  // Contacts Directory for Auto-suggest
+  // Contacts Directory for Autocomplete
   contacts = $state<ParticipantContact[]>([
     { name: 'Amma', email: 'mangalialuthgama1964@gmail.com' },
     { name: 'ashely harry', email: 'ashelyharry990@gmail.com' },
@@ -90,6 +90,14 @@ class CalendarState {
     this.calendars = this.calendars.map((c) =>
       c.id === calendarId ? { ...c, isVisible: !c.isVisible } : c
     );
+  }
+
+  openAddAccountModal() {
+    this.isAddAccountModalOpen = true;
+  }
+
+  closeAddAccountModal() {
+    this.isAddAccountModalOpen = false;
   }
 
   openInspector(event: CalendarEvent, rect: DOMRect, isNew: boolean = false, dateKey?: string) {
