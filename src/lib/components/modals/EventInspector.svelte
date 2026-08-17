@@ -11,7 +11,9 @@
     addMinutes,
     addMonths,
     subMonths,
-    isSameDay
+    isSameDay,
+    isToday,
+    parse
   } from 'date-fns';
   import { 
     X, 
@@ -64,6 +66,7 @@
   let pickerMonth = $state(new Date());
   let startTimeInput = $state('');
   let endTimeInput = $state('');
+  let dateInput = $state('');
   let participantInput = $state('');
   let isAddingAttachment = $state(false);
   let attachmentInput = $state('');
@@ -89,6 +92,7 @@
       pickerMonth = parseISO(projected.startTime);
       startTimeInput = format(parseISO(projected.startTime), 'h:mm a');
       endTimeInput = format(parseISO(projected.endTime), 'h:mm a');
+      dateInput = format(parseISO(projected.startTime), 'EEE MMM d');
     }
   });
 
@@ -202,8 +206,12 @@
     if (isStart) {
       const newStart = setMinutes(setHours(baseStart, parsed.hours), parsed.minutes);
       const newEnd = addMinutes(newStart, currentDuration);
-      draft.startTime = newStart.toISOString();
-      draft.endTime = newEnd.toISOString();
+      draft = {
+        ...draft,
+        startTime: newStart.toISOString(),
+        endTime: newEnd.toISOString(),
+        updatedAt: new Date().toISOString()
+      };
       startTimeInput = format(newStart, 'h:mm a');
       endTimeInput = format(newEnd, 'h:mm a');
     } else {
@@ -211,7 +219,11 @@
       if (newEnd <= baseStart) {
         newEnd = addMinutes(baseStart, 15);
       }
-      draft.endTime = newEnd.toISOString();
+      draft = {
+        ...draft,
+        endTime: newEnd.toISOString(),
+        updatedAt: new Date().toISOString()
+      };
       endTimeInput = format(newEnd, 'h:mm a');
     }
   }
@@ -219,6 +231,36 @@
   function selectPresetTime(isStart: boolean, preset: string) {
     applyCustomTime(isStart, preset);
     activeSideMenu = 'none';
+  }
+
+  function applyCustomDate(str: string) {
+    if (!draft) return;
+    try {
+      let parsed: Date | null = null;
+      const clean = str.trim();
+      const formatsToTry = ['EEE MMM d', 'MMM d', 'EEE MMM d yyyy', 'MMM d yyyy', 'yyyy-MM-dd', 'M/d/yyyy', 'M/d'];
+
+      for (const fmt of formatsToTry) {
+        const d = parse(clean, fmt, new Date());
+        if (!isNaN(d.getTime())) {
+          parsed = d;
+          break;
+        }
+      }
+
+      if (!parsed) {
+        const d = new Date(clean);
+        if (!isNaN(d.getTime())) parsed = d;
+      }
+
+      if (parsed) {
+        selectNewDate(parsed);
+      } else {
+        dateInput = format(parseISO(draft.startTime), 'EEE MMM d');
+      }
+    } catch {
+      dateInput = format(parseISO(draft.startTime), 'EEE MMM d');
+    }
   }
 
   function selectNewDate(targetDay: Date) {
@@ -236,8 +278,15 @@
     );
     const newEnd = addMinutes(newStart, duration);
 
-    draft.startTime = newStart.toISOString();
-    draft.endTime = newEnd.toISOString();
+    draft = {
+      ...draft,
+      startTime: newStart.toISOString(),
+      endTime: newEnd.toISOString(),
+      occurrenceDate: format(newStart, 'yyyy-MM-dd'),
+      updatedAt: new Date().toISOString()
+    };
+    dateInput = format(newStart, 'EEE MMM d');
+    pickerMonth = newStart;
     activeSideMenu = 'none';
   }
 
@@ -500,7 +549,7 @@
       </div>
     </div>
 
-    <!-- Form Container -->
+    <!-- Scrollable Form Body -->
     <div class="flex-1 min-h-0 overflow-y-auto px-3.5 py-2.5 flex flex-col gap-2.5 custom-scrollbar">
       <input
         type="text"
@@ -510,7 +559,7 @@
         class="w-full bg-transparent text-sm font-semibold text-zinc-100 placeholder-zinc-500 focus:outline-none shrink-0"
       />
 
-      <!-- Time & Date -->
+      <!-- Time & Notion-style Date Input Row -->
       <div class="flex flex-col gap-1 shrink-0">
         <div class="flex items-center gap-1.5 text-xs">
           <Clock size={14} class="text-zinc-400 shrink-0" />
@@ -522,7 +571,7 @@
               onfocus={() => activeSideMenu = 'start_time'}
               onblur={() => applyCustomTime(true, startTimeInput)}
               onkeydown={(e) => e.key === 'Enter' && applyCustomTime(true, startTimeInput)}
-              class="w-18 bg-[#222222] hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 rounded px-1.5 py-0.5 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
+              class="w-20 bg-[#222222] hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 rounded-md px-2 py-1 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
             />
             <span class="text-zinc-500 text-xs">→</span>
             
@@ -532,25 +581,36 @@
               onfocus={() => activeSideMenu = 'end_time'}
               onblur={() => applyCustomTime(false, endTimeInput)}
               onkeydown={(e) => e.key === 'Enter' && applyCustomTime(false, endTimeInput)}
-              class="w-18 bg-[#222222] hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 rounded px-1.5 py-0.5 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
+              class="w-20 bg-[#222222] hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 rounded-md px-2 py-1 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
             />
 
             {#if durationText}
-              <span class="text-[10px] ml-0.5 truncate font-semibold" style="color: {colorToken.timeText};">{durationText}</span>
+              <span class="text-[11px] ml-1 truncate font-semibold" style="color: {colorToken.timeText};">{durationText}</span>
             {/if}
           {:else}
             <span class="text-zinc-300 font-semibold text-xs py-0.5">All Day</span>
           {/if}
         </div>
 
-        <!-- Interactive Date Selector Button -->
-        <button
-          onclick={() => activeSideMenu = activeSideMenu === 'date' ? 'none' : 'date'}
-          class="pl-5 text-[11px] text-zinc-400 hover:text-white font-medium text-left flex items-center gap-1.5 transition-colors cursor-pointer w-fit"
-        >
-          <span>{format(parseISO(draft.startTime), 'EEE MMM d, yyyy')}</span>
-          <ChevronDown size={11} class="text-zinc-500" />
-        </button>
+        <!-- Notion Date Input Pill -->
+        <div class="pl-5">
+          <input
+            type="text"
+            bind:value={dateInput}
+            onfocus={() => {
+              activeSideMenu = 'date';
+              if (draft) pickerMonth = parseISO(draft.startTime);
+            }}
+            onblur={() => applyCustomDate(dateInput)}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                applyCustomDate(dateInput);
+                activeSideMenu = 'none';
+              }
+            }}
+            class="w-28 bg-[#222222] hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 {activeSideMenu === 'date' ? 'bg-[#1a2333] ring-1 ring-blue-500 text-white' : 'text-zinc-200'} rounded-md px-2 py-1 text-xs font-semibold focus:outline-none transition-all cursor-pointer"
+          />
+        </div>
       </div>
 
       <!-- All-Day Toggle -->
@@ -637,7 +697,7 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Conferencing & Attachments -->
+      <!-- Integrations & Metadata -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <button 
           onclick={toggleGoogleMeet}
@@ -808,28 +868,26 @@
       </div>
     </div>
 
-    <!-- ================= UNCLIPPED SIDE-DOCKED DROPDOWNS ================= -->
-
-    <!-- Date Picker Popover -->
+    <!-- ================= NOTION-EXACT MINI CALENDAR POPOVER ================= -->
     {#if activeSideMenu === 'date'}
       {@const grid = generateMonthGrid(pickerMonth)}
       <div 
-        class="absolute top-14 w-60 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2.5 z-[999] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
+        class="absolute top-14 w-60 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-3 z-[999] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-[250px]'}"
       >
         <div class="flex items-center justify-between px-1">
           <span class="text-xs font-bold text-zinc-200">{format(pickerMonth, 'MMMM yyyy')}</span>
-          <div class="flex items-center gap-1">
-            <button onclick={() => pickerMonth = subMonths(pickerMonth, 1)} class="p-1 hover:bg-[#282828] rounded text-zinc-400 hover:text-white">
+          <div class="flex items-center gap-1 text-zinc-400">
+            <button onclick={() => pickerMonth = subMonths(pickerMonth, 1)} class="p-1 hover:bg-[#282828] rounded-md hover:text-white cursor-pointer">
               <ChevronLeft size={13} />
             </button>
-            <button onclick={() => pickerMonth = addMonths(pickerMonth, 1)} class="p-1 hover:bg-[#282828] rounded text-zinc-400 hover:text-white">
+            <button onclick={() => pickerMonth = addMonths(pickerMonth, 1)} class="p-1 hover:bg-[#282828] rounded-md hover:text-white cursor-pointer">
               <ChevronRight size={13} />
             </button>
           </div>
         </div>
 
-        <div class="grid grid-cols-7 text-[9px] font-bold text-zinc-500 text-center">
+        <div class="grid grid-cols-7 text-[10px] font-semibold text-zinc-500 text-center">
           {#each ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as d}
             <div>{d}</div>
           {/each}
@@ -837,11 +895,18 @@
 
         <div class="grid grid-cols-7 gap-0.5">
           {#each grid as cell}
-            {@const isCurrentSelected = isSameDay(cell.date, parseISO(draft.startTime))}
+            {@const activeToday = isToday(cell.date)}
+            {@const isSelectedDate = isSameDay(cell.date, parseISO(draft.startTime))}
             <button
               onclick={() => selectNewDate(cell.date)}
-              class="h-6 w-full text-[11px] rounded flex items-center justify-center transition-colors cursor-pointer
-                {isCurrentSelected ? 'bg-blue-600 text-white font-bold' : cell.isCurrentMonth ? 'text-zinc-200 hover:bg-[#282828]' : 'text-zinc-600 hover:bg-[#222222]'}"
+              class="h-7 w-7 mx-auto rounded-lg text-xs flex items-center justify-center transition-colors cursor-pointer
+                {activeToday 
+                  ? 'bg-[#ea4335] text-white font-bold' 
+                  : isSelectedDate 
+                    ? 'bg-[#333333] text-white font-bold' 
+                    : cell.isCurrentMonth 
+                      ? 'text-zinc-200 hover:bg-[#282828]' 
+                      : 'text-zinc-600 hover:bg-[#222222]'}"
             >
               {format(cell.date, 'd')}
             </button>

@@ -2,26 +2,41 @@
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
-  import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes, differenceInCalendarDays, addDays, format } from 'date-fns';
+  import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes, format } from 'date-fns';
   import { List, X } from 'lucide-svelte';
 
   let selectedScope = $state<'this' | 'following' | 'all'>('this');
   let pending = $derived(contextMenuStore.pendingRecurringAction);
   let showPendingDiffs = $state(true);
 
+  // Check if date or weekday changed
+  let isDateChange = $derived.by(() => {
+    if (!pending?.updatedEvent) return false;
+    const oldOccKey = pending.occurrenceDate || format(parseISO(pending.originalEvent.startTime), 'yyyy-MM-dd');
+    const newOccKey = format(parseISO(pending.updatedEvent.startTime), 'yyyy-MM-dd');
+    return oldOccKey !== newOccKey;
+  });
+
+  // Ensure default scope is 'this'
+  $effect(() => {
+    if (isDateChange && selectedScope === 'all') {
+      selectedScope = 'this';
+    }
+  });
+
   function handleSave() {
     if (!pending) return;
 
     const master = pending.originalEvent;
     const updated = pending.updatedEvent;
-    const occurrenceDate = pending.occurrenceDate || master.occurrenceDate;
+    const occurrenceDate = pending.occurrenceDate || format(parseISO(master.startTime), 'yyyy-MM-dd');
 
     if (pending.action === 'delete') {
       if (selectedScope === 'this' && occurrenceDate) {
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
-          exdates: [...exdates, occurrenceDate],
+          exdates: [...exdates.filter(d => d !== occurrenceDate), occurrenceDate],
           updatedAt: new Date().toISOString()
         });
       } else if (selectedScope === 'following' && occurrenceDate) {
@@ -39,15 +54,15 @@
       }
     } else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // 1. Exclude this date from master series so it NEVER duplicates
+        // 1. Exclude this specific occurrence from master series to prevent duplicates
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
-          exdates: [...exdates, occurrenceDate],
+          exdates: [...exdates.filter(d => d !== occurrenceDate), occurrenceDate],
           updatedAt: new Date().toISOString()
         });
 
-        // 2. Create detached standalone event
+        // 2. Create detached instance linked to series
         const detached = {
           ...updated,
           id: 'evt_' + Date.now(),
@@ -55,56 +70,40 @@
           exdates: [],
           untilDate: undefined,
           recurringEventId: master.id,
+          originalStartTime: occurrenceDate,
           isRecurringInstance: false,
           updatedAt: new Date().toISOString()
         };
         eventStore.addEvent(detached);
       } else if (selectedScope === 'following' && occurrenceDate) {
-        // 1. Terminate old master series before this occurrence
+        // 1. Terminate previous master series before this occurrence
         eventStore.updateEvent({
           ...master,
           untilDate: occurrenceDate,
           updatedAt: new Date().toISOString()
         });
 
-        // 2. Create new recurring series starting at this occurrence
+        // 2. Start new series from this occurrence forward
         const newSeries = {
           ...updated,
           id: 'evt_' + Date.now(),
-          rrule: master.rrule || updated.rrule || 'daily',
+          rrule: master.rrule || updated.rrule || 'weekly',
           exdates: [],
           untilDate: undefined,
+          recurringEventId: undefined,
           isRecurringInstance: false,
           updatedAt: new Date().toISOString()
         };
         eventStore.addEvent(newSeries);
       } else {
-        // Option 3: Update "All events" (shifts origin date and time across the entire series)
+        // 3. Update "All events" (shifts time-of-day, title, description, color across series)
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
         const duration = differenceInMinutes(newEnd, newStart);
 
         const masterStart = parseISO(master.startTime);
-        
-        let dayShift = 0;
-        if (occurrenceDate) {
-          const occStart = parseISO(occurrenceDate);
-          dayShift = differenceInCalendarDays(newStart, occStart);
-        }
-
-        const shiftedMasterStart = addDays(masterStart, dayShift);
-        const adjustedMasterStart = setMinutes(setHours(shiftedMasterStart, newStart.getHours()), newStart.getMinutes());
+        const adjustedMasterStart = setMinutes(setHours(masterStart, newStart.getHours()), newStart.getMinutes());
         const adjustedMasterEnd = addMinutes(adjustedMasterStart, duration);
-
-        // Shift existing exclusions by the exact day delta
-        const shiftedExdates = (master.exdates || []).map((exDateStr) => {
-          try {
-            const d = parseISO(exDateStr);
-            return format(addDays(d, dayShift), 'yyyy-MM-dd');
-          } catch {
-            return exDateStr;
-          }
-        });
 
         eventStore.updateEvent({
           ...master,
@@ -118,7 +117,6 @@
           calendarId: updated.calendarId,
           reminders: updated.reminders,
           rrule: updated.rrule || master.rrule,
-          exdates: shiftedExdates,
           updatedAt: new Date().toISOString()
         });
       }
@@ -145,6 +143,7 @@
         Edit repeat event “{pending.originalEvent.title || '(No Title)'}”
       </h3>
 
+      <!-- Scope Options -->
       <div class="flex flex-col gap-1.5 text-xs text-zinc-200">
         <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'this' ? 'bg-[#252525] font-semibold text-white' : ''}">
           <input type="radio" name="recurrenceScope" value="this" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
@@ -156,13 +155,16 @@
           <span>This and following events</span>
         </label>
 
-        <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'all' ? 'bg-[#252525] font-semibold text-white' : ''}">
-          <input type="radio" name="recurrenceScope" value="all" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
-          <span>All events</span>
-        </label>
+        <!-- "All events" is only available when not changing the date/weekday -->
+        {#if !isDateChange}
+          <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'all' ? 'bg-[#252525] font-semibold text-white' : ''}">
+            <input type="radio" name="recurrenceScope" value="all" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
+            <span>All events</span>
+          </label>
+        {/if}
       </div>
 
-      <!-- Pending Changes Diff Section -->
+      <!-- Pending Changes Diff List -->
       {#if pending.diffs && pending.diffs.length > 0}
         <div class="border-t border-[#2a2a2a] pt-3 flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs text-zinc-400 font-medium">
@@ -193,6 +195,7 @@
         </div>
       {/if}
 
+      <!-- Footer Buttons -->
       <div class="flex items-center justify-between pt-3 border-t border-[#292929]">
         <button 
           onclick={handleDiscard}

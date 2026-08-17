@@ -1,7 +1,7 @@
 import type { CalendarEvent } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
 import { contextMenuStore } from './contextMenuStore.svelte';
-import { moveEventDate } from '../utils/dateMath';
+import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes } from 'date-fns';
 
 class DragStore {
   isDragging = $state(false);
@@ -52,7 +52,21 @@ class DragStore {
         
         if (this.draggedEvent.rrule && this.draggedEvent.rrule !== 'none') {
           const masterEvent = eventStore.events.find(e => e.id === this.draggedEvent?.id) || this.draggedEvent;
-          const updatedEvent = moveEventDate(this.draggedEvent, targetDate);
+          
+          const origStart = parseISO(this.draggedEvent.startTime);
+          const origEnd = parseISO(this.draggedEvent.endTime);
+          const duration = differenceInMinutes(origEnd, origStart);
+
+          const newStart = setMinutes(setHours(targetDate, origStart.getHours()), origStart.getMinutes());
+          const newEnd = addMinutes(newStart, duration);
+
+          const updatedEvent: CalendarEvent = {
+            ...this.draggedEvent,
+            startTime: newStart.toISOString(),
+            endTime: newEnd.toISOString(),
+            occurrenceDate: this.hoveredDateKey,
+            updatedAt: new Date().toISOString()
+          };
           
           contextMenuStore.promptRecurringAction(
             'update',
