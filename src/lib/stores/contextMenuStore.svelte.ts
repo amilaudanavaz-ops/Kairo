@@ -45,17 +45,23 @@ class ContextMenuStore {
       const newStart = parseISO(updatedEvent.startTime);
       const newEnd = parseISO(updatedEvent.endTime);
 
-      const oldTimeStr = `${format(oldStart, 'h:mm a')}–${format(oldEnd, 'h:mm a')}`;
-      const newTimeStr = `${format(newStart, 'h:mm a')}–${format(newEnd, 'h:mm a')}`;
-      const oldDateStr = format(oldStart, 'MMM d');
-      const newDateStr = format(newStart, 'MMM d');
+      const oldDateKey = format(oldStart, 'yyyy-MM-dd');
+      const newDateKey = format(newStart, 'yyyy-MM-dd');
 
-      // Date / Time Diff
-      if (oldDateStr !== newDateStr || oldTimeStr !== newTimeStr) {
+      // Date & Time Diff calculation
+      if (oldDateKey !== newDateKey || oldStart.getTime() !== newStart.getTime() || oldEnd.getTime() !== newEnd.getTime()) {
+        const oldFormatted = oldDateKey !== newDateKey 
+          ? `${format(oldStart, 'MMM d, h:mm a')}–${format(oldEnd, 'h:mm a')}`
+          : `${format(oldStart, 'h:mm a')}–${format(oldEnd, 'h:mm a')}`;
+
+        const newFormatted = oldDateKey !== newDateKey
+          ? `${format(newStart, 'MMM d, h:mm a')}–${format(newEnd, 'h:mm a')}`
+          : `${format(newStart, 'h:mm a')}–${format(newEnd, 'h:mm a')}`;
+
         diffs.push({
           field: 'Time',
-          newValue: oldDateStr !== newDateStr ? `${newDateStr}, ${newTimeStr}` : newTimeStr,
-          oldValue: oldDateStr !== newDateStr ? `${oldDateStr}, ${oldTimeStr}` : oldTimeStr
+          newValue: newFormatted,
+          oldValue: oldFormatted
         });
       }
 
@@ -72,8 +78,8 @@ class ContextMenuStore {
       if ((originalEvent.description || '') !== (updatedEvent.description || '')) {
         diffs.push({
           field: 'Description',
-          newValue: updatedEvent.description ? (updatedEvent.description.slice(0, 45) + '...') : '(empty)',
-          oldValue: originalEvent.description ? (originalEvent.description.slice(0, 45) + '...') : '(empty)'
+          newValue: updatedEvent.description ? (updatedEvent.description.slice(0, 40) + '...') : '(empty)',
+          oldValue: originalEvent.description ? (originalEvent.description.slice(0, 40) + '...') : '(empty)'
         });
       }
 
@@ -81,8 +87,8 @@ class ContextMenuStore {
       if (originalEvent.colorOverride !== updatedEvent.colorOverride) {
         diffs.push({
           field: 'Color',
-          newValue: updatedEvent.colorOverride || 'Default',
-          oldValue: originalEvent.colorOverride || 'Default'
+          newValue: updatedEvent.colorOverride || 'Default Color',
+          oldValue: originalEvent.colorOverride || 'Default Color'
         });
       }
     }

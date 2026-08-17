@@ -8,7 +8,10 @@
     startOfDay, 
     endOfDay, 
     getWeekOfMonth,
-    addMinutes
+    addMinutes,
+    addMonths,
+    subMonths,
+    isSameDay
   } from 'date-fns';
   import { 
     X, 
@@ -28,6 +31,8 @@
     Bell, 
     Plus, 
     ChevronDown,
+    ChevronLeft,
+    ChevronRight,
     Scissors,
     Copy,
     Files,
@@ -39,6 +44,7 @@
   import { eventStore } from '../../stores/eventStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken, NOTION_COLORS } from '../../utils/colors';
+  import { generateMonthGrid } from '../../utils/dateMath';
   import { dispatchEventReminder } from '../../utils/notifications';
   import type { CalendarEvent } from '../../../types/event';
 
@@ -51,10 +57,11 @@
   );
   let colorToken = $derived(resolveEventColorToken(draft?.colorOverride || activeCalendar?.colorHex));
 
-  let activeSideMenu = $state<'none' | 'start_time' | 'end_time' | 'timezone' | 'repeat' | 'reminders' | 'calendar'>('none');
+  let activeSideMenu = $state<'none' | 'date' | 'start_time' | 'end_time' | 'timezone' | 'repeat' | 'reminders' | 'calendar'>('none');
   let isTypeDropdownOpen = $state(false);
   let isActionMenuOpen = $state(false);
 
+  let pickerMonth = $state(new Date());
   let startTimeInput = $state('');
   let endTimeInput = $state('');
   let participantInput = $state('');
@@ -79,6 +86,7 @@
       }
       draft = JSON.parse(JSON.stringify(projected));
       initialEventSnapshot = JSON.parse(JSON.stringify(projected));
+      pickerMonth = parseISO(projected.startTime);
       startTimeInput = format(parseISO(projected.startTime), 'h:mm a');
       endTimeInput = format(parseISO(projected.endTime), 'h:mm a');
     }
@@ -171,7 +179,6 @@
 
   function parseTime12h(timeStr: string): { hours: number; minutes: number } | null {
     const clean = timeStr.trim().toUpperCase().replace(/\s+/g, ' ');
-    // Matches formats like "1:00 AM", "1:00AM", "1 AM", "01:00 AM"
     const match = clean.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/);
     if (!match) return null;
     let h = parseInt(match[1], 10);
@@ -211,6 +218,26 @@
 
   function selectPresetTime(isStart: boolean, preset: string) {
     applyCustomTime(isStart, preset);
+    activeSideMenu = 'none';
+  }
+
+  function selectNewDate(targetDay: Date) {
+    if (!draft) return;
+    const baseStart = parseISO(draft.startTime);
+    const baseEnd = parseISO(draft.endTime);
+    const duration = differenceInMinutes(baseEnd, baseStart);
+
+    const newStart = new Date(
+      targetDay.getFullYear(),
+      targetDay.getMonth(),
+      targetDay.getDate(),
+      baseStart.getHours(),
+      baseStart.getMinutes()
+    );
+    const newEnd = addMinutes(newStart, duration);
+
+    draft.startTime = newStart.toISOString();
+    draft.endTime = newEnd.toISOString();
     activeSideMenu = 'none';
   }
 
@@ -279,6 +306,8 @@
       const end = setMinutes(setHours(parseISO(draft.startTime), 10), 0);
       updateDraft('startTime', start.toISOString());
       updateDraft('endTime', end.toISOString());
+      startTimeInput = format(start, 'h:mm a');
+      endTimeInput = format(end, 'h:mm a');
     }
   }
 
@@ -365,6 +394,7 @@
       : 'fixed z-50 w-[280px] bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
     style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
   >
+    <!-- Top Action Bar -->
     <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0 rounded-t-2xl bg-[#181818]">
       <div class="relative">
         <button 
@@ -470,7 +500,7 @@
       </div>
     </div>
 
-    <!-- Scrollable Form Body -->
+    <!-- Form Container -->
     <div class="flex-1 min-h-0 overflow-y-auto px-3.5 py-2.5 flex flex-col gap-2.5 custom-scrollbar">
       <input
         type="text"
@@ -480,6 +510,7 @@
         class="w-full bg-transparent text-sm font-semibold text-zinc-100 placeholder-zinc-500 focus:outline-none shrink-0"
       />
 
+      <!-- Time & Date -->
       <div class="flex flex-col gap-1 shrink-0">
         <div class="flex items-center gap-1.5 text-xs">
           <Clock size={14} class="text-zinc-400 shrink-0" />
@@ -512,11 +543,17 @@
           {/if}
         </div>
 
-        <div class="pl-5 text-[11px] text-zinc-400 font-medium">
-          {format(parseISO(draft.startTime), 'EEE MMM d')}
-        </div>
+        <!-- Interactive Date Selector Button -->
+        <button
+          onclick={() => activeSideMenu = activeSideMenu === 'date' ? 'none' : 'date'}
+          class="pl-5 text-[11px] text-zinc-400 hover:text-white font-medium text-left flex items-center gap-1.5 transition-colors cursor-pointer w-fit"
+        >
+          <span>{format(parseISO(draft.startTime), 'EEE MMM d, yyyy')}</span>
+          <ChevronDown size={11} class="text-zinc-500" />
+        </button>
       </div>
 
+      <!-- All-Day Toggle -->
       <div class="flex items-center justify-between text-xs text-zinc-300 shrink-0">
         <span>All-day</span>
         <button
@@ -532,6 +569,7 @@
         </button>
       </div>
 
+      <!-- Timezone -->
       <button 
         onclick={() => { activeSideMenu = activeSideMenu === 'timezone' ? 'none' : 'timezone'; timezoneQuery = ''; }}
         class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
@@ -543,6 +581,7 @@
         <ChevronDown size={12} class="text-zinc-500 shrink-0" />
       </button>
 
+      <!-- Recurrence -->
       <button 
         onclick={() => activeSideMenu = activeSideMenu === 'repeat' ? 'none' : 'repeat'}
         class="w-full flex items-center justify-between text-xs text-zinc-300 hover:text-white py-0.5 rounded hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
@@ -556,6 +595,7 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
+      <!-- Participants -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <div class="flex items-center gap-2 text-zinc-400 truncate">
           <User size={13} class="shrink-0 text-zinc-500" />
@@ -597,6 +637,7 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
+      <!-- Conferencing & Attachments -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <button 
           onclick={toggleGoogleMeet}
@@ -700,7 +741,7 @@
 
       <div class="h-[1px] bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Calendar Category & Notion Color Chip -->
+      <!-- Category & Color -->
       <button 
         onclick={() => activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'}
         class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
@@ -712,7 +753,7 @@
         <ChevronDown size={12} class="text-zinc-500 shrink-0" />
       </button>
 
-      <!-- Busy / Free & Visibility -->
+      <!-- Status & Visibility -->
       <div class="flex items-center justify-between text-xs text-zinc-300 shrink-0">
         <select
           value={draft.busyStatus}
@@ -767,7 +808,49 @@
       </div>
     </div>
 
-    <!-- Side-Docked Dropdowns -->
+    <!-- ================= UNCLIPPED SIDE-DOCKED DROPDOWNS ================= -->
+
+    <!-- Date Picker Popover -->
+    {#if activeSideMenu === 'date'}
+      {@const grid = generateMonthGrid(pickerMonth)}
+      <div 
+        class="absolute top-14 w-60 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2.5 z-[999] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
+          {sideMenuOnRight ? 'left-full ml-2' : '-left-[250px]'}"
+      >
+        <div class="flex items-center justify-between px-1">
+          <span class="text-xs font-bold text-zinc-200">{format(pickerMonth, 'MMMM yyyy')}</span>
+          <div class="flex items-center gap-1">
+            <button onclick={() => pickerMonth = subMonths(pickerMonth, 1)} class="p-1 hover:bg-[#282828] rounded text-zinc-400 hover:text-white">
+              <ChevronLeft size={13} />
+            </button>
+            <button onclick={() => pickerMonth = addMonths(pickerMonth, 1)} class="p-1 hover:bg-[#282828] rounded text-zinc-400 hover:text-white">
+              <ChevronRight size={13} />
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-7 text-[9px] font-bold text-zinc-500 text-center">
+          {#each ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as d}
+            <div>{d}</div>
+          {/each}
+        </div>
+
+        <div class="grid grid-cols-7 gap-0.5">
+          {#each grid as cell}
+            {@const isCurrentSelected = isSameDay(cell.date, parseISO(draft.startTime))}
+            <button
+              onclick={() => selectNewDate(cell.date)}
+              class="h-6 w-full text-[11px] rounded flex items-center justify-center transition-colors cursor-pointer
+                {isCurrentSelected ? 'bg-blue-600 text-white font-bold' : cell.isCurrentMonth ? 'text-zinc-200 hover:bg-[#282828]' : 'text-zinc-600 hover:bg-[#222222]'}"
+            >
+              {format(cell.date, 'd')}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- Time Interval Pickers -->
     {#if activeSideMenu === 'start_time' || activeSideMenu === 'end_time'}
       {@const isStart = activeSideMenu === 'start_time'}
       <div 
@@ -785,6 +868,7 @@
       </div>
     {/if}
 
+    <!-- Timezone Popover -->
     {#if activeSideMenu === 'timezone'}
       <div 
         class="absolute top-24 w-66 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2 z-[999] flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100
@@ -815,6 +899,7 @@
       </div>
     {/if}
 
+    <!-- Recurrence Popover -->
     {#if activeSideMenu === 'repeat'}
       <div 
         class="absolute top-32 w-54 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1.5 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
@@ -835,6 +920,7 @@
       </div>
     {/if}
 
+    <!-- Calendar Category & Swatches Popover -->
     {#if activeSideMenu === 'calendar'}
       <div 
         class="absolute bottom-14 w-58 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-2 z-[999] flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
@@ -878,6 +964,7 @@
       </div>
     {/if}
 
+    <!-- Reminders Popover -->
     {#if activeSideMenu === 'reminders'}
       <div 
         class="absolute bottom-3 w-48 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-[999] flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100

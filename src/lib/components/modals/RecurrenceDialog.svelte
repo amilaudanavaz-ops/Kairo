@@ -2,7 +2,7 @@
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
-  import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes, differenceInCalendarDays, addDays } from 'date-fns';
+  import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes, differenceInCalendarDays, addDays, format } from 'date-fns';
   import { List, X } from 'lucide-svelte';
 
   let selectedScope = $state<'this' | 'following' | 'all'>('this');
@@ -18,7 +18,6 @@
 
     if (pending.action === 'delete') {
       if (selectedScope === 'this' && occurrenceDate) {
-        // Exclude only this specific date from master series
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -26,14 +25,12 @@
           updatedAt: new Date().toISOString()
         });
       } else if (selectedScope === 'following' && occurrenceDate) {
-        // Cut off master series before this occurrence
         eventStore.updateEvent({
           ...master,
           untilDate: occurrenceDate,
           updatedAt: new Date().toISOString()
         });
       } else {
-        // Delete all events in this series
         eventStore.deleteEvent(master.id);
       }
 
@@ -42,7 +39,7 @@
       }
     } else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // 1. Exclude this date from master series to prevent duplicates
+        // 1. Exclude this date from master series so it NEVER duplicates
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -70,7 +67,7 @@
           updatedAt: new Date().toISOString()
         });
 
-        // 2. Create new series starting at this occurrence
+        // 2. Create new recurring series starting at this occurrence
         const newSeries = {
           ...updated,
           id: 'evt_' + Date.now(),
@@ -99,6 +96,16 @@
         const adjustedMasterStart = setMinutes(setHours(shiftedMasterStart, newStart.getHours()), newStart.getMinutes());
         const adjustedMasterEnd = addMinutes(adjustedMasterStart, duration);
 
+        // Shift existing exclusions by the exact day delta
+        const shiftedExdates = (master.exdates || []).map((exDateStr) => {
+          try {
+            const d = parseISO(exDateStr);
+            return format(addDays(d, dayShift), 'yyyy-MM-dd');
+          } catch {
+            return exDateStr;
+          }
+        });
+
         eventStore.updateEvent({
           ...master,
           title: updated.title,
@@ -111,6 +118,7 @@
           calendarId: updated.calendarId,
           reminders: updated.reminders,
           rrule: updated.rrule || master.rrule,
+          exdates: shiftedExdates,
           updatedAt: new Date().toISOString()
         });
       }
@@ -154,6 +162,7 @@
         </label>
       </div>
 
+      <!-- Pending Changes Diff Section -->
       {#if pending.diffs && pending.diffs.length > 0}
         <div class="border-t border-[#2a2a2a] pt-3 flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs text-zinc-400 font-medium">
