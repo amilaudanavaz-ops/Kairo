@@ -10,18 +10,40 @@
     Check, 
     Trash2, 
     RefreshCw,
-    Volume2,
-    Lock
+    Volume2
   } from 'lucide-svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
+  import { calendarState } from '../../stores/calendarState.svelte';
 
-  let newAccountEmail = $state('');
-  let newAccountName = $state('');
-  let isAddingAccountForm = $state(false);
+  let localPreferredName = $state('');
+  let localUsername = $state('');
+  let isSavedMessage = $state(false);
   let isSyncing = $state(false);
-  let profileSavedMessage = $state(false);
 
-  // Play synthetic test notification sound without external audio files
+  $effect(() => {
+    localPreferredName = settingsStore.preferredName;
+    localUsername = settingsStore.username;
+  });
+
+  function triggerGoogleSync() {
+    isSyncing = true;
+    setTimeout(() => {
+      isSyncing = false;
+    }, 1000);
+  }
+
+  function handleUpdateProfile() {
+    settingsStore.preferredName = localPreferredName.trim() || 'Amila Vaz';
+    settingsStore.username = localUsername.trim() || 'amilavaz';
+    settingsStore.updateSetting('preferredName', settingsStore.preferredName);
+    settingsStore.updateSetting('username', settingsStore.username);
+    isSavedMessage = true;
+    setTimeout(() => {
+      isSavedMessage = false;
+      settingsStore.close();
+    }, 600);
+  }
+
   function playTestSound() {
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -29,8 +51,8 @@
       const gain = audioCtx.createGain();
 
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
-      osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.15); // A5
+      osc.frequency.setValueAtTime(587.33, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.15);
 
       gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.35);
@@ -41,11 +63,10 @@
       osc.start();
       osc.stop(audioCtx.currentTime + 0.35);
     } catch (e) {
-      console.warn('AudioContext not permitted yet:', e);
+      console.warn('AudioContext permission required:', e);
     }
   }
 
-  // Request system notification permissions
   async function testDesktopNotification() {
     if (settingsStore.playNotificationSound) {
       playTestSound();
@@ -67,23 +88,6 @@
       }
     }
   }
-
-  function triggerGoogleSync() {
-    isSyncing = true;
-    setTimeout(() => {
-      isSyncing = false;
-    }, 1000);
-  }
-
-  function handleSaveProfile() {
-    settingsStore.updateSetting('preferredName', settingsStore.preferredName);
-    settingsStore.updateSetting('username', settingsStore.username);
-    settingsStore.updateSetting('email', settingsStore.email);
-    profileSavedMessage = true;
-    setTimeout(() => {
-      profileSavedMessage = false;
-    }, 2000);
-  }
 </script>
 
 {#if settingsStore.isOpen}
@@ -100,14 +104,8 @@
       <!-- Navigation Sidebar -->
       <aside class="w-56 bg-[#141414] border-r border-[#242424] p-3.5 flex flex-col justify-between shrink-0">
         <div class="flex flex-col gap-4">
-          <!-- App Header -->
-          <div class="flex items-center gap-2 px-2 py-1">
-            <div class="w-5 h-5 rounded-md bg-blue-600 flex items-center justify-center font-bold text-white text-xs">K</div>
-            <span class="font-bold text-sm text-zinc-100 tracking-tight">Kairo Settings</span>
-          </div>
-
           <div class="flex flex-col gap-0.5">
-            <span class="text-[10px] font-semibold text-zinc-500 px-2 py-1 uppercase tracking-wider">Preferences</span>
+            <span class="text-[10px] font-semibold text-zinc-500 px-2 py-1 uppercase tracking-wider">Account</span>
             
             <button
               onclick={() => settingsStore.activeTab = 'general'}
@@ -155,7 +153,7 @@
             </button>
           </div>
 
-          <!-- Connected Calendar Accounts List -->
+          <!-- Calendar Accounts Section -->
           <div class="flex flex-col gap-0.5">
             <span class="text-[10px] font-semibold text-zinc-500 px-2 py-1 uppercase tracking-wider">Calendar Accounts</span>
             {#each settingsStore.accounts as acc}
@@ -175,11 +173,11 @@
             {/each}
 
             <button 
-              onclick={() => { settingsStore.activeTab = 'accounts'; isAddingAccountForm = true; }}
+              onclick={() => calendarState.openAddAccountModal()}
               class="flex items-center gap-1.5 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 transition-colors mt-1 cursor-pointer"
             >
               <Plus size={13} />
-              <span>Connect Google Account</span>
+              <span>Add calendar account</span>
             </button>
           </div>
         </div>
@@ -197,7 +195,76 @@
         </button>
 
         <div class="flex-1 overflow-y-auto px-8 py-6 flex flex-col gap-6 custom-scrollbar text-xs">
-          <!-- 1. GENERAL TAB -->
+          
+          <!-- 1. PROFILE TAB -->
+          {#if settingsStore.activeTab === 'profile'}
+            <div class="flex flex-col gap-5">
+              <h2 class="text-sm font-bold text-zinc-100">Kairo profile</h2>
+              
+              <div class="flex items-center gap-4">
+                <div class="w-14 h-14 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-bold text-lg text-white shadow-md">
+                  {localPreferredName ? localPreferredName.slice(0, 1).toUpperCase() : 'A'}
+                </div>
+                <div class="flex flex-col gap-1">
+                  <span class="text-xs text-zinc-400 font-medium">Preferred name</span>
+                  <input 
+                    type="text" 
+                    bind:value={localPreferredName}
+                    class="bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1 text-xs text-zinc-100 focus:outline-none w-56"
+                  />
+                </div>
+              </div>
+
+              <div class="h-px bg-[#262626]"></div>
+
+              <div class="flex flex-col gap-1.5">
+                <h2 class="text-sm font-bold text-zinc-100">Username</h2>
+                <p class="text-[11px] text-zinc-400 leading-relaxed">
+                  Your username is part of your scheduling links. Remember to update your shared links after changing your username, as old links will no longer work.
+                </p>
+                <input 
+                  type="text" 
+                  bind:value={localUsername}
+                  class="w-64 bg-[#222222] border border-[#2e2e2e] rounded-lg px-3 py-1.5 text-xs text-zinc-100 focus:outline-none mt-1"
+                />
+              </div>
+
+              <div class="h-px bg-[#262626]"></div>
+
+              <div class="flex flex-col gap-2">
+                <p class="text-[11px] text-zinc-400">
+                  Permanently delete your Kairo Calendar account and associated user data. Calendar and contacts data stored with Google won’t be deleted.
+                </p>
+                <button
+                  onclick={() => settingsStore.logout()}
+                  class="w-fit px-3 py-1.5 rounded-lg bg-rose-950/40 border border-rose-900/60 text-rose-400 hover:bg-rose-900/50 transition-colors text-xs font-semibold cursor-pointer"
+                >
+                  Delete Kairo Calendar account
+                </button>
+              </div>
+
+              <div class="flex items-center justify-end gap-2 mt-auto pt-6 border-t border-[#262626]">
+                <button 
+                  onclick={() => settingsStore.close()} 
+                  class="px-3.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-[#252525] transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onclick={handleUpdateProfile}
+                  class="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  {#if isSavedMessage}
+                    <Check size={13} /> Updated
+                  {:else}
+                    Update
+                  {/if}
+                </button>
+              </div>
+            </div>
+          {/if}
+
+          <!-- 2. GENERAL TAB -->
           {#if settingsStore.activeTab === 'general'}
             <div class="flex flex-col gap-5">
               <h2 class="text-sm font-bold text-zinc-100">Calendar View</h2>
@@ -297,60 +364,7 @@
             </div>
           {/if}
 
-          <!-- 2. PROFILE TAB -->
-          {#if settingsStore.activeTab === 'profile'}
-            <div class="flex flex-col gap-5">
-              <h2 class="text-sm font-bold text-zinc-100">User Profile</h2>
-              
-              <div class="flex items-center gap-4">
-                <div class="w-14 h-14 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-bold text-lg text-white shadow-md">
-                  {settingsStore.preferredName ? settingsStore.preferredName.slice(0, 1).toUpperCase() : 'A'}
-                </div>
-                <div class="flex flex-col gap-1">
-                  <span class="text-xs text-zinc-400 font-medium">Display Name</span>
-                  <input 
-                    type="text" 
-                    bind:value={settingsStore.preferredName}
-                    class="bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1 text-xs text-zinc-100 focus:outline-none w-56"
-                  />
-                </div>
-              </div>
-
-              <div class="flex flex-col gap-1">
-                <span class="text-xs text-zinc-400 font-medium">Email</span>
-                <input 
-                  type="email" 
-                  bind:value={settingsStore.email}
-                  class="bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1 text-xs text-zinc-100 focus:outline-none w-64"
-                />
-              </div>
-
-              <div class="flex flex-col gap-1">
-                <span class="text-xs text-zinc-400 font-medium">Handle / Username</span>
-                <input 
-                  type="text" 
-                  bind:value={settingsStore.username}
-                  class="bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1 text-xs text-zinc-100 focus:outline-none w-64"
-                />
-              </div>
-
-              <div class="flex items-center gap-3">
-                <button
-                  onclick={handleSaveProfile}
-                  class="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow transition-colors cursor-pointer"
-                >
-                  Save Profile
-                </button>
-                {#if profileSavedMessage}
-                  <span class="text-emerald-400 text-xs flex items-center gap-1 font-semibold animate-in fade-in">
-                    <Check size={13} /> Saved to Database!
-                  </span>
-                {/if}
-              </div>
-            </div>
-          {/if}
-
-          <!-- 3. NOTIFICATIONS TAB WITH REAL SOUND TEST -->
+          <!-- 3. NOTIFICATIONS TAB -->
           {#if settingsStore.activeTab === 'notifications'}
             <div class="flex flex-col gap-5">
               <h2 class="text-sm font-bold text-zinc-100">Event Notifications</h2>
@@ -404,7 +418,7 @@
                   class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#242424] hover:bg-[#2c2c2c] border border-[#2f2f2f] text-xs font-semibold text-zinc-200 cursor-pointer"
                 >
                   <Volume2 size={13} />
-                  <span>Test Notification & Sound</span>
+                  <span>Test Sound & Notification</span>
                 </button>
               </div>
             </div>
@@ -452,7 +466,7 @@
             </div>
           {/if}
 
-          <!-- 5. CONFERENCING TAB WITH REAL PMI ZOOM CONFIG -->
+          <!-- 5. CONFERENCING TAB -->
           {#if settingsStore.activeTab === 'conferencing'}
             <div class="flex flex-col gap-5">
               <div>
@@ -461,7 +475,6 @@
               </div>
 
               <div class="flex flex-col gap-3">
-                <!-- Google Meet -->
                 <div class="flex items-center justify-between p-3.5 rounded-xl bg-[#222222] border border-[#2c2c2c]">
                   <div class="flex items-center gap-3">
                     <svg class="w-5 h-5" viewBox="0 0 24 24">
@@ -485,7 +498,6 @@
                   </button>
                 </div>
 
-                <!-- Zoom with real PMI Input -->
                 <div class="flex flex-col gap-2 p-3.5 rounded-xl bg-[#222222] border border-[#2c2c2c]">
                   <div class="flex items-center justify-between">
                     <div class="flex items-center gap-3">
@@ -579,52 +591,13 @@
                 {/each}
               </div>
 
-              {#if isAddingAccountForm}
-                <div class="flex flex-col gap-2 p-3.5 rounded-xl bg-[#1d1d1d] border border-[#2f2f2f]">
-                  <span class="text-xs font-semibold text-zinc-200">Connect Account</span>
-                  <input 
-                    type="text"
-                    placeholder="Account Name (e.g. Work Calendar)"
-                    bind:value={newAccountName}
-                    class="bg-[#262626] border border-[#333333] rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none"
-                  />
-                  <input 
-                    type="email"
-                    placeholder="Email address"
-                    bind:value={newAccountEmail}
-                    class="bg-[#262626] border border-[#333333] rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none"
-                  />
-                  <div class="flex items-center justify-end gap-2 mt-1">
-                    <button 
-                      onclick={() => isAddingAccountForm = false}
-                      class="px-2.5 py-1 text-xs text-zinc-400 hover:text-white cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button 
-                      onclick={() => {
-                        if (newAccountEmail.trim()) {
-                          settingsStore.addAccount(newAccountEmail.trim(), newAccountName.trim());
-                          newAccountEmail = '';
-                          newAccountName = '';
-                          isAddingAccountForm = false;
-                        }
-                      }}
-                      class="px-3 py-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg shadow cursor-pointer"
-                    >
-                      Save Account
-                    </button>
-                  </div>
-                </div>
-              {:else}
-                <button
-                  onclick={() => isAddingAccountForm = true}
-                  class="w-fit flex items-center gap-1.5 px-3 py-1.5 text-xs text-blue-400 hover:text-blue-300 bg-[#222222] hover:bg-[#282828] border border-[#2e2e2e] rounded-lg transition-colors cursor-pointer"
-                >
-                  <Plus size={13} />
-                  <span>Connect Another Account</span>
-                </button>
-              {/if}
+              <button
+                onclick={() => calendarState.openAddAccountModal()}
+                class="w-fit flex items-center gap-1.5 px-3 py-1.5 text-xs text-blue-400 hover:text-blue-300 bg-[#222222] hover:bg-[#282828] border border-[#2e2e2e] rounded-lg transition-colors cursor-pointer"
+              >
+                <Plus size={13} />
+                <span>Connect Google Account</span>
+              </button>
             </div>
           {/if}
         </div>

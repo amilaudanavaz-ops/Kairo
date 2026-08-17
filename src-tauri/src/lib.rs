@@ -1,9 +1,6 @@
-use tauri_plugin_sql::{Migration, MigrationKind};
+mod google;
 
-#[tauri::command]
-async fn connect_google_account() -> Result<String, String> {
-    Ok("amilavaz2003@gmail.com".to_string())
-}
+use tauri_plugin_sql::{Migration, MigrationKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,6 +22,9 @@ pub fn run() {
                 .add_migrations("sqlite:kairo.db", migrations)
                 .build(),
         )
+        .invoke_handler(tauri::generate_handler![
+            google::start_google_auth,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Kairo calendar application");
 }

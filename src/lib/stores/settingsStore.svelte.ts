@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import type { SettingsTab, UserAccount } from '../../types/event';
 import { 
   loadDbSettings, 
@@ -14,13 +15,15 @@ class SettingsStore {
   activeTab = $state<SettingsTab>('general');
   isCommandMenuOpen = $state(false);
 
-  // Authentication State (Loaded from SQLite)
+  // Authentication State
   isLoggedIn = $state(false);
   preferredName = $state('');
   email = $state('');
   username = $state('');
+  avatarUrl = $state('');
+  isAuthenticating = $state(false);
 
-  // General Preferences (Persisted & directly affects calendar views)
+  // General Preferences
   showWeekends = $state(true);
   showDeclinedEvents = $state(true);
   showWeekNumbers = $state(false);
@@ -46,14 +49,12 @@ class SettingsStore {
   defaultConferencing = $state<'google_meet' | 'zoom' | 'custom'>('google_meet');
   zoomPmiLink = $state('');
   zoomConnected = $state(false);
-  customVideoTemplate = $state('');
 
   // Accounts List
   accounts = $state<UserAccount[]>([]);
 
   async init(): Promise<void> {
     try {
-      // 1. Load settings from SQLite
       const saved = await loadDbSettings();
       if (saved.showWeekends !== undefined) this.showWeekends = saved.showWeekends === 'true';
       if (saved.showDeclinedEvents !== undefined) this.showDeclinedEvents = saved.showDeclinedEvents === 'true';
@@ -74,9 +75,7 @@ class SettingsStore {
         this.zoomPmiLink = saved.zoomPmiLink;
         this.zoomConnected = Boolean(saved.zoomPmiLink);
       }
-      if (saved.customVideoTemplate) this.customVideoTemplate = saved.customVideoTemplate;
 
-      // 2. Load accounts from SQLite
       const storedAccounts = await loadDbAccounts();
       this.accounts = storedAccounts;
 
@@ -86,23 +85,24 @@ class SettingsStore {
         this.preferredName = primary.name;
         this.email = primary.email;
         this.username = primary.email.split('@')[0].toLowerCase();
+        this.avatarUrl = primary.avatarUrl || '';
       } else {
         this.isLoggedIn = false;
         this.preferredName = '';
         this.email = '';
         this.username = '';
+        this.avatarUrl = '';
       }
     } catch (err) {
-      console.error('Failed to load settings from DB:', err);
+      console.error('Failed to load settings:', err);
     }
   }
 
-  // Persist any setting update directly to SQLite
   async updateSetting(key: string, value: string): Promise<void> {
     try {
       await persistDbSetting(key, value);
     } catch (err) {
-      console.error(`Failed to persist setting ${key}:`, err);
+      console.error(`Failed to save setting ${key}:`, err);
     }
   }
 
@@ -150,51 +150,90 @@ class SettingsStore {
     this.isCommandMenuOpen = !this.isCommandMenuOpen;
   }
 
-  async login(email: string, name: string = ''): Promise<void> {
-    const cleanEmail = email.trim();
-    const cleanName = name.trim() || cleanEmail.split('@')[0];
-    this.email = cleanEmail;
-    this.preferredName = cleanName;
-    this.username = cleanEmail.split('@')[0].toLowerCase();
-    this.isLoggedIn = true;
-    await this.addAccount(cleanEmail, cleanName);
+  // Reads OAuth credentials directly from .env and triggers Google OAuth loopback via Rust
+  async connectGoogleOAuth(): Promise<void> {
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+    const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET || '';
+
+    if (!clientId) {
+      alert('VITE_GOOGLE_CLIENT_ID is missing from your .env file!');
+      return;
+    }
+
+    this.isAuthenticating = true;
+    try {
+      const authResult = await invoke<any>('start_google_auth', {
+        clientId,
+        clientSecret
+      });
+
+      const profile = authResult.profile;
+      const isPrimary = this.accounts.length === 0;
+
+      const newAccount: UserAccount = {
+        id: 'acc_' + profile.id,
+        email: profile.email,
+        name: profile.name || profile.email.split('@')[0],
+        provider: 'google',
+        avatarUrl: profile.picture,
+        isPrimary,
+        syncEnabled: true
+      };
+
+      await persistDbAccount(newAccount, authResult.access_token, authResult.refresh_token);
+      this.accounts = [...this.accounts.filter(a => a.email !== newAccount.email), newAccount];
+
+      this.isLoggedIn = true;
+      this.preferredName = newAccount.name;
+      this.email = newAccount.email;
+      this.username = newAccount.email.split('@')[0].toLowerCase();
+      this.avatarUrl = newAccount.avatarUrl || '';
+
+      // Save imported Google Calendars to SQLite
+      if (Array.isArray(authResult.calendars) && authResult.calendars.length > 0) {
+        for (const cal of authResult.calendars) {
+          const newCal = {
+            id: 'cal_' + cal.id,
+            accountId: newAccount.id,
+            googleCalendarId: cal.id,
+            name: cal.summary,
+            colorId: 'blue',
+            colorHex: cal.background_color || '#3b82f6',
+            isPrimary: Boolean(cal.primary),
+            isVisible: true
+          };
+          await persistCalendarCategory(newCal);
+          calendarState.calendars = [...calendarState.calendars.filter(c => c.googleCalendarId !== cal.id), newCal];
+        }
+      } else {
+        const defaultCal = {
+          id: 'cal_' + Date.now(),
+          accountId: newAccount.id,
+          name: newAccount.email,
+          colorId: 'blue',
+          colorHex: '#3b82f6',
+          isPrimary: true,
+          isVisible: true
+        };
+        await persistCalendarCategory(defaultCal);
+        calendarState.calendars = [...calendarState.calendars, defaultCal];
+      }
+
+      this.close();
+    } catch (err) {
+      console.error('Google OAuth error:', err);
+      alert(`Google Sign-In failed: ${err}`);
+    } finally {
+      this.isAuthenticating = false;
+    }
   }
 
   async logout(): Promise<void> {
     this.isLoggedIn = false;
     this.preferredName = '';
     this.email = '';
-  }
-
-  async addAccount(email: string, name: string = 'Google User'): Promise<void> {
-    if (!email.trim()) return;
-    const exists = this.accounts.some(a => a.email.toLowerCase() === email.toLowerCase());
-    if (!exists) {
-      const isPrimary = this.accounts.length === 0;
-      const newAcc: UserAccount = {
-        id: 'acc_' + Date.now(),
-        email: email.trim(),
-        name: name.trim() || email.split('@')[0],
-        provider: 'google',
-        isPrimary,
-        syncEnabled: true
-      };
-      this.accounts = [...this.accounts, newAcc];
-      await persistDbAccount(newAcc);
-
-      // Create a default calendar category for this account
-      const newCal = {
-        id: 'cal_' + Date.now(),
-        accountId: newAcc.id,
-        name: newAcc.email,
-        colorId: 'blue',
-        colorHex: '#3b82f6',
-        isPrimary,
-        isVisible: true
-      };
-      calendarState.calendars = [...calendarState.calendars, newCal];
-      await persistCalendarCategory(newCal);
-    }
+    this.username = '';
+    this.avatarUrl = '';
   }
 
   async removeAccount(id: string): Promise<void> {
@@ -218,6 +257,7 @@ class SettingsStore {
       this.preferredName = primary.name;
       this.email = primary.email;
       this.username = primary.email.split('@')[0].toLowerCase();
+      this.avatarUrl = primary.avatarUrl || '';
     }
   }
 }

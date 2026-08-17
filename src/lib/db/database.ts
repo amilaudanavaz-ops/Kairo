@@ -7,7 +7,7 @@ export async function getDb(): Promise<Database> {
   if (!dbInstance) {
     dbInstance = await Database.load('sqlite:kairo.db');
 
-    // 1. Settings key-value table
+    // 1. Settings Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -15,7 +15,7 @@ export async function getDb(): Promise<Database> {
       );
     `);
 
-    // 2. Accounts table
+    // 2. Accounts Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY,
@@ -23,12 +23,14 @@ export async function getDb(): Promise<Database> {
         name TEXT NOT NULL,
         provider TEXT NOT NULL,
         avatar_url TEXT,
+        access_token TEXT,
+        refresh_token TEXT,
         is_primary INTEGER NOT NULL DEFAULT 0,
         sync_enabled INTEGER NOT NULL DEFAULT 1
       );
     `);
 
-    // 3. Contacts directory for participants
+    // 3. Contacts Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS contacts (
         id TEXT PRIMARY KEY,
@@ -38,7 +40,7 @@ export async function getDb(): Promise<Database> {
       );
     `);
 
-    // 4. Calendars table
+    // 4. Calendars Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS calendars (
         id TEXT PRIMARY KEY,
@@ -52,7 +54,7 @@ export async function getDb(): Promise<Database> {
       );
     `);
 
-    // 5. Events table
+    // 5. Events Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
@@ -113,7 +115,7 @@ export async function persistDbSetting(key: string, value: string): Promise<void
 export async function loadDbAccounts(): Promise<UserAccount[]> {
   const db = await getDb();
   const rows = await db.select<any[]>('SELECT * FROM accounts ORDER BY is_primary DESC, id ASC');
-  return rows.map(r => ({
+  return rows.map((r) => ({
     id: r.id,
     email: r.email,
     name: r.name,
@@ -124,19 +126,21 @@ export async function loadDbAccounts(): Promise<UserAccount[]> {
   }));
 }
 
-export async function persistDbAccount(acc: UserAccount): Promise<void> {
+export async function persistDbAccount(acc: UserAccount, accessToken?: string, refreshToken?: string): Promise<void> {
   const db = await getDb();
   await db.execute(
-    `INSERT INTO accounts (id, email, name, provider, avatar_url, is_primary, sync_enabled)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO accounts (id, email, name, provider, avatar_url, access_token, refresh_token, is_primary, sync_enabled)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT(id) DO UPDATE SET
        email = excluded.email,
        name = excluded.name,
        provider = excluded.provider,
        avatar_url = excluded.avatar_url,
+       access_token = COALESCE(excluded.access_token, accounts.access_token),
+       refresh_token = COALESCE(excluded.refresh_token, accounts.refresh_token),
        is_primary = excluded.is_primary,
        sync_enabled = excluded.sync_enabled`,
-    [acc.id, acc.email, acc.name, acc.provider, acc.avatarUrl || null, acc.isPrimary ? 1 : 0, acc.syncEnabled ? 1 : 0]
+    [acc.id, acc.email, acc.name, acc.provider, acc.avatarUrl || null, accessToken || null, refreshToken || null, acc.isPrimary ? 1 : 0, acc.syncEnabled ? 1 : 0]
   );
 }
 
@@ -151,7 +155,7 @@ export async function deleteDbAccount(id: string): Promise<void> {
 export async function loadDbContacts(): Promise<ParticipantContact[]> {
   const db = await getDb();
   const rows = await db.select<any[]>('SELECT * FROM contacts ORDER BY name ASC');
-  return rows.map(r => ({
+  return rows.map((r) => ({
     name: r.name,
     email: r.email,
     avatarUrl: r.avatar_url
@@ -219,27 +223,21 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
 
     let parsedExdates: string[] = [];
     try {
-      if (r.exdates) {
-        parsedExdates = JSON.parse(r.exdates);
-      }
+      if (r.exdates) parsedExdates = JSON.parse(r.exdates);
     } catch {
       parsedExdates = [];
     }
 
     let parsedParticipants: string[] = [];
     try {
-      if (r.participants) {
-        parsedParticipants = JSON.parse(r.participants);
-      }
+      if (r.participants) parsedParticipants = JSON.parse(r.participants);
     } catch {
       parsedParticipants = [];
     }
 
     let parsedAttachments: string[] = [];
     try {
-      if (r.attachments) {
-        parsedAttachments = JSON.parse(r.attachments);
-      }
+      if (r.attachments) parsedAttachments = JSON.parse(r.attachments);
     } catch {
       parsedAttachments = [];
     }
