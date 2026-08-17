@@ -18,28 +18,10 @@ class CalendarState {
   clipboardEvent = $state<CalendarEvent | null>(null);
 
   // Contacts Directory for Autocomplete
-  contacts = $state<ParticipantContact[]>([
-    { name: 'Amma', email: 'mangalialuthgama1964@gmail.com' },
-    { name: 'ashely harry', email: 'ashelyharry990@gmail.com' },
-    { name: 'androidapp', email: 'androidapp@imo.im' },
-    { name: 'amila vaz', email: 'amilavaz2003@gmail.com' },
-    { name: 'abuse', email: 'abuse@fb.com' },
-    { name: 'VNOOIR Team', email: 'team@vnooir.agency' },
-    { name: 'Kasun Bandara', email: 'kasun.b@gmail.com' },
-    { name: 'Nisal Senarath', email: 'nisal.s@gmail.com' }
-  ]);
+  contacts = $state<ParticipantContact[]>([]);
 
   // Locations Database
-  locations = $state<LocationSuggestion[]>([
-    { title: 'Children Park', subtitle: 'Netolpitiya' },
-    { title: "SOS Children's Village Galle", subtitle: 'Wakwella Road, Galle' },
-    { title: "Children's Park", subtitle: 'B142, Hakmana' },
-    { title: "Children's park", subtitle: 'Karittakanda, Ambalangoda' },
-    { title: 'Children & Maternity Clinic Navimana', subtitle: 'Matara' },
-    { title: 'Colombo City Centre', subtitle: '137 Sir James Pieris Mawatha, Colombo' },
-    { title: 'One Galle Face', subtitle: '1A Centre Road, Galle Face, Colombo' },
-    { title: 'VNOOIR Studio', subtitle: 'Level 4, High Street Building, Colombo' }
-  ]);
+  locations = $state<LocationSuggestion[]>([]);
 
   selectedEvent = $derived.by(() => {
     if (!this.selectedEventId) return null;

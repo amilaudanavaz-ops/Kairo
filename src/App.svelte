@@ -35,7 +35,7 @@
       const activeTag = (document.activeElement?.tagName || '').toLowerCase();
       if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
 
-      // Settings shortcut
+      // Settings shortcut (Ctrl + ,)
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
         settingsStore.open('general');
@@ -58,7 +58,7 @@
       // Sidebar inspector toggle
       if (e.key === '\\') calendarState.toggleInspectorDock();
 
-      // Escape key clears all open popovers and inspectors
+      // Escape key clears modals
       if (e.key === 'Escape') {
         calendarState.closeInspector();
         calendarState.closeOverflow();
@@ -100,19 +100,17 @@
       {/if}
     </section>
 
-    <!-- Docked Right Sidebar Inspector -->
+    <!-- Docked Inspector -->
     {#if calendarState.isInspectorDocked && calendarState.selectedEvent}
       <EventInspector />
     {/if}
   </div>
 
-  <!-- Floating Inspector when undocked -->
+  <!-- Floating Inspector & Modals -->
+  <DayOverflowPopover />
   {#if !calendarState.isInspectorDocked && calendarState.selectedEvent}
     <EventInspector />
   {/if}
-
-  <!-- Modals & Context Menus -->
-  <DayOverflowPopover />
   <ContextMenu />
   <RecurrenceDialog />
   <SettingsModal />

@@ -30,7 +30,7 @@ export interface UserAccount {
   id: string;
   email: string;
   name: string;
-  provider: 'google' | 'notion';
+  provider: 'google' | 'kairo';
   avatarUrl?: string;
   isPrimary: boolean;
   syncEnabled: boolean;
@@ -81,4 +81,4 @@ export interface DayOverflowItem {
   date: Date;
   events: CalendarEvent[];
   anchorRect: DOMRect;
-}
+} 

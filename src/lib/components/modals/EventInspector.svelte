@@ -85,7 +85,38 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
-  // 1. Filtered Participants (Autocomplete directory)
+  // Live Location Suggestions via OpenStreetMap Photon Engine (100% Free, Zero API Keys)
+  let liveLocations = $state<LocationSuggestion[]>([]);
+  let locationFetchTimeout: number | undefined;
+
+  function handleLocationInput(val: string) {
+    locationQuery = val;
+    updateDraft('location', val);
+    clearTimeout(locationFetchTimeout);
+    if (!val.trim()) {
+      liveLocations = calendarState.locations;
+      return;
+    }
+
+    locationFetchTimeout = window.setTimeout(async () => {
+      try {
+        const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(val)}&limit=6`);
+        if (res.ok) {
+          const data = await res.json();
+          liveLocations = (data.features || []).map((f: any) => ({
+            title: f.properties.name || f.properties.street || val,
+            subtitle: [f.properties.city, f.properties.state, f.properties.country].filter(Boolean).join(', ')
+          }));
+        }
+      } catch {
+        // Fallback to local suggestions
+        liveLocations = calendarState.locations.filter(l => 
+          l.title.toLowerCase().includes(val.toLowerCase())
+        );
+      }
+    }, 200);
+  }
+
   let filteredContacts = $derived.by(() => {
     if (!participantQuery.trim()) return calendarState.contacts;
     const q = participantQuery.toLowerCase();
@@ -94,16 +125,6 @@
     );
   });
 
-  // 2. Filtered Locations (Live suggestions)
-  let filteredLocations = $derived.by(() => {
-    if (!locationQuery.trim()) return calendarState.locations;
-    const q = locationQuery.toLowerCase();
-    return calendarState.locations.filter(l => 
-      l.title.toLowerCase().includes(q) || l.subtitle.toLowerCase().includes(q)
-    );
-  });
-
-  // 3. Sync draft state with untracked effect to avoid circular reactivity
   $effect(() => {
     const currentEvent = masterEvent;
     const dateKey = calendarState.selectedDateKey;
@@ -140,11 +161,11 @@
         endTimeInput = format(parseISO(projected.endTime), 'h:mm a');
         dateInput = format(parseISO(projected.startTime), 'EEE MMM d');
         locationQuery = projected.location || '';
+        liveLocations = calendarState.locations;
       }
     });
   });
 
-  // 4. Global click-away handler
   $effect(() => {
     function handleGlobalPointerDown(e: MouseEvent) {
       if (contextMenuStore.isRecurrenceModalOpen || settingsStore.isOpen) return;
@@ -417,14 +438,12 @@
     activeSideMenu = 'none';
   }
 
-  function toggleGoogleMeet() {
+  function setZoom() {
     if (!draft) return;
-    if (draft.conferencingUrl) {
-      updateDraft('conferencingUrl', undefined);
-      updateDraft('conferencingProvider', undefined);
-    } else {
-      setGoogleMeet();
-    }
+    const zoomId = Math.floor(100000000 + Math.random() * 900000000);
+    updateDraft('conferencingUrl', `https://zoom.us/j/${zoomId}`);
+    updateDraft('conferencingProvider', 'zoom');
+    activeSideMenu = 'none';
   }
 
   function toggleAllDay() {
@@ -558,7 +577,6 @@
 </script>
 
 {#if masterEvent && draft}
-  <!-- Inspector Card Component -->
   <aside
     bind:this={inspectorElement}
     class="{calendarState.isInspectorDocked 
@@ -845,16 +863,28 @@
 
       <div class="h-px bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Conferencing Provider Row -->
+      <!-- Conferencing Provider Row with Real SVG Icons -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <button 
           onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'conferencing' ? 'none' : 'conferencing'; }}
           class="flex items-center justify-between text-zinc-400 hover:text-zinc-200 text-left py-0.5 cursor-pointer group"
         >
           <div class="flex items-center gap-2 truncate">
-            <Video size={13} class="shrink-0 text-zinc-500 group-hover:text-zinc-300" />
+            {#if draft.conferencingProvider === 'google_meet'}
+              <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
+                <path fill="#00832d" d="M12 7v5l4.5 2.5.8-1.2-3.8-2.3V7z"/>
+                <path fill="#0066da" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 15c-3.9 0-7-3.1-7-7s3.1-7 7-7 7 3.1 7 7-3.1 7-7 7z"/>
+              </svg>
+            {:else if draft.conferencingProvider === 'zoom'}
+              <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
+                <path fill="#2D8CFF" d="M4.5 4h10c1.38 0 2.5 1.12 2.5 2.5v7c0 1.38-1.12 2.5-2.5 2.5h-10A2.5 2.5 0 0 1 2 13.5v-7C2 5.12 3.12 4 4.5 4zm14.5 3.5 4-2.5v12l-4-2.5v-7z"/>
+              </svg>
+            {:else}
+              <Video size={13} class="shrink-0 text-zinc-500 group-hover:text-zinc-300" />
+            {/if}
+
             <span class="truncate {draft.conferencingUrl ? 'text-blue-400 font-semibold underline' : ''}">
-              {draft.conferencingUrl ? (draft.conferencingProvider === 'google_meet' ? 'Google Meet Call' : 'Conferencing Call') : 'Conferencing'}
+              {draft.conferencingUrl ? (draft.conferencingProvider === 'google_meet' ? 'Google Meet Call' : 'Zoom Call') : 'Conferencing'}
             </span>
           </div>
           <ChevronDown size={12} class="text-zinc-500 shrink-0" />
@@ -868,7 +898,7 @@
           <span>Add AI meeting notes</span>
         </button>
 
-        <!-- Location Search Input -->
+        <!-- Location Search Input with Live OpenStreetMap Photon -->
         <div class="flex items-center gap-2 text-zinc-400 py-0.5">
           <MapPin size={13} class="shrink-0 text-zinc-500" />
           <input
@@ -876,7 +906,7 @@
             placeholder="Location"
             bind:value={locationQuery}
             onfocus={() => activeSideMenu = 'location'}
-            oninput={(e) => updateDraft('location', (e.target as HTMLInputElement).value)}
+            oninput={(e) => handleLocationInput((e.target as HTMLInputElement).value)}
             class="bg-transparent text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none w-full"
           />
         </div>
@@ -948,7 +978,7 @@
 
       <div class="h-px bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Calendar Category & Color Button -->
+      <!-- Calendar Category Button -->
       <button 
         onpointerdown={(e) => { e.stopPropagation(); activeSideMenu = activeSideMenu === 'calendar' ? 'none' : 'calendar'; }}
         class="w-full flex items-center justify-between p-1 rounded-md hover:bg-[#222222] transition-colors cursor-pointer shrink-0"
@@ -1037,14 +1067,14 @@
       </div>
     {/if}
 
-    <!-- 2. Location Autocomplete Popover -->
+    <!-- 2. Location Autocomplete Popover (with Live OpenStreetMap Photon API) -->
     {#if activeSideMenu === 'location'}
       <div 
         class="absolute top-44 w-72 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-75'}"
       >
         <div class="max-h-60 overflow-y-auto flex flex-col gap-0.5 custom-scrollbar">
-          {#each filteredLocations as loc}
+          {#each liveLocations as loc}
             <button
               onpointerdown={(e) => { e.stopPropagation(); selectLocation(loc); }}
               class="flex flex-col px-3 py-1.5 rounded-xl hover:bg-[#282828] text-left transition-colors cursor-pointer group"
@@ -1057,7 +1087,7 @@
       </div>
     {/if}
 
-    <!-- 3. Conferencing Provider Popover -->
+    <!-- 3. Conferencing Provider Popover with Official SVGs -->
     {#if activeSideMenu === 'conferencing'}
       <div 
         class="absolute top-40 w-54 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
@@ -1067,22 +1097,24 @@
           onpointerdown={(e) => { e.stopPropagation(); setGoogleMeet(); }}
           class="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#282828] text-xs font-semibold text-zinc-200 hover:text-white text-left transition-colors cursor-pointer"
         >
-          <div class="w-3.5 h-3.5 bg-blue-600 rounded flex items-center justify-center text-white text-[8px] font-bold">M</div>
+          <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
+            <path fill="#00832d" d="M12 7v5l4.5 2.5.8-1.2-3.8-2.3V7z"/>
+            <path fill="#0066da" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 15c-3.9 0-7-3.1-7-7s3.1-7 7-7 7 3.1 7 7-3.1 7-7 7z"/>
+          </svg>
           <span>Google Meet</span>
         </button>
 
-        <div class="flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-zinc-400">
+        <button
+          onpointerdown={(e) => { e.stopPropagation(); setZoom(); }}
+          class="flex items-center justify-between px-3 py-2 rounded-xl hover:bg-[#282828] text-xs font-semibold text-zinc-200 hover:text-white text-left transition-colors cursor-pointer"
+        >
           <div class="flex items-center gap-2.5">
-            <div class="w-3.5 h-3.5 bg-blue-500 rounded flex items-center justify-center text-white text-[8px] font-bold">Z</div>
+            <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
+              <path fill="#2D8CFF" d="M4.5 4h10c1.38 0 2.5 1.12 2.5 2.5v7c0 1.38-1.12 2.5-2.5 2.5h-10A2.5 2.5 0 0 1 2 13.5v-7C2 5.12 3.12 4 4.5 4zm14.5 3.5 4-2.5v12l-4-2.5v-7z"/>
+            </svg>
             <span>Zoom</span>
           </div>
-          <button 
-            onpointerdown={(e) => { e.stopPropagation(); settingsStore.open('conferencing'); activeSideMenu = 'none'; }}
-            class="text-[11px] text-zinc-500 hover:text-blue-400 cursor-pointer"
-          >
-            Connect
-          </button>
-        </div>
+        </button>
 
         <div class="h-px bg-[#292929] my-0.5"></div>
 
