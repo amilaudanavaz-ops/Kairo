@@ -8,8 +8,7 @@
   async function handleConnectGoogle() {
     isGoogleConnecting = true;
     try {
-      // In production/dev, prompts Google sign-in and attaches calendar
-      await settingsStore.addAccount('amilavaz2003@gmail.com', 'Amila Vaz');
+      await settingsStore.connectGoogleOAuth();
       calendarState.closeAddAccountModal();
     } finally {
       isGoogleConnecting = false;
@@ -28,7 +27,6 @@
       onclick={(e) => e.stopPropagation()}
       role="dialog"
     >
-      <!-- Header -->
       <div class="flex items-start justify-between">
         <div class="flex flex-col gap-1">
           <h3 class="text-base font-bold text-zinc-100 tracking-tight">Add Calendar account</h3>
@@ -42,14 +40,12 @@
         </button>
       </div>
 
-      <!-- Providers List -->
       <div class="flex flex-col gap-2.5 mt-1">
-        <!-- 1. Google Calendar (Active & Connected) -->
         <button
           onclick={handleConnectGoogle}
           class="w-full flex items-center gap-3.5 px-4 py-3 rounded-xl bg-[#222222] hover:bg-[#2a2a2a] border border-[#2e2e2e] hover:border-zinc-500 transition-all text-xs font-semibold cursor-pointer group"
         >
-          {#if isGoogleConnecting}
+          {#if isGoogleConnecting || settingsStore.isAuthenticating}
             <div class="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
           {:else}
             <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24">
@@ -62,7 +58,6 @@
           <span class="flex-1 text-center text-zinc-100 group-hover:text-white">Connect Google Calendar</span>
         </button>
 
-        <!-- 2. iCloud Calendar (Grayed Out) -->
         <div
           class="w-full flex items-center gap-3.5 px-4 py-3 rounded-xl bg-[#1a1a1a] border border-[#242424] opacity-40 cursor-not-allowed text-xs font-semibold text-zinc-400 select-none"
         >
@@ -72,7 +67,6 @@
           <span class="flex-1 text-center">Connect iCloud Calendar</span>
         </div>
 
-        <!-- 3. Outlook Calendar (Grayed Out) -->
         <div
           class="w-full flex items-center gap-3.5 px-4 py-3 rounded-xl bg-[#1a1a1a] border border-[#242424] opacity-40 cursor-not-allowed text-xs font-semibold text-zinc-400 select-none"
         >

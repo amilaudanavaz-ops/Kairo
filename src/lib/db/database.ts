@@ -7,7 +7,7 @@ export async function getDb(): Promise<Database> {
   if (!dbInstance) {
     dbInstance = await Database.load('sqlite:kairo.db');
 
-    // 1. Settings Table
+    // 1. Ensure Base Tables Exist
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -15,22 +15,15 @@ export async function getDb(): Promise<Database> {
       );
     `);
 
-    // 2. Accounts Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL UNIQUE,
-        name TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        avatar_url TEXT,
-        access_token TEXT,
-        refresh_token TEXT,
-        is_primary INTEGER NOT NULL DEFAULT 0,
+        provider TEXT NOT NULL DEFAULT 'google',
         sync_enabled INTEGER NOT NULL DEFAULT 1
       );
     `);
 
-    // 3. Contacts Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS contacts (
         id TEXT PRIMARY KEY,
@@ -40,7 +33,6 @@ export async function getDb(): Promise<Database> {
       );
     `);
 
-    // 4. Calendars Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS calendars (
         id TEXT PRIMARY KEY,
@@ -54,37 +46,50 @@ export async function getDb(): Promise<Database> {
       );
     `);
 
-    // 5. Events Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
         calendar_id TEXT NOT NULL,
         google_event_id TEXT,
-        recurring_event_id TEXT,
         title TEXT,
         description TEXT,
         location TEXT,
         meeting_url TEXT,
-        conferencing_provider TEXT,
         start_time TEXT NOT NULL,
         end_time TEXT NOT NULL,
         is_all_day INTEGER NOT NULL DEFAULT 0,
         time_zone TEXT NOT NULL,
         rrule TEXT,
-        exdates TEXT,
-        until_date TEXT,
         color_override TEXT,
         status TEXT NOT NULL DEFAULT 'confirmed',
         busy_status TEXT NOT NULL DEFAULT 'busy',
-        visibility TEXT NOT NULL DEFAULT 'default',
         reminders TEXT NOT NULL,
-        creator_email TEXT,
-        participants TEXT,
-        attachments TEXT,
         sync_status TEXT NOT NULL DEFAULT 'synced',
         updated_at TEXT NOT NULL
       );
     `);
+
+    // 2. Self-Healing Schema Migrations for Accounts Table
+    await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN name TEXT NOT NULL DEFAULT '';`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN avatar_url TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN access_token TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN refresh_token TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
+
+    // 3. Self-Healing Schema Migrations for Calendars Table
+    await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN google_calendar_id TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN is_visible INTEGER NOT NULL DEFAULT 1;`).catch(() => {});
+
+    // 4. Self-Healing Schema Migrations for Events Table
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN recurring_event_id TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN conferencing_provider TEXT DEFAULT 'google_meet';`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN exdates TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN until_date TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN visibility TEXT DEFAULT 'default';`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN creator_email TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN participants TEXT;`).catch(() => {});
+    await dbInstance.execute(`ALTER TABLE events ADD COLUMN attachments TEXT;`).catch(() => {});
   }
   return dbInstance;
 }
@@ -118,8 +123,8 @@ export async function loadDbAccounts(): Promise<UserAccount[]> {
   return rows.map((r) => ({
     id: r.id,
     email: r.email,
-    name: r.name,
-    provider: r.provider,
+    name: r.name || r.email.split('@')[0],
+    provider: r.provider || 'google',
     avatarUrl: r.avatar_url,
     isPrimary: Boolean(r.is_primary),
     syncEnabled: Boolean(r.sync_enabled)
@@ -140,7 +145,17 @@ export async function persistDbAccount(acc: UserAccount, accessToken?: string, r
        refresh_token = COALESCE(excluded.refresh_token, accounts.refresh_token),
        is_primary = excluded.is_primary,
        sync_enabled = excluded.sync_enabled`,
-    [acc.id, acc.email, acc.name, acc.provider, acc.avatarUrl || null, accessToken || null, refreshToken || null, acc.isPrimary ? 1 : 0, acc.syncEnabled ? 1 : 0]
+    [
+      acc.id,
+      acc.email,
+      acc.name,
+      acc.provider,
+      acc.avatarUrl || null,
+      accessToken || null,
+      refreshToken || null,
+      acc.isPrimary ? 1 : 0,
+      acc.syncEnabled ? 1 : 0
+    ]
   );
 }
 

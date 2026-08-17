@@ -55,14 +55,14 @@ pub async fn start_google_auth(
         urlencoding::encode(redirect_uri)
     );
 
-    // 1. Open the system browser to Google's consent screen
+    // 1. Open default browser to Google's consent screen
     if let Err(e) = open::that(&auth_url) {
         return Err(format!("Failed to open browser: {}", e));
     }
 
-    // 2. Start local TCP listener on 127.0.0.1:8080 to receive the OAuth callback
+    // 2. Start local TCP loopback listener on port 8080
     let listener = TcpListener::bind("127.0.0.1:8080")
-        .map_err(|e| format!("Failed to start OAuth callback listener on port 8080: {}", e))?;
+        .map_err(|e| format!("Failed to bind local loopback port 8080: {}", e))?;
 
     let mut auth_code: Option<String> = None;
 
@@ -73,7 +73,6 @@ pub async fn start_google_auth(
                 let bytes_read = stream.read(&mut buffer).unwrap_or(0);
                 let request = String::from_utf8_lossy(&buffer[..bytes_read]);
 
-                // Extract authorization code from query parameters: /oauth/callback?code=...
                 if let Some(code_idx) = request.find("code=") {
                     let after_code = &request[code_idx + 5..];
                     let end_idx = after_code.find('&').or_else(|| after_code.find(' ')).unwrap_or(after_code.len());
@@ -81,8 +80,7 @@ pub async fn start_google_auth(
 
                     auth_code = Some(urlencoding::decode(&code).unwrap_or_default().to_string());
 
-                    // Return success page to the user's browser
-                    let response_html = "<!DOCTYPE html><html><body style='background:#121212;color:#fff;font-family:sans-serif;text-align:center;padding-top:100px;'><h1>Authentication Successful!</h1><p>You can now close this window and return to Kairo.</p></body></html>";
+                    let response_html = "<!DOCTYPE html><html><body style='background:#121212;color:#fff;font-family:sans-serif;text-align:center;padding-top:100px;'><h1>Authentication Successful</h1><p>You can close this tab and return to Kairo.</p></body></html>";
                     let http_response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         response_html.len(),
@@ -93,7 +91,7 @@ pub async fn start_google_auth(
                     break;
                 }
             }
-            Err(e) => return Err(format!("Connection error: {}", e)),
+            Err(e) => return Err(format!("TCP connection error: {}", e)),
         }
     }
 
@@ -114,7 +112,7 @@ pub async fn start_google_auth(
         .form(&token_params)
         .send()
         .await
-        .map_err(|e| format!("Token request network error: {}", e))?;
+        .map_err(|e| format!("Token network error: {}", e))?;
 
     if !token_res.status().is_success() {
         let err_text = token_res.text().await.unwrap_or_default();
@@ -126,20 +124,20 @@ pub async fn start_google_auth(
         .await
         .map_err(|e| format!("Failed to parse token response: {}", e))?;
 
-    // 4. Fetch Google User Profile
+    // 4. Fetch Profile
     let profile_res = http_client
         .get("https://www.googleapis.com/oauth2/v2/userinfo")
         .bearer_auth(&token_data.access_token)
         .send()
         .await
-        .map_err(|e| format!("Profile request error: {}", e))?;
+        .map_err(|e| format!("Profile error: {}", e))?;
 
     let profile: GoogleUserProfile = profile_res
         .json()
         .await
-        .map_err(|e| format!("Failed to parse profile: {}", e))?;
+        .map_err(|e| format!("Failed to parse profile JSON: {}", e))?;
 
-    // 5. Fetch Google Calendar List
+    // 5. Fetch User's Google Calendar List
     let calendars_res = http_client
         .get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
         .bearer_auth(&token_data.access_token)

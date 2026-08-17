@@ -15,7 +15,7 @@ class SettingsStore {
   activeTab = $state<SettingsTab>('general');
   isCommandMenuOpen = $state(false);
 
-  // Authentication State
+  // Auth State
   isLoggedIn = $state(false);
   preferredName = $state('');
   email = $state('');
@@ -23,7 +23,7 @@ class SettingsStore {
   avatarUrl = $state('');
   isAuthenticating = $state(false);
 
-  // General Preferences
+  // Preferences
   showWeekends = $state(true);
   showDeclinedEvents = $state(true);
   showWeekNumbers = $state(false);
@@ -34,18 +34,18 @@ class SettingsStore {
   timeFormat = $state<'12h' | '24h'>('12h');
   theme = $state<'auto' | 'light' | 'dark'>('dark');
 
-  // Notifications Preferences
+  // Notifications
   notificationsEnabled = $state(true);
   playNotificationSound = $state(true);
   defaultReminderOffset = $state('15m');
 
-  // Menu bar Preferences
+  // Menubar Widget
   menuBarEnabled = $state(true);
   menuBarDaysSpan = $state<'1 day' | '2 days' | '3 days' | '7 days'>('3 days');
   menuBarIncludeAllDay = $state(false);
   menuBarIncludeNoParticipants = $state(true);
 
-  // Conferencing Preferences
+  // Conferencing
   defaultConferencing = $state<'google_meet' | 'zoom' | 'custom'>('google_meet');
   zoomPmiLink = $state('');
   zoomConnected = $state(false);
@@ -150,7 +150,46 @@ class SettingsStore {
     this.isCommandMenuOpen = !this.isCommandMenuOpen;
   }
 
-  // Reads OAuth credentials directly from .env and triggers Google OAuth loopback via Rust
+  async login(email: string, name: string = ''): Promise<void> {
+    const cleanEmail = email.trim();
+    const cleanName = name.trim() || cleanEmail.split('@')[0];
+    this.email = cleanEmail;
+    this.preferredName = cleanName;
+    this.username = cleanEmail.split('@')[0].toLowerCase();
+    this.isLoggedIn = true;
+    await this.addAccount(cleanEmail, cleanName);
+  }
+
+  async addAccount(email: string, name: string = 'Google User'): Promise<void> {
+    if (!email.trim()) return;
+    const exists = this.accounts.some(a => a.email.toLowerCase() === email.toLowerCase());
+    if (!exists) {
+      const isPrimary = this.accounts.length === 0;
+      const newAcc: UserAccount = {
+        id: 'acc_' + Date.now(),
+        email: email.trim(),
+        name: name.trim() || email.split('@')[0],
+        provider: 'google',
+        isPrimary,
+        syncEnabled: true
+      };
+      this.accounts = [...this.accounts, newAcc];
+      await persistDbAccount(newAcc);
+
+      const newCal = {
+        id: 'cal_' + Date.now(),
+        accountId: newAcc.id,
+        name: newAcc.email,
+        colorId: 'blue',
+        colorHex: '#3b82f6',
+        isPrimary,
+        isVisible: true
+      };
+      calendarState.calendars = [...calendarState.calendars, newCal];
+      await persistCalendarCategory(newCal);
+    }
+  }
+
   async connectGoogleOAuth(): Promise<void> {
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
     const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET || '';
@@ -189,7 +228,6 @@ class SettingsStore {
       this.username = newAccount.email.split('@')[0].toLowerCase();
       this.avatarUrl = newAccount.avatarUrl || '';
 
-      // Save imported Google Calendars to SQLite
       if (Array.isArray(authResult.calendars) && authResult.calendars.length > 0) {
         for (const cal of authResult.calendars) {
           const newCal = {
@@ -222,7 +260,7 @@ class SettingsStore {
       this.close();
     } catch (err) {
       console.error('Google OAuth error:', err);
-      alert(`Google Sign-In failed: ${err}`);
+      alert(`Google Sign-In error: ${err}`);
     } finally {
       this.isAuthenticating = false;
     }
