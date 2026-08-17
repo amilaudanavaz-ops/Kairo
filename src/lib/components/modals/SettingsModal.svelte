@@ -10,7 +10,12 @@
     Check, 
     Trash2, 
     RefreshCw,
-    Volume2
+    Volume2,
+    MoreHorizontal,
+    ExternalLink,
+    ChevronRight,
+    Square,
+    Eye
   } from 'lucide-svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
@@ -20,16 +25,37 @@
   let isSavedMessage = $state(false);
   let isSyncing = $state(false);
 
+  // Calendar inline action menu popup state
+  let activeCalendarMenuId = $state<string | null>(null);
+  let showColorSubmenuId = $state<string | null>(null);
+
   $effect(() => {
     localPreferredName = settingsStore.preferredName;
     localUsername = settingsStore.username;
   });
 
-  function triggerGoogleSync() {
+  const calendarPalette = [
+    { name: 'Blue', hex: '#3b82f6' },
+    { name: 'Tangerine', hex: '#f4511e' },
+    { name: 'Red', hex: '#d50000' },
+    { name: 'Banana', hex: '#f6bf26' },
+    { name: 'Basil', hex: '#0b8043' },
+    { name: 'Peacock', hex: '#039be5' },
+    { name: 'Graphite', hex: '#616161' },
+    { name: 'Grape', hex: '#8e24aa' },
+    { name: 'Flamingo', hex: '#e67c73' },
+    { name: 'Sage', hex: '#33b679' }
+  ];
+
+  async function triggerGoogleSync() {
     isSyncing = true;
-    setTimeout(() => {
-      isSyncing = false;
-    }, 1000);
+    try {
+      await settingsStore.syncGoogleAccount();
+    } finally {
+      setTimeout(() => {
+        isSyncing = false;
+      }, 800);
+    }
   }
 
   function handleUpdateProfile() {
@@ -63,7 +89,7 @@
       osc.start();
       osc.stop(audioCtx.currentTime + 0.35);
     } catch (e) {
-      console.warn('AudioContext permission required:', e);
+      console.warn('AudioContext not allowed:', e);
     }
   }
 
@@ -88,20 +114,26 @@
       }
     }
   }
+
+  function openGoogleCalendarWebSettings(calName: string, gCalId?: string) {
+    const encodedId = encodeURIComponent(gCalId || calName);
+    window.open(`https://calendar.google.com/calendar/u/0/r/settings/calendar/${encodedId}`, '_blank');
+    activeCalendarMenuId = null;
+  }
 </script>
 
 {#if settingsStore.isOpen}
   <div 
     class="fixed inset-0 z-[150] bg-black/75 backdrop-blur-[2px] flex items-center justify-center select-none"
-    onclick={() => settingsStore.close()}
+    onclick={() => { settingsStore.close(); activeCalendarMenuId = null; }}
     role="presentation"
   >
     <div 
-      class="w-[780px] h-[530px] bg-[#191919] border border-[#2b2b2b] rounded-2xl shadow-[0_24px_70px_rgba(0,0,0,0.95)] flex overflow-hidden text-zinc-200 animate-in fade-in zoom-in-95 duration-150"
-      onclick={(e) => e.stopPropagation()}
+      class="w-[780px] h-[540px] bg-[#191919] border border-[#2b2b2b] rounded-2xl shadow-[0_24px_70px_rgba(0,0,0,0.95)] flex overflow-hidden text-zinc-200 animate-in fade-in zoom-in-95 duration-150"
+      onclick={(e) => { e.stopPropagation(); activeCalendarMenuId = null; }}
       role="dialog"
     >
-      <!-- Navigation Sidebar -->
+      <!-- Left Sidebar Navigation -->
       <aside class="w-56 bg-[#141414] border-r border-[#242424] p-3.5 flex flex-col justify-between shrink-0">
         <div class="flex flex-col gap-4">
           <div class="flex flex-col gap-0.5">
@@ -185,8 +217,8 @@
         <div class="text-[10px] text-zinc-600 px-2">Kairo v1.0 • Desktop Native</div>
       </aside>
 
-      <!-- Content Area -->
-      <main class="flex-1 flex flex-col h-full bg-[#181818] relative">
+      <!-- Main Content Area -->
+      <main class="flex-1 flex flex-col h-full bg-[#181818] relative overflow-hidden">
         <button 
           onclick={() => settingsStore.close()}
           class="absolute top-4 right-4 p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-[#262626] transition-colors cursor-pointer z-10"
@@ -196,71 +228,225 @@
 
         <div class="flex-1 overflow-y-auto px-8 py-6 flex flex-col gap-6 custom-scrollbar text-xs">
           
-          <!-- 1. PROFILE TAB -->
-          {#if settingsStore.activeTab === 'profile'}
+          <!-- 1. DEDICATED GOOGLE CALENDAR ACCOUNT VIEW -->
+          {#if settingsStore.activeTab === 'accounts'}
+            {@const primaryAccount = settingsStore.accounts.find(a => a.isPrimary) || settingsStore.accounts[0]}
             <div class="flex flex-col gap-5">
-              <h2 class="text-sm font-bold text-zinc-100">Kairo profile</h2>
               
-              <div class="flex items-center gap-4">
-                <div class="w-14 h-14 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-bold text-lg text-white shadow-md">
-                  {localPreferredName ? localPreferredName.slice(0, 1).toUpperCase() : 'A'}
+              <!-- Account Header -->
+              <div class="flex items-center justify-between pb-3 border-b border-[#262626]">
+                <div class="flex items-center gap-3">
+                  <svg class="w-6 h-6 shrink-0" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                  </svg>
+                  <div class="flex flex-col">
+                    <h2 class="text-sm font-bold text-zinc-100">Google Calendar</h2>
+                    <span class="text-[11px] text-zinc-400">{primaryAccount?.email || 'No account connected'}</span>
+                  </div>
                 </div>
-                <div class="flex flex-col gap-1">
-                  <span class="text-xs text-zinc-400 font-medium">Preferred name</span>
-                  <input 
-                    type="text" 
-                    bind:value={localPreferredName}
-                    class="bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1 text-xs text-zinc-100 focus:outline-none w-56"
-                  />
+
+                <button 
+                  onclick={triggerGoogleSync}
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#242424] hover:bg-[#2c2c2c] text-xs text-zinc-200 font-medium transition-colors cursor-pointer"
+                >
+                  <RefreshCw size={12} class={isSyncing ? 'animate-spin text-blue-400' : ''} />
+                  <span>{isSyncing ? 'Syncing...' : 'Sync Now'}</span>
+                </button>
+              </div>
+
+              <!-- Default Workspace Connection -->
+              <div class="flex items-center justify-between">
+                <div class="flex flex-col">
+                  <span class="font-semibold text-zinc-200">Default workspace</span>
+                  <span class="text-[11px] text-zinc-500">Source location for file attachments and meeting notes</span>
+                </div>
+                <button class="px-3 py-1.5 rounded-lg bg-[#252525] hover:bg-[#2e2e2e] border border-[#333333] text-zinc-200 text-xs font-semibold cursor-pointer">
+                  Connect workspace
+                </button>
+              </div>
+
+              <!-- Default Conferencing -->
+              <div class="flex items-center justify-between">
+                <div class="flex flex-col">
+                  <span class="font-semibold text-zinc-200">Default conferencing</span>
+                  <span class="text-[11px] text-zinc-500">Primary conferencing for meetings and scheduling links</span>
+                </div>
+                <select 
+                  bind:value={settingsStore.defaultConferencing}
+                  onchange={() => settingsStore.updateSetting('defaultConferencing', settingsStore.defaultConferencing)}
+                  class="bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1 text-xs text-zinc-200 focus:outline-none cursor-pointer"
+                >
+                  <option value="google_meet">Google Meet</option>
+                  <option value="zoom">Zoom Meetings</option>
+                  <option value="custom">None</option>
+                </select>
+              </div>
+
+              <!-- AI Notes Shortcut -->
+              <div class="flex items-center justify-between">
+                <div class="flex flex-col">
+                  <span class="font-semibold text-zinc-200">Use join and transcribe AI meeting notes shortcut</span>
+                  <span class="text-[11px] text-zinc-500">Default action for current meetings with conferencing</span>
+                </div>
+                <span class="text-zinc-500 text-xs">No meetings</span>
+              </div>
+
+              <!-- Calendars List with Actions Menu -->
+              <div class="flex flex-col gap-2 pt-2">
+                <span class="text-xs font-bold text-zinc-400">Calendars</span>
+
+                <div class="flex flex-col gap-1 bg-[#151515] p-2 rounded-xl border border-[#242424]">
+                  {#each calendarState.calendars as cal (cal.id)}
+                    <div class="flex items-center justify-between p-2 rounded-lg hover:bg-[#202020] transition-colors group relative">
+                      <div class="flex items-center gap-2.5 truncate">
+                        <span class="w-3 h-3 rounded-full shrink-0 shadow-sm" style="background-color: {cal.colorHex};"></span>
+                        <span class="font-medium text-zinc-200 truncate">{cal.name}</span>
+                        {#if cal.isPrimary}
+                          <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-[#1d3356] text-[#60a5fa] border border-[#2563eb]/30 shrink-0">
+                            Default
+                          </span>
+                        {/if}
+                      </div>
+
+                      <!-- Three-Dots Action Button -->
+                      <div class="relative">
+                        <button 
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            activeCalendarMenuId = activeCalendarMenuId === cal.id ? null : cal.id;
+                            showColorSubmenuId = null;
+                          }}
+                          class="p-1 rounded text-zinc-500 hover:text-white hover:bg-[#2b2b2b] transition-colors cursor-pointer"
+                        >
+                          <MoreHorizontal size={14} />
+                        </button>
+
+                        <!-- Contextual Dropdown Menu -->
+                        {#if activeCalendarMenuId === cal.id}
+                          <div 
+                            class="absolute right-0 top-full mt-1 w-56 bg-[#1f1f1f] border border-[#2e2e2e] rounded-xl shadow-2xl p-1 z-50 flex flex-col gap-0.5 text-xs animate-in fade-in zoom-in-95 duration-100"
+                            onclick={(e) => e.stopPropagation()}
+                            role="menu"
+                            tabindex="0"
+                          >
+                            <!-- Color Submenu Trigger -->
+                            <div 
+                              class="relative"
+                              onmouseenter={() => showColorSubmenuId = cal.id}
+                              onmouseleave={() => showColorSubmenuId = null}
+                            >
+                              <button class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#282828] text-zinc-200 text-left transition-colors cursor-pointer">
+                                <div class="flex items-center gap-2">
+                                  <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: {cal.colorHex};"></span>
+                                  <span>Color</span>
+                                </div>
+                                <ChevronRight size={13} class="text-zinc-500" />
+                              </button>
+
+                              {#if showColorSubmenuId === cal.id}
+                                <div class="absolute left-full top-0 ml-1 w-36 bg-[#1f1f1f] border border-[#2e2e2e] rounded-xl shadow-2xl p-1 z-50 flex flex-col gap-0.5">
+                                  {#each calendarPalette as color}
+                                    <button
+                                      onclick={() => {
+                                        calendarState.updateCalendarColor(cal.id, color.hex);
+                                        activeCalendarMenuId = null;
+                                      }}
+                                      class="flex items-center justify-between px-2 py-1 rounded hover:bg-[#282828] text-[11px] transition-colors cursor-pointer"
+                                    >
+                                      <div class="flex items-center gap-2">
+                                        <span class="w-2.5 h-2.5 rounded-full" style="background-color: {color.hex};"></span>
+                                        <span>{color.name}</span>
+                                      </div>
+                                      {#if cal.colorHex.toLowerCase() === color.hex.toLowerCase()}
+                                        <Check size={11} class="text-blue-400" />
+                                      {/if}
+                                    </button>
+                                  {/each}
+                                </div>
+                              {/if}
+                            </div>
+
+                            <!-- Make Default -->
+                            <button
+                              onclick={() => {
+                                if (!cal.isPrimary) {
+                                  calendarState.setDefaultCalendar(cal.id);
+                                  activeCalendarMenuId = null;
+                                }
+                              }}
+                              disabled={cal.isPrimary}
+                              class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left transition-colors
+                                {cal.isPrimary ? 'text-zinc-600 cursor-not-allowed' : 'text-zinc-200 hover:bg-[#282828] cursor-pointer'}"
+                            >
+                              <Square size={13} />
+                              <span>Make default calendar</span>
+                            </button>
+
+                            <!-- Show Only This Calendar -->
+                            <button
+                              onclick={() => {
+                                calendarState.showOnlyCalendar(cal.id);
+                                activeCalendarMenuId = null;
+                              }}
+                              class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-200 hover:bg-[#282828] text-left transition-colors cursor-pointer"
+                            >
+                              <Eye size={13} />
+                              <span>Show only this calendar</span>
+                            </button>
+
+                            <div class="h-px bg-[#282828] my-0.5"></div>
+
+                            <!-- Google Calendar Web Settings -->
+                            <button
+                              onclick={() => openGoogleCalendarWebSettings(cal.name, cal.googleCalendarId)}
+                              class="flex items-center justify-between px-2.5 py-1.5 rounded-lg text-zinc-200 hover:bg-[#282828] text-left transition-colors cursor-pointer"
+                            >
+                              <span>Google Calendar settings</span>
+                              <ExternalLink size={12} class="text-zinc-500" />
+                            </button>
+
+                            <div class="h-px bg-[#282828] my-0.5"></div>
+
+                            <!-- Remove Calendar -->
+                            <button
+                              onclick={() => {
+                                calendarState.removeCalendar(cal.id);
+                                activeCalendarMenuId = null;
+                              }}
+                              class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-rose-400 hover:bg-rose-950/40 text-left transition-colors cursor-pointer"
+                            >
+                              <Trash2 size={13} />
+                              <span>Remove calendar from list</span>
+                            </button>
+                          </div>
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
                 </div>
               </div>
 
-              <div class="h-px bg-[#262626]"></div>
-
-              <div class="flex flex-col gap-1.5">
-                <h2 class="text-sm font-bold text-zinc-100">Username</h2>
-                <p class="text-[11px] text-zinc-400 leading-relaxed">
-                  Your username is part of your scheduling links. Remember to update your shared links after changing your username, as old links will no longer work.
-                </p>
-                <input 
-                  type="text" 
-                  bind:value={localUsername}
-                  class="w-64 bg-[#222222] border border-[#2e2e2e] rounded-lg px-3 py-1.5 text-xs text-zinc-100 focus:outline-none mt-1"
-                />
-              </div>
-
-              <div class="h-px bg-[#262626]"></div>
-
-              <div class="flex flex-col gap-2">
-                <p class="text-[11px] text-zinc-400">
-                  Permanently delete your Kairo Calendar account and associated user data. Calendar and contacts data stored with Google won’t be deleted.
-                </p>
+              <!-- Remove Account Section -->
+              <div class="flex items-center justify-between pt-4 border-t border-[#262626]">
+                <div class="flex flex-col">
+                  <span class="font-semibold text-zinc-200">Remove account</span>
+                  <span class="text-[11px] text-zinc-500">Disconnects your Google account from Kairo</span>
+                </div>
                 <button
-                  onclick={() => settingsStore.logout()}
-                  class="w-fit px-3 py-1.5 rounded-lg bg-rose-950/40 border border-rose-900/60 text-rose-400 hover:bg-rose-900/50 transition-colors text-xs font-semibold cursor-pointer"
+                  onclick={() => {
+                    if (primaryAccount) {
+                      settingsStore.removeAccount(primaryAccount.id);
+                    }
+                  }}
+                  class="px-3.5 py-1.5 rounded-lg bg-rose-950/30 hover:bg-rose-900/40 border border-rose-900/50 text-rose-400 font-semibold text-xs transition-colors cursor-pointer"
                 >
-                  Delete Kairo Calendar account
+                  Disconnect
                 </button>
               </div>
 
-              <div class="flex items-center justify-end gap-2 mt-auto pt-6 border-t border-[#262626]">
-                <button 
-                  onclick={() => settingsStore.close()} 
-                  class="px-3.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-[#252525] transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onclick={handleUpdateProfile}
-                  class="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow transition-colors cursor-pointer flex items-center gap-1.5"
-                >
-                  {#if isSavedMessage}
-                    <Check size={13} /> Updated
-                  {:else}
-                    Update
-                  {/if}
-                </button>
-              </div>
             </div>
           {/if}
 
@@ -364,7 +550,75 @@
             </div>
           {/if}
 
-          <!-- 3. NOTIFICATIONS TAB -->
+          <!-- 3. PROFILE TAB -->
+          {#if settingsStore.activeTab === 'profile'}
+            <div class="flex flex-col gap-5">
+              <h2 class="text-sm font-bold text-zinc-100">Kairo profile</h2>
+              
+              <div class="flex items-center gap-4">
+                <div class="w-14 h-14 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-bold text-lg text-white shadow-md">
+                  {localPreferredName ? localPreferredName.slice(0, 1).toUpperCase() : 'A'}
+                </div>
+                <div class="flex flex-col gap-1">
+                  <span class="text-xs text-zinc-400 font-medium">Preferred name</span>
+                  <input 
+                    type="text" 
+                    bind:value={localPreferredName}
+                    class="bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1 text-xs text-zinc-100 focus:outline-none w-56"
+                  />
+                </div>
+              </div>
+
+              <div class="h-px bg-[#262626]"></div>
+
+              <div class="flex flex-col gap-1.5">
+                <h2 class="text-sm font-bold text-zinc-100">Username</h2>
+                <p class="text-[11px] text-zinc-400 leading-relaxed">
+                  Your username is part of your scheduling links. Remember to update your shared links after changing your username, as old links will no longer work.
+                </p>
+                <input 
+                  type="text" 
+                  bind:value={localUsername}
+                  class="w-64 bg-[#222222] border border-[#2e2e2e] rounded-lg px-3 py-1.5 text-xs text-zinc-100 focus:outline-none mt-1"
+                />
+              </div>
+
+              <div class="h-px bg-[#262626]"></div>
+
+              <div class="flex flex-col gap-2">
+                <p class="text-[11px] text-zinc-400">
+                  Permanently delete your Kairo Calendar account and associated user data. Calendar and contacts data stored with Google won’t be deleted.
+                </p>
+                <button
+                  onclick={() => settingsStore.deleteAccountAndData()}
+                  class="w-fit px-3 py-1.5 rounded-lg bg-rose-950/40 border border-rose-900/60 text-rose-400 hover:bg-rose-900/50 transition-colors text-xs font-semibold cursor-pointer"
+                >
+                  Delete Kairo Calendar account
+                </button>
+              </div>
+
+              <div class="flex items-center justify-end gap-2 mt-auto pt-6 border-t border-[#262626]">
+                <button 
+                  onclick={() => settingsStore.close()} 
+                  class="px-3.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-[#252525] transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onclick={handleUpdateProfile}
+                  class="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  {#if isSavedMessage}
+                    <Check size={13} /> Updated
+                  {:else}
+                    Update
+                  {/if}
+                </button>
+              </div>
+            </div>
+          {/if}
+
+          <!-- 4. NOTIFICATIONS TAB -->
           {#if settingsStore.activeTab === 'notifications'}
             <div class="flex flex-col gap-5">
               <h2 class="text-sm font-bold text-zinc-100">Event Notifications</h2>
@@ -424,7 +678,7 @@
             </div>
           {/if}
 
-          <!-- 4. MENUBAR TAB -->
+          <!-- 5. MENUBAR TAB -->
           {#if settingsStore.activeTab === 'menubar'}
             <div class="flex flex-col gap-5">
               <div class="flex items-center justify-between">
@@ -466,7 +720,7 @@
             </div>
           {/if}
 
-          <!-- 5. CONFERENCING TAB -->
+          <!-- 6. CONFERENCING TAB -->
           {#if settingsStore.activeTab === 'conferencing'}
             <div class="flex flex-col gap-5">
               <div>
@@ -535,71 +789,6 @@
             </div>
           {/if}
 
-          <!-- 6. ACCOUNTS TAB -->
-          {#if settingsStore.activeTab === 'accounts'}
-            <div class="flex flex-col gap-5">
-              <div class="flex items-center justify-between">
-                <div>
-                  <h2 class="text-sm font-bold text-zinc-100">Connected Accounts</h2>
-                  <p class="text-[11px] text-zinc-400 mt-0.5">Manage accounts and sync calendars.</p>
-                </div>
-                <button 
-                  onclick={triggerGoogleSync}
-                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#242424] hover:bg-[#2c2c2c] text-xs text-zinc-200 font-medium transition-colors cursor-pointer"
-                >
-                  <RefreshCw size={12} class={isSyncing ? 'animate-spin text-blue-400' : ''} />
-                  <span>{isSyncing ? 'Syncing...' : 'Sync Now'}</span>
-                </button>
-              </div>
-
-              <div class="flex flex-col gap-2">
-                {#each settingsStore.accounts as acc}
-                  <div class="flex items-center justify-between p-3.5 rounded-xl bg-[#222222] border border-[#2c2c2c]">
-                    <div class="flex items-center gap-3">
-                      <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                      </svg>
-                      <div class="flex flex-col">
-                        <span class="font-semibold text-zinc-100">{acc.name}</span>
-                        <span class="text-[11px] text-zinc-400">{acc.email}</span>
-                      </div>
-                    </div>
-
-                    <div class="flex items-center gap-2">
-                      {#if acc.isPrimary}
-                        <span class="text-[10px] text-blue-400 font-bold px-2 py-0.5 rounded bg-blue-950/60 border border-blue-900/60">PRIMARY</span>
-                      {:else}
-                        <button 
-                          onclick={() => settingsStore.setPrimaryAccount(acc.id)}
-                          class="px-2 py-0.5 text-[11px] text-zinc-400 hover:text-white bg-[#282828] rounded transition-colors cursor-pointer"
-                        >
-                          Make Primary
-                        </button>
-                        <button 
-                          onclick={() => settingsStore.removeAccount(acc.id)}
-                          class="p-1.5 text-zinc-500 hover:text-rose-400 transition-colors cursor-pointer"
-                          title="Disconnect Account"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      {/if}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-
-              <button
-                onclick={() => calendarState.openAddAccountModal()}
-                class="w-fit flex items-center gap-1.5 px-3 py-1.5 text-xs text-blue-400 hover:text-blue-300 bg-[#222222] hover:bg-[#282828] border border-[#2e2e2e] rounded-lg transition-colors cursor-pointer"
-              >
-                <Plus size={13} />
-                <span>Connect Google Account</span>
-              </button>
-            </div>
-          {/if}
         </div>
       </main>
     </div>

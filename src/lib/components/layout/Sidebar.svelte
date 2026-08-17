@@ -1,109 +1,60 @@
 <script lang="ts">
+  import { 
+    Plus, 
+    Eye, 
+    EyeOff, 
+    Link, 
+    Settings,
+    RefreshCw
+  } from 'lucide-svelte';
   import MiniCalendar from './MiniCalendar.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
-  import { eventStore } from '../../stores/eventStore.svelte';
-  import { persistCalendarCategory } from '../../db/database';
-  import { Plus, Eye, EyeOff, Link2, RefreshCw, Star, Lock } from 'lucide-svelte';
-  import type { CalendarCategory } from '../../../types/event';
+  import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
 
-  const PRESET_COLORS = [
-    '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', 
-    '#ec4899', '#06b6d4', '#71717a', '#14b8a6', '#f97316', 
-    '#6366f1', '#84cc16'
-  ];
-
-  let activeColorPickerCalId = $state<string | null>(null);
-
-  function handleToggleVisibility(e: MouseEvent, calId: string) {
-    e.stopPropagation();
-    calendarState.toggleCalendarVisibility(calId);
-  }
-
-  async function handleRefreshSync(e: MouseEvent) {
-    e.stopPropagation();
-    await eventStore.syncGoogleEvents();
-  }
-
-  async function handleSetDefaultCalendar(e: MouseEvent, targetCalId: string) {
-    e.stopPropagation();
-    // Exclusively mark only the target calendar as primary across state and database
-    calendarState.calendars = calendarState.calendars.map((c: CalendarCategory) => {
-      const isPrimary = c.id === targetCalId;
-      const updated = { ...c, isPrimary };
-      persistCalendarCategory(updated).catch(console.error);
-      return updated;
-    });
-  }
-
-  async function handleColorChange(e: MouseEvent, targetCalId: string, newHex: string) {
-    e.stopPropagation();
-    activeColorPickerCalId = null;
-    calendarState.calendars = calendarState.calendars.map((c: CalendarCategory) => {
-      if (c.id === targetCalId) {
-        const updated = { ...c, colorHex: newHex };
-        persistCalendarCategory(updated).catch(console.error);
-        return updated;
-      }
-      return c;
-    });
-  }
-
-  let uniqueCalendars = $derived.by(() => {
-    const seen = new Set<string>();
-    const list: CalendarCategory[] = [];
-    for (const c of calendarState.calendars) {
-      const key = c.googleCalendarId || c.id;
-      if (!seen.has(key)) {
-        seen.add(key);
-        list.push(c);
-      }
-    }
-    return list;
-  });
-
-  let accountsWithCalendars = $derived.by(() => {
-    if (settingsStore.accounts.length === 0) {
-      return [{
-        id: 'default',
-        email: settingsStore.email || 'Personal',
-        calendars: uniqueCalendars
-      }];
-    }
-
-    return settingsStore.accounts.map((acc: any) => ({
-      id: acc.id,
-      email: acc.email,
-      calendars: uniqueCalendars.filter((c: CalendarCategory) => c.accountId === acc.id)
-    })).filter((group: any) => group.calendars.length > 0);
-  });
+  let isSchedulingExpanded = $state(true);
 </script>
 
-<aside 
-  class="w-60 bg-[#161616] border-r border-[#242424] flex flex-col justify-between shrink-0 select-none"
-  onclick={() => { activeColorPickerCalId = null; }}
->
-  <div class="p-3 flex flex-col gap-4 overflow-y-auto flex-1 no-scrollbar">
-    <MiniCalendar />
+<aside class="w-60 bg-[#141414] border-r border-[#222222] flex flex-col justify-between shrink-0 select-none overflow-hidden text-zinc-300 font-sans">
+  <div class="flex-1 overflow-y-auto custom-scrollbar p-2 flex flex-col gap-3">
+    <!-- Mini Calendar -->
+    <div class="px-1 pt-1">
+      <MiniCalendar />
+    </div>
 
-    <div class="h-[1px] bg-[#242424] -mx-1"></div>
+    <div class="h-px bg-[#222222] -mx-2"></div>
 
-    <!-- Calendars Section Header -->
-    <div class="flex flex-col gap-3">
-      <div class="flex items-center justify-between text-[11px] font-bold text-zinc-400 px-1 tracking-wide uppercase">
-        <span>Calendars</span>
+    <!-- Scheduling Section -->
+    <div class="flex flex-col gap-1">
+      <button 
+        onclick={() => isSchedulingExpanded = !isSchedulingExpanded}
+        class="flex items-center justify-between px-2 py-1 text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
+      >
+        <div class="flex items-center gap-1.5">
+          <Link size={13} class="text-zinc-500" />
+          <span>Scheduling</span>
+        </div>
+        <Eye size={12} class="text-zinc-600 hover:text-zinc-400" />
+      </button>
+    </div>
+
+    <div class="h-px bg-[#222222] -mx-2"></div>
+
+    <!-- Connected Accounts & Calendars -->
+    <div class="flex flex-col gap-2">
+      <div class="flex items-center justify-between px-2 py-0.5">
+        <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-500">Calendars</span>
         <div class="flex items-center gap-1">
-          <button 
-            onclick={handleRefreshSync}
-            class="p-1 hover:text-zinc-100 hover:bg-[#242424] rounded text-zinc-400 transition-colors cursor-pointer"
+          <button
+            onclick={() => settingsStore.syncGoogleAccount()}
+            class="p-1 text-zinc-500 hover:text-zinc-300 hover:bg-[#202020] rounded transition-colors cursor-pointer"
             title="Sync with Google"
-            disabled={eventStore.isSyncing}
           >
-            <RefreshCw size={12} class={eventStore.isSyncing ? 'animate-spin text-blue-400' : ''} />
+            <RefreshCw size={12} class={settingsStore.isAuthenticating ? 'animate-spin text-blue-400' : ''} />
           </button>
-          <button 
+          <button
             onclick={() => calendarState.openAddAccountModal()}
-            class="p-1 hover:text-zinc-100 hover:bg-[#242424] rounded text-zinc-400 transition-colors cursor-pointer"
+            class="p-1 text-zinc-500 hover:text-zinc-300 hover:bg-[#202020] rounded transition-colors cursor-pointer"
             title="Add Calendar Account"
           >
             <Plus size={13} />
@@ -111,115 +62,79 @@
         </div>
       </div>
 
-      <!-- Account-grouped Calendar Lists -->
-      {#each accountsWithCalendars as group (group.id)}
-        <div class="flex flex-col gap-1">
-          {#if accountsWithCalendars.length > 1 || group.email}
-            <div class="px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 truncate">
-              {group.email}
-            </div>
-          {/if}
+      {#each settingsStore.accounts as acc}
+        {@const accCalendars = calendarState.calendars.filter(c => c.accountId === acc.id || c.accountId.startsWith('acc_'))}
+        
+        <div class="flex flex-col gap-0.5">
+          <!-- Account Email Header -->
+          <div class="px-2 py-1 text-[11px] font-medium text-zinc-400 truncate">
+            {acc.email}
+          </div>
 
-          <div class="flex flex-col gap-0.5">
-            {#each group.calendars as cal (cal.id)}
-              {@const isReadOnly = cal.accessRole === 'reader' || cal.accessRole === 'freeBusyReader'}
-              
+          <!-- Calendar List -->
+          <div class="flex flex-col gap-0.5 pl-1">
+            {#each accCalendars as cal (cal.id)}
               <div 
-                class="relative flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-[#202020] transition-colors group cursor-pointer
-                  {cal.isVisible ? 'opacity-100' : 'opacity-40'}"
-                onclick={(e) => handleToggleVisibility(e, cal.id)}
-                role="button"
-                tabindex="0"
-                onkeydown={(e) => e.key === 'Enter' && handleToggleVisibility(e as any, cal.id)}
+                oncontextmenu={(e) => contextMenuStore.openForCalendar(e, cal)}
+                class="flex items-center justify-between px-2 py-1 rounded-md hover:bg-[#202020] transition-colors group relative"
               >
-                <div class="flex items-center gap-2 truncate flex-1 mr-1">
-                  <!-- Color Dot & Picker Trigger -->
-                  <button
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      activeColorPickerCalId = activeColorPickerCalId === cal.id ? null : cal.id;
-                    }}
-                    class="w-3 h-3 rounded-full shrink-0 hover:scale-125 transition-transform cursor-pointer border border-white/10"
-                    style="background-color: {cal.colorHex};"
-                    title="Change calendar color"
-                  ></button>
-
-                  <span class="text-xs font-medium text-zinc-300 group-hover:text-zinc-100 truncate">
+                <!-- Click row to toggle visibility, right-click opens Notion-style context menu -->
+                <button
+                  onclick={() => calendarState.toggleCalendarVisibility(cal.id)}
+                  class="flex items-center gap-2 flex-1 text-left cursor-pointer truncate mr-1"
+                >
+                  <span 
+                    class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm transition-opacity"
+                    style="background-color: {cal.colorHex}; opacity: {cal.isVisible ? 1 : 0.35};"
+                  ></span>
+                  
+                  <span class="text-xs truncate {cal.isVisible ? 'text-zinc-200' : 'text-zinc-500 line-through'}">
                     {cal.name}
                   </span>
 
+                  <!-- Exclusive Default Badge -->
                   {#if cal.isPrimary}
-                    <span class="text-[9px] px-1 py-0.2 rounded bg-blue-500/20 text-blue-400 font-bold tracking-tight shrink-0">
+                    <span class="ml-1 px-1.5 py-0.2 rounded text-[9px] font-bold bg-[#1d3356] text-[#60a5fa] border border-[#2563eb]/30 shrink-0">
                       Default
                     </span>
                   {/if}
+                </button>
 
-                  {#if isReadOnly}
-                    <span title="Read-only calendar" class="flex items-center">
-                      <Lock size={10} class="text-zinc-500 shrink-0" />
-                    </span>
+                <button
+                  onclick={() => calendarState.toggleCalendarVisibility(cal.id)}
+                  class="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-500 hover:text-zinc-300 transition-opacity cursor-pointer shrink-0"
+                  title={cal.isVisible ? 'Hide calendar' : 'Show calendar'}
+                >
+                  {#if cal.isVisible}
+                    <Eye size={12} />
+                  {:else}
+                    <EyeOff size={12} />
                   {/if}
-                </div>
-
-                <!-- Hover Actions -->
-                <div class="flex items-center gap-1">
-                  {#if !cal.isPrimary && !isReadOnly}
-                    <button 
-                      onclick={(e) => handleSetDefaultCalendar(e, cal.id)}
-                      class="text-zinc-600 hover:text-amber-400 p-0.5 rounded opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
-                      title="Set as Default Calendar"
-                    >
-                      <Star size={12} />
-                    </button>
-                  {/if}
-
-                  <!-- Eye Toggle -->
-                  <button 
-                    onclick={(e) => handleToggleVisibility(e, cal.id)}
-                    class="text-zinc-500 hover:text-zinc-200 p-0.5 rounded transition-colors cursor-pointer"
-                    title={cal.isVisible ? "Hide calendar" : "Show calendar"}
-                  >
-                    {#if cal.isVisible}
-                      <Eye size={13} />
-                    {:else}
-                      <EyeOff size={13} class="text-zinc-500" />
-                    {/if}
-                  </button>
-                </div>
-
-                <!-- Color Palette Popover -->
-                {#if activeColorPickerCalId === cal.id}
-                  <div 
-                    class="absolute left-6 top-8 z-50 p-2 bg-[#222222] border border-[#333333] rounded-xl shadow-2xl grid grid-cols-4 gap-1.5 animate-in fade-in zoom-in-95 duration-100"
-                    onclick={(e) => e.stopPropagation()}
-                    role="dialog"
-                  >
-                    {#each PRESET_COLORS as color}
-                      <button
-                        onclick={(e) => handleColorChange(e, cal.id, color)}
-                        class="w-5 h-5 rounded-full hover:scale-115 transition-transform border border-black/30 cursor-pointer {cal.colorHex === color ? 'ring-2 ring-white' : ''}"
-                        style="background-color: {color};"
-                        title={color}
-                      ></button>
-                    {/each}
-                  </div>
-                {/if}
+                </button>
               </div>
             {/each}
           </div>
         </div>
       {/each}
+
+      <button
+        onclick={() => calendarState.openAddAccountModal()}
+        class="flex items-center gap-2 px-2 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-[#202020] rounded-md transition-colors cursor-pointer mt-1"
+      >
+        <Plus size={13} class="text-zinc-500" />
+        <span>Add calendar account</span>
+      </button>
     </div>
   </div>
 
-  <!-- Bottom Add Account Trigger -->
-  <div class="p-3 border-t border-[#242424] bg-[#141414]">
-    <button 
-      onclick={() => calendarState.openAddAccountModal()}
-      class="w-full flex items-center justify-center gap-2 py-1.5 px-3 bg-[#202020] hover:bg-[#282828] border border-[#2d2d2d] text-zinc-200 rounded-md text-xs font-medium transition-colors cursor-pointer"
+  <!-- Bottom Workspace / Settings trigger -->
+  <div class="p-2 border-t border-[#222222] bg-[#141414]">
+    <button
+      onclick={() => settingsStore.open('general')}
+      class="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-[#202020] transition-colors cursor-pointer"
     >
-      <Link2 size={14} />
-      <span>Add Google Account</span>
+      <Settings size={14} class="text-zinc-500" />
+      <span>Settings</span>
     </button>
   </div>
 </aside>

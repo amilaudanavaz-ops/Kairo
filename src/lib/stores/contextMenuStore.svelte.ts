@@ -1,9 +1,9 @@
-import type { CalendarEvent } from '../../types/event';
+import type { CalendarEvent, CalendarCategory } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
 import { calendarState } from './calendarState.svelte';
 import { format, parseISO, setHours, setMinutes } from 'date-fns';
 
-export type ContextMenuMode = 'event' | 'cell';
+export type ContextMenuMode = 'event' | 'cell' | 'calendar';
 
 export interface FieldDiff {
   field: string;
@@ -26,6 +26,7 @@ class ContextMenuStore {
   x = $state(0);
   y = $state(0);
   targetEvent = $state<CalendarEvent | null>(null);
+  targetCalendar = $state<CalendarCategory | null>(null);
   targetDate = $state<Date | null>(null);
 
   // Recurrence Dialog State
@@ -52,7 +53,6 @@ class ContextMenuStore {
       const oldDateKey = format(oldStart, 'yyyy-MM-dd');
       const newDateKey = format(newStart, 'yyyy-MM-dd');
 
-      // Date / Time Diff
       if (oldDateKey !== newDateKey || oldStart.getTime() !== newStart.getTime() || oldEnd.getTime() !== newEnd.getTime()) {
         const oldFormatted = oldDateKey !== newDateKey 
           ? `${format(oldStart, 'MMM d, h:mm a')}–${format(oldEnd, 'h:mm a')}`
@@ -69,7 +69,6 @@ class ContextMenuStore {
         });
       }
 
-      // Title Diff
       if ((base.title || '') !== (updatedEvent.title || '')) {
         diffs.push({
           field: 'Title',
@@ -78,7 +77,6 @@ class ContextMenuStore {
         });
       }
 
-      // Description Diff
       if ((base.description || '') !== (updatedEvent.description || '')) {
         diffs.push({
           field: 'Description',
@@ -87,7 +85,6 @@ class ContextMenuStore {
         });
       }
 
-      // Color Diff
       if (base.colorOverride !== updatedEvent.colorOverride) {
         diffs.push({
           field: 'Color',
@@ -96,7 +93,6 @@ class ContextMenuStore {
         });
       }
 
-      // Repeat Diff
       if (base.rrule !== updatedEvent.rrule) {
         diffs.push({
           field: 'Repeat',
@@ -105,7 +101,6 @@ class ContextMenuStore {
         });
       }
 
-      // STRICT ZERO-DIFF GUARD: If no properties changed, NEVER open the modal
       if (diffs.length === 0) {
         this.isRecurrenceModalOpen = false;
         this.pendingRecurringAction = null;
@@ -129,6 +124,7 @@ class ContextMenuStore {
     e.stopPropagation();
     this.mode = 'event';
     this.targetEvent = event;
+    this.targetCalendar = null;
     this.targetDate = null;
     this.setPosition(e.clientX, e.clientY, 220, 260);
     this.isOpen = true;
@@ -139,8 +135,20 @@ class ContextMenuStore {
     e.stopPropagation();
     this.mode = 'cell';
     this.targetEvent = null;
+    this.targetCalendar = null;
     this.targetDate = date;
     this.setPosition(e.clientX, e.clientY, 200, 100);
+    this.isOpen = true;
+  }
+
+  openForCalendar(e: MouseEvent, calendar: CalendarCategory) {
+    e.preventDefault();
+    e.stopPropagation();
+    this.mode = 'calendar';
+    this.targetCalendar = calendar;
+    this.targetEvent = null;
+    this.targetDate = null;
+    this.setPosition(e.clientX, e.clientY, 240, 310);
     this.isOpen = true;
   }
 
@@ -152,6 +160,7 @@ class ContextMenuStore {
   close() {
     this.isOpen = false;
     this.targetEvent = null;
+    this.targetCalendar = null;
     this.targetDate = null;
   }
 
@@ -161,9 +170,11 @@ class ContextMenuStore {
     const startTime = setMinutes(setHours(this.targetDate, now.getHours()), 0);
     const endTime = setMinutes(setHours(this.targetDate, now.getHours() + 1), 0);
 
+    const primaryCal = calendarState.calendars.find(c => c.isPrimary) || calendarState.calendars[0];
+
     const newEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
-      calendarId: calendarState.calendars[0]?.id || '1',
+      calendarId: primaryCal?.id || '1',
       title: '',
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),

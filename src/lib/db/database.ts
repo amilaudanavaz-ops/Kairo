@@ -7,6 +7,10 @@ export async function getDb(): Promise<Database> {
   if (!dbInstance) {
     dbInstance = await Database.load('sqlite:kairo.db');
 
+    // Remove legacy placeholder calendars
+    await dbInstance.execute(`DELETE FROM calendars WHERE name IN ('Personal & Work', 'Scraping & Dev', 'Holidays') AND google_calendar_id IS NULL;`).catch(() => {});
+    await dbInstance.execute(`DELETE FROM accounts WHERE id = 'acc_primary' AND access_token IS NULL;`).catch(() => {});
+
     // 1. Settings Table
     await dbInstance.execute(`
       CREATE TABLE IF NOT EXISTS settings (
@@ -47,12 +51,10 @@ export async function getDb(): Promise<Database> {
         account_id TEXT NOT NULL,
         google_calendar_id TEXT,
         name TEXT NOT NULL,
-        color_id TEXT NOT NULL DEFAULT 'charcoal',
+        color_id TEXT NOT NULL DEFAULT 'blue',
         color_hex TEXT NOT NULL DEFAULT '#3b82f6',
         is_primary INTEGER NOT NULL DEFAULT 0,
-        is_visible INTEGER NOT NULL DEFAULT 1,
-        access_role TEXT NOT NULL DEFAULT 'owner',
-        FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+        is_visible INTEGER NOT NULL DEFAULT 1
       );
     `);
 
@@ -63,8 +65,7 @@ export async function getDb(): Promise<Database> {
         calendar_id TEXT NOT NULL,
         google_event_id TEXT,
         recurring_event_id TEXT,
-        original_start_time TEXT,
-        title TEXT DEFAULT '(No Title)',
+        title TEXT,
         description TEXT,
         location TEXT,
         meeting_url TEXT,
@@ -72,7 +73,7 @@ export async function getDb(): Promise<Database> {
         start_time TEXT NOT NULL,
         end_time TEXT NOT NULL,
         is_all_day INTEGER NOT NULL DEFAULT 0,
-        time_zone TEXT NOT NULL DEFAULT 'UTC',
+        time_zone TEXT NOT NULL,
         rrule TEXT,
         exdates TEXT,
         until_date TEXT,
@@ -80,13 +81,12 @@ export async function getDb(): Promise<Database> {
         status TEXT NOT NULL DEFAULT 'confirmed',
         busy_status TEXT NOT NULL DEFAULT 'busy',
         visibility TEXT NOT NULL DEFAULT 'default',
-        reminders TEXT NOT NULL DEFAULT '["15m"]',
+        reminders TEXT NOT NULL,
         creator_email TEXT,
         participants TEXT,
         attachments TEXT,
         sync_status TEXT NOT NULL DEFAULT 'synced',
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY (calendar_id) REFERENCES calendars(id) ON DELETE CASCADE
+        updated_at TEXT NOT NULL
       );
     `);
 
@@ -96,30 +96,26 @@ export async function getDb(): Promise<Database> {
     await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN access_token TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN refresh_token TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE accounts ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1;`).catch(() => {});
-
     await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN google_calendar_id TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN is_visible INTEGER NOT NULL DEFAULT 1;`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE calendars ADD COLUMN access_role TEXT NOT NULL DEFAULT 'owner';`).catch(() => {});
-
-    await dbInstance.execute(`ALTER TABLE events ADD COLUMN google_event_id TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN recurring_event_id TEXT;`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE events ADD COLUMN original_start_time TEXT;`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE events ADD COLUMN meeting_url TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN conferencing_provider TEXT DEFAULT 'google_meet';`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN exdates TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN until_date TEXT;`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE events ADD COLUMN color_override TEXT;`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE events ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed';`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE events ADD COLUMN busy_status TEXT NOT NULL DEFAULT 'busy';`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN visibility TEXT DEFAULT 'default';`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE events ADD COLUMN reminders TEXT NOT NULL DEFAULT '["15m"]';`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN creator_email TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN participants TEXT;`).catch(() => {});
     await dbInstance.execute(`ALTER TABLE events ADD COLUMN attachments TEXT;`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE events ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced';`).catch(() => {});
-    await dbInstance.execute(`ALTER TABLE events ADD COLUMN updated_at TEXT;`).catch(() => {});
+
+    // Ensure only one calendar is primary
+    const primaryCalendars = await dbInstance.select<{ id: string }[]>(
+      'SELECT id FROM calendars WHERE is_primary = 1 ORDER BY rowid ASC'
+    );
+    if (primaryCalendars.length > 1) {
+      const keepPrimaryId = primaryCalendars[0].id;
+      await dbInstance.execute('UPDATE calendars SET is_primary = 0 WHERE id != $1', [keepPrimaryId]);
+    }
   }
   return dbInstance;
 }
@@ -147,14 +143,9 @@ export async function persistDbSetting(key: string, value: string): Promise<void
 
 // =================== ACCOUNTS CRUD ===================
 
-export interface AccountWithTokens extends UserAccount {
-  accessToken?: string;
-  refreshToken?: string;
-}
-
 export async function loadDbAccounts(): Promise<UserAccount[]> {
   const db = await getDb();
-  const rows = await db.select<any[]>('SELECT id, email, name, provider, avatar_url, is_primary, sync_enabled FROM accounts ORDER BY is_primary DESC, id ASC');
+  const rows = await db.select<any[]>('SELECT * FROM accounts ORDER BY is_primary DESC, id ASC');
   return rows.map((r) => ({
     id: r.id,
     email: r.email,
@@ -166,35 +157,30 @@ export async function loadDbAccounts(): Promise<UserAccount[]> {
   }));
 }
 
-export async function loadAllAccountsWithTokens(): Promise<AccountWithTokens[]> {
+export async function loadAllAccountsWithTokens(): Promise<{ id: string; email: string; name: string; accessToken?: string; refreshToken?: string }[]> {
   const db = await getDb();
-  const rows = await db.select<any[]>('SELECT * FROM accounts WHERE sync_enabled = 1 ORDER BY is_primary DESC');
+  const rows = await db.select<any[]>('SELECT id, email, name, access_token, refresh_token FROM accounts');
   return rows.map((r) => ({
     id: r.id,
     email: r.email,
     name: r.name || r.email.split('@')[0],
-    provider: r.provider || 'google',
-    avatarUrl: r.avatar_url,
-    isPrimary: Boolean(r.is_primary),
-    syncEnabled: Boolean(r.sync_enabled),
-    accessToken: r.access_token,
-    refreshToken: r.refresh_token
+    accessToken: r.access_token || undefined,
+    refreshToken: r.refresh_token || undefined
   }));
 }
 
-export async function updateAccountTokens(id: string, accessToken: string, refreshToken?: string): Promise<void> {
+export async function updateAccountTokens(accountId: string, accessToken: string, refreshToken?: string): Promise<void> {
   const db = await getDb();
-  if (refreshToken) {
-    await db.execute(
-      `UPDATE accounts SET access_token = $1, refresh_token = $2 WHERE id = $3`,
-      [accessToken, refreshToken, id]
-    );
-  } else {
-    await db.execute(
-      `UPDATE accounts SET access_token = $1 WHERE id = $2`,
-      [accessToken, id]
-    );
-  }
+  await db.execute(
+    'UPDATE accounts SET access_token = $1, refresh_token = COALESCE($2, refresh_token) WHERE id = $3',
+    [accessToken, refreshToken || null, accountId]
+  );
+}
+
+export async function getAccountAccessToken(accountId: string): Promise<string | null> {
+  const db = await getDb();
+  const rows = await db.select<{ access_token: string }[]>('SELECT access_token FROM accounts WHERE id = $1', [accountId]);
+  return rows.length > 0 ? rows[0].access_token : null;
 }
 
 export async function persistDbAccount(
@@ -248,6 +234,80 @@ export async function clearAllDbAccounts(): Promise<void> {
   await db.execute('DELETE FROM accounts');
 }
 
+export async function clearAllGoogleEvents(): Promise<void> {
+  const db = await getDb();
+  await db.execute("DELETE FROM events WHERE id LIKE 'evt_g_%'");
+}
+
+// =================== CALENDARS CRUD ===================
+
+export async function loadInitialCalendars(): Promise<CalendarCategory[]> {
+  const db = await getDb();
+  const rows = await db.select<any[]>('SELECT * FROM calendars ORDER BY is_primary DESC, id ASC');
+
+  return rows.map((r) => ({
+    id: r.id,
+    accountId: r.account_id,
+    googleCalendarId: r.google_calendar_id,
+    name: r.name,
+    colorId: r.color_id,
+    colorHex: r.color_hex,
+    isPrimary: Boolean(r.is_primary),
+    isVisible: Boolean(r.is_visible)
+  }));
+}
+
+export async function persistCalendarCategory(cal: CalendarCategory): Promise<void> {
+  const db = await getDb();
+  
+  const accCheck = await db.select<any[]>('SELECT id FROM accounts WHERE id = $1', [cal.accountId]);
+  if (accCheck.length === 0) return;
+
+  await db.execute(
+    `INSERT INTO calendars (id, account_id, google_calendar_id, name, color_id, color_hex, is_primary, is_visible)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT(id) DO UPDATE SET
+       account_id = excluded.account_id,
+       name = excluded.name,
+       color_id = excluded.color_id,
+       color_hex = excluded.color_hex,
+       is_primary = excluded.is_primary,
+       is_visible = excluded.is_visible`,
+    [
+      cal.id, 
+      cal.accountId, 
+      cal.googleCalendarId || null, 
+      cal.name, 
+      cal.colorId, 
+      cal.colorHex, 
+      cal.isPrimary ? 1 : 0, 
+      cal.isVisible ? 1 : 0
+    ]
+  );
+}
+
+export async function setExclusiveDefaultCalendarInDb(calendarId: string): Promise<void> {
+  const db = await getDb();
+  await db.execute('UPDATE calendars SET is_primary = 0');
+  await db.execute('UPDATE calendars SET is_primary = 1 WHERE id = $1', [calendarId]);
+}
+
+export async function updateCalendarColorInDb(calendarId: string, colorHex: string): Promise<void> {
+  const db = await getDb();
+  await db.execute('UPDATE calendars SET color_hex = $1 WHERE id = $2', [colorHex, calendarId]);
+}
+
+export async function updateCalendarVisibilityInDb(calendarId: string, isVisible: boolean): Promise<void> {
+  const db = await getDb();
+  await db.execute('UPDATE calendars SET is_visible = $1 WHERE id = $2', [isVisible ? 1 : 0, calendarId]);
+}
+
+export async function deleteCalendarFromDb(calendarId: string): Promise<void> {
+  const db = await getDb();
+  await db.execute('DELETE FROM events WHERE calendar_id = $1', [calendarId]);
+  await db.execute('DELETE FROM calendars WHERE id = $1', [calendarId]);
+}
+
 // =================== CONTACTS CRUD ===================
 
 export async function loadDbContacts(): Promise<ParticipantContact[]> {
@@ -265,86 +325,8 @@ export async function persistDbContact(c: ParticipantContact): Promise<void> {
   await db.execute(
     `INSERT INTO contacts (id, name, email, avatar_url)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT(email) DO UPDATE SET name = excluded.name, avatar_url = COALESCE(excluded.avatar_url, contacts.avatar_url)`,
+     ON CONFLICT(email) DO UPDATE SET name = excluded.name`,
     ['cnt_' + Date.now(), c.name, c.email, c.avatarUrl || null]
-  );
-}
-
-// =================== CALENDARS CRUD ===================
-
-export async function loadInitialCalendars(): Promise<CalendarCategory[]> {
-  const db = await getDb();
-  const rows = await db.select<any[]>('SELECT * FROM calendars ORDER BY is_primary DESC, id ASC');
-
-  const seen = new Set<string>();
-  const results: CalendarCategory[] = [];
-
-  for (const r of rows) {
-    const key = r.google_calendar_id || r.id;
-    if (!seen.has(key)) {
-      seen.add(key);
-      results.push({
-        id: r.id,
-        accountId: r.account_id,
-        googleCalendarId: r.google_calendar_id,
-        name: r.name,
-        colorId: r.color_id || 'charcoal',
-        colorHex: r.color_hex || '#3b82f6',
-        isPrimary: Boolean(r.is_primary),
-        isVisible: Boolean(r.is_visible),
-        accessRole: r.access_role || 'owner'
-      });
-    }
-  }
-
-  return results;
-}
-
-export async function persistCalendarCategory(cal: CalendarCategory): Promise<void> {
-  const db = await getDb();
-  
-  const accCheck = await db.select<any[]>('SELECT id FROM accounts WHERE id = $1', [cal.accountId]);
-  if (accCheck.length === 0) {
-    console.warn(`Cannot persist calendar ${cal.id}: Parent account ${cal.accountId} does not exist.`);
-    return;
-  }
-
-  let existingId = cal.id;
-  if (cal.googleCalendarId) {
-    const existing = await db.select<any[]>(
-      'SELECT id FROM calendars WHERE account_id = $1 AND google_calendar_id = $2',
-      [cal.accountId, cal.googleCalendarId]
-    );
-    if (existing.length > 0) {
-      existingId = existing[0].id;
-    }
-  }
-
-  const accessRole = cal.accessRole || 'owner';
-
-  await db.execute(
-    `INSERT INTO calendars (id, account_id, google_calendar_id, name, color_id, color_hex, is_primary, is_visible, access_role)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     ON CONFLICT(id) DO UPDATE SET
-       account_id = excluded.account_id,
-       google_calendar_id = excluded.google_calendar_id,
-       name = excluded.name,
-       color_id = excluded.color_id,
-       color_hex = excluded.color_hex,
-       is_primary = excluded.is_primary,
-       is_visible = excluded.is_visible,
-       access_role = excluded.access_role`,
-    [
-      existingId, 
-      cal.accountId, 
-      cal.googleCalendarId || null, 
-      cal.name, 
-      cal.colorId, 
-      cal.colorHex, 
-      cal.isPrimary ? 1 : 0, 
-      cal.isVisible ? 1 : 0,
-      accessRole
-    ]
   );
 }
 
@@ -357,9 +339,7 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
   return rows.map((r) => {
     let parsedReminders: string[] = ['15m'];
     try {
-      if (r.reminders) {
-        parsedReminders = r.reminders.startsWith('[') ? JSON.parse(r.reminders) : [r.reminders];
-      }
+      if (r.reminders) parsedReminders = r.reminders.startsWith('[') ? JSON.parse(r.reminders) : [r.reminders];
     } catch {
       parsedReminders = ['15m'];
     }
@@ -390,8 +370,7 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
       calendarId: r.calendar_id,
       googleEventId: r.google_event_id,
       recurringEventId: r.recurring_event_id,
-      originalStartTime: r.original_start_time,
-      title: r.title || '(No Title)',
+      title: r.title || '',
       description: r.description || '',
       location: r.location || '',
       conferencingUrl: r.meeting_url || '',
@@ -400,11 +379,10 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
       startTime: r.start_time,
       endTime: r.end_time,
       isAllDay: Boolean(r.is_all_day),
-      timeZone: r.time_zone || 'UTC',
+      timeZone: r.time_zone || 'GMT+5:30 Colombo',
       rrule: r.rrule || 'none',
       exdates: parsedExdates,
       untilDate: r.until_date || undefined,
-      isRecurringInstance: Boolean(r.recurring_event_id || (r.rrule && r.rrule !== 'none')),
       status: r.status || 'confirmed',
       busyStatus: r.busy_status || 'busy',
       visibility: r.visibility || 'default',
@@ -414,48 +392,22 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
       attachments: parsedAttachments,
       colorOverride: r.color_override || undefined,
       syncStatus: r.sync_status || 'synced',
-      updatedAt: r.updated_at || new Date().toISOString()
+      updatedAt: r.updated_at
     };
   });
 }
 
 export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
   const db = await getDb();
-  
-  const calCheck = await db.select<any[]>('SELECT id FROM calendars WHERE id = $1', [event.calendarId]);
-  let targetCalendarId = event.calendarId;
-  if (calCheck.length === 0) {
-    const anyCal = await db.select<any[]>('SELECT id FROM calendars LIMIT 1');
-    if (anyCal.length > 0) {
-      targetCalendarId = anyCal[0].id;
-    } else {
-      console.warn(`Cannot persist event ${event.id}: No calendars exist.`);
-      return;
-    }
-  }
-
-  let resolvedEventId = event.id;
-  if (event.googleEventId) {
-    const existing = await db.select<any[]>(
-      'SELECT id FROM events WHERE calendar_id = $1 AND google_event_id = $2',
-      [targetCalendarId, event.googleEventId]
-    );
-    if (existing.length > 0) {
-      resolvedEventId = existing[0].id;
-    }
-  }
-
   await db.execute(
     `INSERT INTO events (
-      id, calendar_id, google_event_id, recurring_event_id, original_start_time, title, description, location,
+      id, calendar_id, google_event_id, recurring_event_id, title, description, location,
       meeting_url, conferencing_provider, start_time, end_time, is_all_day, time_zone, rrule, exdates, until_date,
       color_override, status, busy_status, visibility, reminders, creator_email, participants, attachments, sync_status, updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
     ON CONFLICT(id) DO UPDATE SET
       calendar_id = excluded.calendar_id,
-      google_event_id = excluded.google_event_id,
       recurring_event_id = excluded.recurring_event_id,
-      original_start_time = excluded.original_start_time,
       title = excluded.title,
       description = excluded.description,
       location = excluded.location,
@@ -479,12 +431,11 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       sync_status = excluded.sync_status,
       updated_at = excluded.updated_at`,
     [
-      resolvedEventId,
-      targetCalendarId,
+      event.id,
+      event.calendarId,
       event.googleEventId || null,
       event.recurringEventId || null,
-      event.originalStartTime || null,
-      event.title || '(No Title)',
+      event.title,
       event.description || null,
       event.location || null,
       event.conferencingUrl || event.meetingUrl || null,
@@ -492,27 +443,27 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
       event.startTime,
       event.endTime,
       event.isAllDay ? 1 : 0,
-      event.timeZone || 'UTC',
+      event.timeZone,
       event.rrule || 'none',
       JSON.stringify(event.exdates || []),
       event.untilDate || null,
       event.colorOverride || null,
-      event.status || 'confirmed',
-      event.busyStatus || 'busy',
-      event.visibility || 'default',
+      event.status,
+      event.busyStatus,
+      event.visibility,
       JSON.stringify(event.reminders || ['15m']),
       event.creatorEmail || '',
       JSON.stringify(event.participants || []),
       JSON.stringify(event.attachments || []),
-      event.syncStatus || 'synced',
-      event.updatedAt || new Date().toISOString()
+      event.syncStatus,
+      event.updatedAt
     ]
   );
 }
 
-export async function persistBatchEvents(eventsList: CalendarEvent[]): Promise<void> {
-  for (const ev of eventsList) {
-    await persistUpsertEvent(ev);
+export async function persistBatchEvents(events: CalendarEvent[]): Promise<void> {
+  for (const event of events) {
+    await persistUpsertEvent(event);
   }
 }
 

@@ -1,7 +1,12 @@
 import { addMonths, subMonths, addWeeks, subWeeks, addDays, subDays, format, parseISO } from 'date-fns';
 import type { ViewMode, CalendarEvent, DayOverflowItem, CalendarCategory, ParticipantContact, LocationSuggestion } from '../../types/event';
+import { 
+  setExclusiveDefaultCalendarInDb, 
+  updateCalendarColorInDb, 
+  updateCalendarVisibilityInDb,
+  deleteCalendarFromDb 
+} from '../db/database';
 import { eventStore } from './eventStore.svelte';
-import { persistCalendarCategory } from '../db/database';
 
 class CalendarState {
   currentDate = $state(new Date());
@@ -18,30 +23,19 @@ class CalendarState {
   overflowData = $state<DayOverflowItem | null>(null);
   clipboardEvent = $state<CalendarEvent | null>(null);
 
-  // Contacts Directory for Autocomplete
+  // Contacts
   contacts = $state<ParticipantContact[]>([]);
 
-  // Locations Database
+  // Locations
   locations = $state<LocationSuggestion[]>([]);
 
-  // Calendars list
+  // Calendar Categories List
   calendars = $state<CalendarCategory[]>([]);
 
-  selectedEvent = $derived.by<CalendarEvent | null>(() => {
+  selectedEvent = $derived.by(() => {
     if (!this.selectedEventId) return null;
-    return eventStore.events.find((e: CalendarEvent) => e.id === this.selectedEventId) ?? null;
+    return eventStore.events.find((e) => e.id === this.selectedEventId) || null;
   });
-
-  setCalendars(newCals: CalendarCategory[]) {
-    const map = new Map<string, CalendarCategory>();
-    for (const c of newCals) {
-      const key = c.googleCalendarId || c.id;
-      if (!map.has(key)) {
-        map.set(key, c);
-      }
-    }
-    this.calendars = Array.from(map.values());
-  }
 
   toggleSidebar() {
     this.isSidebarOpen = !this.isSidebarOpen;
@@ -75,15 +69,50 @@ class CalendarState {
     else this.currentDate = subDays(this.currentDate, 1);
   }
 
+  // Toggle calendar visibility checkbox
   toggleCalendarVisibility(calendarId: string) {
-    this.calendars = this.calendars.map((c: CalendarCategory) => {
-      if (c.id === calendarId) {
-        const updated = { ...c, isVisible: !c.isVisible };
-        persistCalendarCategory(updated).catch(console.error);
-        return updated;
-      }
-      return c;
-    });
+    const target = this.calendars.find(c => c.id === calendarId);
+    if (!target) return;
+    const nextState = !target.isVisible;
+    this.calendars = this.calendars.map((c) =>
+      c.id === calendarId ? { ...c, isVisible: nextState } : c
+    );
+    updateCalendarVisibilityInDb(calendarId, nextState).catch(console.error);
+  }
+
+  // Make exclusively default
+  async setDefaultCalendar(calendarId: string) {
+    this.calendars = this.calendars.map((c) => ({
+      ...c,
+      isPrimary: c.id === calendarId
+    }));
+    await setExclusiveDefaultCalendarInDb(calendarId);
+  }
+
+  // Show only this calendar (hides all others)
+  async showOnlyCalendar(calendarId: string) {
+    this.calendars = this.calendars.map((c) => ({
+      ...c,
+      isVisible: c.id === calendarId
+    }));
+    for (const cal of this.calendars) {
+      await updateCalendarVisibilityInDb(cal.id, cal.id === calendarId);
+    }
+  }
+
+  // Update calendar hex color
+  async updateCalendarColor(calendarId: string, colorHex: string) {
+    this.calendars = this.calendars.map((c) =>
+      c.id === calendarId ? { ...c, colorHex } : c
+    );
+    await updateCalendarColorInDb(calendarId, colorHex);
+  }
+
+  // Remove calendar from list
+  async removeCalendar(calendarId: string) {
+    this.calendars = this.calendars.filter(c => c.id !== calendarId);
+    eventStore.events = eventStore.events.filter(e => e.calendarId !== calendarId);
+    await deleteCalendarFromDb(calendarId);
   }
 
   openAddAccountModal() {

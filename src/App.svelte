@@ -25,10 +25,9 @@
       await settingsStore.init();
       const cals = await loadInitialCalendars();
       if (cals.length > 0) {
-        calendarState.setCalendars(cals);
+        calendarState.calendars = cals;
       }
       await eventStore.initDatabase();
-      await eventStore.syncGoogleEvents();
     } catch (err) {
       console.error('Failed to initialize application:', err);
     }
