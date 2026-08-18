@@ -58,7 +58,6 @@
     { name: 'Sage', hex: '#33b679' }
   ];
 
-  // Normalized matching reconciles standard & imported Google Calendar palette variants
   function isColorSelected(colorHex: string, activeHex?: string): boolean {
     if (!activeHex) return false;
     const a = colorHex.toLowerCase().trim();
@@ -91,12 +90,10 @@
     role="menu"
     tabindex="0"
   >
-    <!-- 1. CALENDAR CONTEXT MENU -->
     {#if contextMenuStore.mode === 'calendar' && contextMenuStore.targetCalendar}
       {@const cal = contextMenuStore.targetCalendar}
       <div class="w-60 flex flex-col gap-0.5 relative">
         
-        <!-- Color Flyout Trigger with Hover Bridge -->
         <div 
           class="relative"
           onmouseenter={handleTriggerEnter}
@@ -113,7 +110,6 @@
             <ChevronRight size={13} class="text-zinc-500" />
           </button>
 
-          <!-- Color Palette Submenu with Zero-Gap Bridge -->
           {#if isColorHovered}
             <div 
               class="absolute left-[calc(100%-2px)] top-0 pl-1 z-[260]"
@@ -145,7 +141,6 @@
           {/if}
         </div>
 
-        <!-- Make Default Calendar -->
         <button
           type="button"
           onclick={() => {
@@ -162,7 +157,6 @@
           <span>Make default calendar</span>
         </button>
 
-        <!-- Show Only This Calendar -->
         <button
           type="button"
           onclick={() => {
@@ -177,7 +171,6 @@
 
         <div class="h-px bg-[#282828] my-0.5"></div>
 
-        <!-- Google Calendar Settings -->
         <button
           type="button"
           onclick={openGoogleCalendarWebSettings}
@@ -189,7 +182,6 @@
 
         <div class="h-px bg-[#282828] my-0.5"></div>
 
-        <!-- Remove Calendar -->
         <button
           type="button"
           onclick={() => {
@@ -203,7 +195,6 @@
         </button>
       </div>
 
-    <!-- 2. EVENT CONTEXT MENU -->
     {:else if contextMenuStore.mode === 'event' && contextMenuStore.targetEvent}
       {@const targetCal = calendarState.calendars.find((c: CalendarCategory) => c.id === contextMenuStore.targetEvent?.calendarId || c.googleCalendarId === contextMenuStore.targetEvent?.calendarId)}
       {@const effectiveHex = contextMenuStore.targetEvent.colorOverride || targetCal?.colorHex || '#3b82f6'}
@@ -266,7 +257,6 @@
         </button>
       </div>
 
-    <!-- 3. GRID CELL CONTEXT MENU -->
     {:else if contextMenuStore.mode === 'cell' && contextMenuStore.targetDate}
       <div class="w-44 flex flex-col gap-0.5">
         <button

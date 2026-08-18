@@ -7,16 +7,10 @@ import {
   persistDbAccount, 
   deleteDbAccount, 
   clearAllDbAccounts,
-  clearAllGoogleEvents,
-  persistCalendarCategory,
-  persistUpsertEvent,
-  loadInitialCalendars,
-  loadStoredEvents,
-  getAccountAccessToken
+  persistCalendarCategory 
 } from '../db/database';
 import { calendarState } from './calendarState.svelte';
 import { eventStore } from './eventStore.svelte';
-import { parseISO, addMinutes } from 'date-fns';
 
 class SettingsStore {
   isOpen = $state(false);
@@ -104,7 +98,20 @@ class SettingsStore {
         this.avatarUrl = '';
       }
 
+      // Automatic Sync Listeners (Window Focus & 60s Polling)
       if (typeof window !== 'undefined') {
+        window.addEventListener('focus', () => {
+          if (this.accounts.length > 0) {
+            eventStore.syncGoogleEvents().catch(() => {});
+          }
+        });
+
+        setInterval(() => {
+          if (this.accounts.length > 0 && !eventStore.isSyncing) {
+            eventStore.syncGoogleEvents().catch(() => {});
+          }
+        }, 60000);
+
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
           if (this.theme === 'auto') {
             this.applyTheme('auto');
@@ -263,11 +270,7 @@ class SettingsStore {
       this.username = savedAccount.email.split('@')[0].toLowerCase();
       this.avatarUrl = savedAccount.avatarUrl || '';
 
-      await clearAllGoogleEvents();
-
       const incomingCalendars = authResult.calendars || [];
-      const calendarMap = new Map<string, string>();
-
       if (Array.isArray(incomingCalendars) && incomingCalendars.length > 0) {
         const hasExplicitPrimary = incomingCalendars.some((c: any) => c.primary === true);
 
@@ -281,7 +284,6 @@ class SettingsStore {
         for (let i = 0; i < incomingCalendars.length; i++) {
           const cal = incomingCalendars[i];
           const calId = 'cal_' + cal.id.replace(/[^a-zA-Z0-9_]/g, '_');
-          calendarMap.set(cal.id, calId);
           const colorHex = cal.backgroundColor || cal.background_color || '#3b82f6';
           const accessRole = cal.accessRole || cal.access_role || 'owner';
           
@@ -305,71 +307,7 @@ class SettingsStore {
         }
       }
 
-      if (Array.isArray(authResult.events) && authResult.events.length > 0) {
-        for (const gEvt of authResult.events) {
-          if (gEvt.status === 'cancelled') continue;
-
-          const targetCalId = calendarMap.get(gEvt.calendarId || gEvt.calendar_id || '') || calendarMap.values().next().value || 'cal_default';
-          
-          let startTime = '';
-          let endTime = '';
-          let isAllDay = false;
-
-          const startDt = gEvt.start?.dateTime || gEvt.start?.date_time;
-          const endDt = gEvt.end?.dateTime || gEvt.end?.date_time;
-          const startDate = gEvt.start?.date;
-          const endDate = gEvt.end?.date;
-
-          if (startDt) {
-            startTime = parseISO(startDt).toISOString();
-            endTime = endDt ? parseISO(endDt).toISOString() : addMinutes(parseISO(startTime), 60).toISOString();
-            isAllDay = false;
-          } else if (startDate) {
-            startTime = new Date(startDate + 'T00:00:00').toISOString();
-            endTime = endDate ? new Date(endDate + 'T00:00:00').toISOString() : new Date(startDate + 'T23:59:59').toISOString();
-            isAllDay = true;
-          } else {
-            continue;
-          }
-
-          const recurrenceRule = Array.isArray(gEvt.recurrence) && gEvt.recurrence.length > 0
-            ? gEvt.recurrence[0].replace(/^RRULE:/i, '').trim()
-            : 'none';
-
-          const kairoEvt: CalendarEvent = {
-            id: 'evt_g_' + gEvt.id.replace(/[^a-zA-Z0-9_]/g, '_'),
-            calendarId: targetCalId,
-            googleEventId: gEvt.id,
-            recurringEventId: gEvt.recurringEventId || gEvt.recurring_event_id,
-            title: gEvt.summary || '(No Title)',
-            description: gEvt.description || '',
-            location: gEvt.location || '',
-            conferencingUrl: gEvt.hangoutLink || gEvt.hangout_link || '',
-            conferencingProvider: 'google_meet',
-            startTime,
-            endTime,
-            isAllDay,
-            timeZone: gEvt.start?.timeZone || gEvt.start?.time_zone || 'GMT+5:30 Colombo',
-            rrule: recurrenceRule,
-            exdates: [],
-            status: 'confirmed',
-            busyStatus: gEvt.transparency === 'transparent' ? 'free' : 'busy',
-            visibility: 'default',
-            reminders: ['15m'],
-            creatorEmail: savedAccount.email,
-            participants: gEvt.attendees ? gEvt.attendees.map((a: any) => a.email).filter(Boolean) : [],
-            attachments: [],
-            syncStatus: 'synced',
-            updatedAt: new Date().toISOString()
-          };
-
-          await persistUpsertEvent(kairoEvt);
-        }
-      }
-
-      calendarState.calendars = await loadInitialCalendars();
-      eventStore.events = await loadStoredEvents();
-
+      await eventStore.syncGoogleEvents();
       this.close();
     } catch (err) {
       console.error('Google OAuth error:', err);
@@ -381,99 +319,9 @@ class SettingsStore {
 
   async syncGoogleAccount(): Promise<void> {
     if (this.accounts.length === 0) return;
-    const primary = this.accounts.find((a: UserAccount) => a.isPrimary) || this.accounts[0];
-    const token = await getAccountAccessToken(primary.id);
-    if (!token) return;
-
     this.isAuthenticating = true;
     try {
-      const [cals, events] = await invoke<any>('sync_google_calendar', {
-        accessToken: token
-      });
-
-      if (Array.isArray(events)) {
-        await clearAllGoogleEvents();
-        const calendarMap = new Map<string, string>();
-
-        for (const cal of cals) {
-          const calId = 'cal_' + cal.id.replace(/[^a-zA-Z0-9_]/g, '_');
-          calendarMap.set(cal.id, calId);
-          const newCal: CalendarCategory = {
-            id: calId,
-            accountId: primary.id,
-            googleCalendarId: cal.id,
-            name: cal.summary || primary.email,
-            colorId: 'google_custom',
-            colorHex: cal.backgroundColor || cal.background_color || '#3b82f6',
-            isPrimary: Boolean(cal.primary),
-            isVisible: true,
-            accessRole: cal.accessRole || cal.access_role || 'owner'
-          };
-          await persistCalendarCategory(newCal);
-        }
-
-        for (const gEvt of events) {
-          if (gEvt.status === 'cancelled') continue;
-          const targetCalId = calendarMap.get(gEvt.calendarId || gEvt.calendar_id || '') || calendarMap.values().next().value || 'cal_default';
-          
-          let startTime = '';
-          let endTime = '';
-          let isAllDay = false;
-
-          const startDt = gEvt.start?.dateTime || gEvt.start?.date_time;
-          const endDt = gEvt.end?.dateTime || gEvt.end?.date_time;
-          const startDate = gEvt.start?.date;
-          const endDate = gEvt.end?.date;
-
-          if (startDt) {
-            startTime = parseISO(startDt).toISOString();
-            endTime = endDt ? parseISO(endDt).toISOString() : addMinutes(parseISO(startTime), 60).toISOString();
-            isAllDay = false;
-          } else if (startDate) {
-            startTime = new Date(startDate + 'T00:00:00').toISOString();
-            endTime = endDate ? new Date(endDate + 'T00:00:00').toISOString() : new Date(startDate + 'T23:59:59').toISOString();
-            isAllDay = true;
-          } else {
-            continue;
-          }
-
-          const recurrenceRule = Array.isArray(gEvt.recurrence) && gEvt.recurrence.length > 0
-            ? gEvt.recurrence[0].replace(/^RRULE:/i, '').trim()
-            : 'none';
-
-          const kairoEvt: CalendarEvent = {
-            id: 'evt_g_' + gEvt.id.replace(/[^a-zA-Z0-9_]/g, '_'),
-            calendarId: targetCalId,
-            googleEventId: gEvt.id,
-            recurringEventId: gEvt.recurringEventId || gEvt.recurring_event_id,
-            title: gEvt.summary || '(No Title)',
-            description: gEvt.description || '',
-            location: gEvt.location || '',
-            conferencingUrl: gEvt.hangoutLink || gEvt.hangout_link || '',
-            conferencingProvider: 'google_meet',
-            startTime,
-            endTime,
-            isAllDay,
-            timeZone: gEvt.start?.timeZone || gEvt.start?.time_zone || 'GMT+5:30 Colombo',
-            rrule: recurrenceRule,
-            exdates: [],
-            status: 'confirmed',
-            busyStatus: gEvt.transparency === 'transparent' ? 'free' : 'busy',
-            visibility: 'default',
-            reminders: ['15m'],
-            creatorEmail: primary.email,
-            participants: gEvt.attendees ? gEvt.attendees.map((a: any) => a.email).filter(Boolean) : [],
-            attachments: [],
-            syncStatus: 'synced',
-            updatedAt: new Date().toISOString()
-          };
-
-          await persistUpsertEvent(kairoEvt);
-        }
-
-        calendarState.calendars = await loadInitialCalendars();
-        eventStore.events = await loadStoredEvents();
-      }
+      await eventStore.syncGoogleEvents();
     } catch (e) {
       console.error('Failed to sync Google account:', e);
     } finally {

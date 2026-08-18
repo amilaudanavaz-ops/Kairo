@@ -27,6 +27,9 @@ pub fn run() {
             google::refresh_google_token,
             google::fetch_google_calendars,
             google::fetch_google_events,
+            google::create_google_event,
+            google::update_google_event,
+            google::delete_google_event,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kairo calendar application");

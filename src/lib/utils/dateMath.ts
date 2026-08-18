@@ -150,19 +150,20 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
     return false;
   }
 
-  // Recurrence cutoff date (Strict boundary enforcement)
+  // Recurrence cutoff date boundary
   if (event.untilDate && targetDateKey > event.untilDate) {
     return false;
   }
 
-  // Non-recurring event
-  if (event.recurringEventId || !event.rrule || event.rrule === 'none') {
+  // Non-recurring or detached occurrence
+  if (!event.rrule || event.rrule === 'none' || Boolean(event.recurringEventId)) {
     if (event.isAllDay) {
       return targetDayStart >= eventDayStart && targetDayStart <= endDayStart;
     }
     return isSameDay(start, targetDay);
   }
 
+  // Master Recurring Series Projection (event.rrule is narrowed to a defined string)
   const rrule = event.rrule;
 
   // Shorthand rules
@@ -275,7 +276,9 @@ export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEve
   return events
     .filter((event) => eventOccursOnDay(event, day))
     .map((event) => {
-      if (event.recurringEventId || !event.rrule || event.rrule === 'none') {
+      const isSingleInstance = !event.rrule || event.rrule === 'none' || Boolean(event.recurringEventId);
+
+      if (isSingleInstance) {
         return {
           ...event,
           occurrenceDate: dateKey
@@ -301,4 +304,26 @@ export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEve
         isRecurringInstance: true
       };
     });
+}
+
+export function moveEventDate(event: CalendarEvent, targetDate: Date): CalendarEvent {
+  const originalStart = parseISO(event.startTime);
+  const originalEnd = parseISO(event.endTime);
+
+  const newStart = set(targetDate, {
+    hours: originalStart.getHours(),
+    minutes: originalStart.getMinutes(),
+    seconds: originalStart.getSeconds()
+  });
+
+  const durationMs = originalEnd.getTime() - originalStart.getTime();
+  const newEnd = new Date(newStart.getTime() + durationMs);
+
+  return {
+    ...event,
+    startTime: newStart.toISOString(),
+    endTime: newEnd.toISOString(),
+    syncStatus: 'pending_update',
+    updatedAt: new Date().toISOString()
+  };
 }

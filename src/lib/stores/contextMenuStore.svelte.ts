@@ -141,7 +141,7 @@ class ContextMenuStore {
             exdates: [...currentExdates, targetDateKey]
           });
         }
-        // 2. Insert modified instance as a non-recurring detached event
+        // 2. Insert modified instance as a detached event
         const detachedEvent: CalendarEvent = {
           ...updatedEvent,
           id: 'evt_' + Date.now(),
@@ -152,21 +152,18 @@ class ContextMenuStore {
         };
         eventStore.addEvent(detachedEvent);
       } else if (scope === 'following') {
-        // If moving the 1st occurrence, update the master directly
         if (isSameDay(masterStart, targetDate)) {
           eventStore.updateEvent({
             ...updatedEvent,
             id: originalEvent.id
           });
         } else {
-          // Set cutoff date strictly BEFORE the split point
           const cutoffDateKey = format(subDays(targetDate, 1), 'yyyy-MM-dd');
           eventStore.updateEvent({
             ...originalEvent,
             untilDate: cutoffDateKey
           });
 
-          // Insert new recurring series starting from new date
           const followingSeries: CalendarEvent = {
             ...updatedEvent,
             id: 'evt_' + Date.now(),
@@ -307,8 +304,14 @@ class ContextMenuStore {
   setColorOverride(colorHex: string | undefined) {
     if (!this.targetEvent) return;
     const updated = { ...this.targetEvent, colorOverride: colorHex };
-    if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
-      this.promptRecurringAction('update', this.targetEvent, updated, this.targetEvent.occurrenceDate, this.targetEvent);
+    const isRecurring = Boolean((this.targetEvent.rrule && this.targetEvent.rrule !== 'none') || this.targetEvent.recurringEventId || this.targetEvent.isRecurringInstance);
+
+    if (isRecurring) {
+      const masterEvent = eventStore.events.find(
+        (e: CalendarEvent) => (this.targetEvent?.recurringEventId && (e.id === this.targetEvent.recurringEventId || e.googleEventId === this.targetEvent.recurringEventId)) || e.id === this.targetEvent?.id
+      ) || this.targetEvent;
+
+      this.promptRecurringAction('update', masterEvent, updated, this.targetEvent.occurrenceDate, this.targetEvent);
     } else {
       eventStore.updateEvent(updated);
     }
@@ -341,8 +344,19 @@ class ContextMenuStore {
 
   delete() {
     if (!this.targetEvent) return;
-    if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
-      this.promptRecurringAction('delete', this.targetEvent, undefined, this.targetEvent.occurrenceDate, this.targetEvent);
+    const isRecurring = Boolean(
+      (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') || 
+      this.targetEvent.recurringEventId || 
+      this.targetEvent.isRecurringInstance
+    );
+
+    if (isRecurring) {
+      const masterEvent = eventStore.events.find(
+        (e: CalendarEvent) => (this.targetEvent?.recurringEventId && (e.id === this.targetEvent.recurringEventId || e.googleEventId === this.targetEvent.recurringEventId)) || e.id === this.targetEvent?.id
+      ) || this.targetEvent;
+
+      const dateKey = this.targetEvent.occurrenceDate || format(parseISO(this.targetEvent.startTime), 'yyyy-MM-dd');
+      this.promptRecurringAction('delete', masterEvent, undefined, dateKey, this.targetEvent);
     } else {
       eventStore.deleteEvent(this.targetEvent.id);
       if (calendarState.selectedEventId === this.targetEvent.id) {

@@ -1,31 +1,61 @@
 <script lang="ts">
   import { format, parseISO, isValid } from 'date-fns';
-  import { X } from 'lucide-svelte';
+  import { X, Lock } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
+  import { eventStore } from '../../stores/eventStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
+  import { dragStore } from '../../stores/dragStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
   import type { CalendarEvent, CalendarCategory } from '../../../types/event';
 
   let popoverElement: HTMLElement | null = $state(null);
 
-  // Close on outside click
+  // Close only on genuine canvas clicks (ignores clicks inside Inspector, Modals, or Drag Preview)
   $effect(() => {
     function handlePointerDown(e: MouseEvent) {
+      if (dragStore.isDragging) return;
       const target = e.target as HTMLElement | null;
-      if (calendarState.overflowData && popoverElement && !popoverElement.contains(target)) {
-        calendarState.closeOverflow();
+      if (!target) return;
+
+      if (popoverElement && popoverElement.contains(target)) return;
+
+      if (
+        target.closest('aside') || 
+        target.closest('[role="dialog"]') || 
+        target.closest('.dialog-overlay') || 
+        target.closest('.recurrence-modal') ||
+        target.closest('[data-calendar-event]')
+      ) {
+        return;
       }
+
+      calendarState.closeOverflow();
     }
+
     window.addEventListener('pointerdown', handlePointerDown);
     return () => {
       window.removeEventListener('pointerdown', handlePointerDown);
     };
   });
 
-  function getEventToken(event: CalendarEvent) {
-    const cal = calendarState.calendars.find(
-      (c: CalendarCategory) => c.id === event.calendarId || c.googleCalendarId === event.calendarId
+  function findCalendar(calendarId: string): CalendarCategory | undefined {
+    return calendarState.calendars.find(
+      (c: CalendarCategory) => c.id === calendarId || c.googleCalendarId === calendarId
     );
+  }
+
+  function isCalendarVisible(calendarId: string): boolean {
+    const cal = findCalendar(calendarId);
+    return cal ? cal.isVisible : true;
+  }
+
+  function isEventReadOnly(event: CalendarEvent): boolean {
+    const cal = findCalendar(event.calendarId);
+    return cal?.accessRole === 'reader' || cal?.accessRole === 'freeBusyReader';
+  }
+
+  function getEventToken(event: CalendarEvent) {
+    const cal = findCalendar(event.calendarId);
     return resolveEventColorToken(event.colorOverride || cal?.colorHex);
   }
 
@@ -41,8 +71,8 @@
 
   function calculatePosition(rect: DOMRect | null, isDocked: boolean): string {
     if (!rect) return '';
-    const popoverWidth = 230;
-    const popoverHeight = 280;
+    const popoverWidth = 240;
+    const popoverHeight = 310;
     const rightMargin = isDocked ? 292 : 16;
     const maxAvailableX = window.innerWidth - rightMargin;
 
@@ -59,12 +89,24 @@
     return `top: ${top}px; left: ${left}px;`;
   }
 
+  function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
+    if (isEventReadOnly(event)) return;
+    dragStore.startDrag(e, event);
+  }
+
   function handleEventClick(e: MouseEvent, event: CalendarEvent, dateKey: string) {
+    if (dragStore.isDragging) return;
     e.stopPropagation();
     const itemRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     calendarState.openInspector(event, itemRect, false, dateKey);
-    calendarState.closeOverflow();
   }
+
+  // Reactively track events for the currently opened day
+  let dayEvents = $derived.by(() => {
+    if (!calendarState.overflowData) return [];
+    const dateKey = format(calendarState.overflowData.date, 'yyyy-MM-dd');
+    return eventStore.getEventsForDateKey(dateKey).filter((e: CalendarEvent) => isCalendarVisible(e.calendarId));
+  });
 </script>
 
 {#if calendarState.overflowData}
@@ -73,12 +115,11 @@
 
   <div
     bind:this={popoverElement}
-    class="fixed z-[180] w-[230px] max-h-[310px] bg-[#1e1e1e] border border-[#2e2e2e] rounded-3xl shadow-[0_24px_60px_rgba(0,0,0,0.95)] p-3.5 flex flex-col select-none animate-in fade-in zoom-in-95 duration-100 text-white"
+    class="fixed z-[180] w-[240px] max-h-[320px] bg-[#1e1e1e] border border-[#2e2e2e] rounded-3xl shadow-[0_24px_60px_rgba(0,0,0,0.95)] p-3.5 flex flex-col select-none animate-in fade-in zoom-in-95 duration-100 text-white"
     style={calculatePosition(data.anchorRect, calendarState.isInspectorDocked && Boolean(calendarState.selectedEvent))}
     onclick={(e) => e.stopPropagation()}
     role="dialog"
   >
-    <!-- Header: Centered Day & Large Date (SAT 19) -->
     <div class="relative flex flex-col items-center pb-2 mb-1">
       <span class="text-[11px] font-bold text-zinc-400 uppercase tracking-widest leading-none">
         {format(data.date, 'EEE')}
@@ -96,26 +137,48 @@
       </button>
     </div>
 
-    <!-- Event List -->
     <div class="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-1 pr-0.5">
-      {#each data.events as event (event.id)}
+      {#each dayEvents as event (event.id + '_' + dateKey)}
         {@const token = getEventToken(event)}
+        {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === dateKey}
+        {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
+        {@const isReadOnly = isEventReadOnly(event)}
 
         {#if event.isAllDay}
-          <button
+          <div
+            data-calendar-event="true"
+            onpointerdown={(e) => handlePointerDown(e, event)}
             onclick={(e) => handleEventClick(e, event, dateKey)}
-            class="w-full flex items-center gap-2 py-1 px-1.5 rounded-lg hover:bg-[#2a2a2a] transition-colors text-left cursor-pointer group"
+            class="w-full flex items-center gap-2 py-1 px-1.5 rounded-lg hover:bg-[#2a2a2a] transition-all text-left select-none
+              {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
+              {isSelected ? 'bg-[#2a2a2a] ring-1 ring-white/70 font-semibold' : ''}
+              {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
+            role="button"
+            tabindex="0"
+            onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, dateKey)}
           >
             <span class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style="background-color: {token.hex};"></span>
             
             <span class="text-xs font-semibold truncate flex-1 text-white">
               {event.title || '(No Title)'}
             </span>
-          </button>
+
+            {#if isReadOnly}
+              <Lock size={10} class="text-zinc-500 shrink-0" />
+            {/if}
+          </div>
         {:else}
-          <button
+          <div
+            data-calendar-event="true"
+            onpointerdown={(e) => handlePointerDown(e, event)}
             onclick={(e) => handleEventClick(e, event, dateKey)}
-            class="w-full flex items-center gap-2 py-1 px-1.5 rounded-lg hover:bg-[#2a2a2a] transition-colors text-left cursor-pointer group"
+            class="w-full flex items-center gap-2 py-1 px-1.5 rounded-lg hover:bg-[#2a2a2a] transition-all text-left select-none
+              {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
+              {isSelected ? 'bg-[#2a2a2a] ring-1 ring-white/70 font-semibold' : ''}
+              {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
+            role="button"
+            tabindex="0"
+            onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, dateKey)}
           >
             <span class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style="background-color: {token.hex};"></span>
             
@@ -126,7 +189,11 @@
             <span class="text-xs font-semibold truncate flex-1 text-white">
               {event.title || '(No Title)'}
             </span>
-          </button>
+
+            {#if isReadOnly}
+              <Lock size={10} class="text-zinc-500 shrink-0" />
+            {/if}
+          </div>
         {/if}
       {/each}
     </div>

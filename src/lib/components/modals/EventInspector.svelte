@@ -55,7 +55,7 @@
   import { eventStore } from '../../stores/eventStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
-  import { resolveEventColorToken, KAIRO_COLORS, type CalendarColorToken } from '../../utils/colors';
+  import { resolveEventColorToken, KAIRO_COLORS } from '../../utils/colors';
   import { generateMonthGrid, formatRRuleLabel } from '../../utils/dateMath';
   import { dispatchEventReminder } from '../../utils/notifications';
   import type { CalendarEvent, CalendarCategory, ParticipantContact, LocationSuggestion } from '../../../types/event';
@@ -149,7 +149,7 @@
           const [y, m, d] = dateKey.split('-').map(Number);
           const origStart = parseISO(currentEvent.startTime);
           const origEnd = parseISO(currentEvent.endTime);
-          const duration = differenceInMinutes(origEnd, origStart);
+          const duration = Math.max(15, differenceInMinutes(origEnd, origStart));
 
           const newStart = new Date(y, m - 1, d, origStart.getHours(), origStart.getMinutes());
           const newEnd = new Date(newStart.getTime() + duration * 60 * 1000);
@@ -183,7 +183,12 @@
       if (!target) return;
 
       if (inspectorElement && inspectorElement.contains(target)) return;
-      if (target.closest('.recurrence-modal') || target.closest('.dialog-overlay') || target.closest('.settings-modal')) return;
+      if (
+        target.closest('.recurrence-modal') || 
+        target.closest('.dialog-overlay') || 
+        target.closest('.settings-modal') ||
+        target.closest('[role="dialog"]')
+      ) return;
 
       if (activeSideMenu !== 'none') {
         activeSideMenu = 'none';
@@ -248,7 +253,7 @@
     const monthDay = format(d, 'MMM d');
     const weekNum = ['1st', '2nd', '3rd', '4th', '5th'][getWeekOfMonth(d) - 1] || 'last';
 
-    return [
+    const list = [
       { id: 'none', label: 'Does not repeat' },
       { id: 'daily', label: 'Every day' },
       { id: 'weekday', label: 'Every weekday', sub: 'Mon – Fri' },
@@ -258,6 +263,16 @@
       { id: 'monthly_day', label: 'Every month', sub: `on the ${weekNum} ${dayName}` },
       { id: 'yearly', label: 'Every year', sub: `on ${monthDay}` }
     ];
+
+    if (draft.rrule && draft.rrule !== 'none') {
+      const parsed = formatRRuleLabel(draft.rrule, d);
+      const exists = list.some(o => o.id === parsed.id || (o.label === parsed.label && o.sub === parsed.sub));
+      if (!exists && parsed.id !== 'none') {
+        list.push({ id: draft.rrule, label: parsed.label, sub: parsed.sub });
+      }
+    }
+
+    return list;
   });
 
   let parsedRRuleDisplay = $derived.by(() => {
@@ -390,7 +405,7 @@
     if (!draft || isReadOnly) return;
     const baseStart = parseISO(draft.startTime);
     const baseEnd = parseISO(draft.endTime);
-    const duration = differenceInMinutes(baseEnd, baseStart);
+    const duration = Math.max(15, differenceInMinutes(baseEnd, baseStart));
 
     const newStart = new Date(
       targetDay.getFullYear(),
@@ -598,7 +613,6 @@
         (draft.location && draft.location.trim().length > 0) ||
         (draft.participants && draft.participants.length > 0);
 
-      // Only insert into store & SQLite if the user intentionally added content
       if (hasMeaningfulContent) {
         eventStore.addEvent(draft);
       }
@@ -613,7 +627,9 @@
       return;
     }
 
-    if (!masterEvent.rrule || masterEvent.rrule === 'none') {
+    const isRecurring = Boolean((masterEvent.rrule && masterEvent.rrule !== 'none') || masterEvent.recurringEventId);
+
+    if (!isRecurring) {
       if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
         eventStore.updateEvent(draft);
         initialEventSnapshot = JSON.parse(JSON.stringify(draft));

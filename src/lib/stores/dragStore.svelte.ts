@@ -1,7 +1,7 @@
 import type { CalendarEvent } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
 import { contextMenuStore } from './contextMenuStore.svelte';
-import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes } from 'date-fns';
+import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes, format } from 'date-fns';
 
 class DragStore {
   isDragging = $state<boolean>(false);
@@ -50,15 +50,25 @@ class DragStore {
         const [year, month, day] = this.hoveredDateKey.split('-').map(Number);
         const targetDate = new Date(year, month - 1, day);
         
-        if (this.draggedEvent.rrule && this.draggedEvent.rrule !== 'none') {
-          const masterEvent = eventStore.events.find((e: CalendarEvent) => e.id === this.draggedEvent?.id) || this.draggedEvent;
+        const isRecurring = Boolean(
+          (this.draggedEvent.rrule && this.draggedEvent.rrule !== 'none') || 
+          this.draggedEvent.recurringEventId || 
+          this.draggedEvent.isRecurringInstance
+        );
+
+        if (isRecurring) {
+          const masterEvent = eventStore.events.find(
+            (e: CalendarEvent) => (this.draggedEvent?.recurringEventId && (e.id === this.draggedEvent.recurringEventId || e.googleEventId === this.draggedEvent.recurringEventId)) || e.id === this.draggedEvent?.id
+          ) || this.draggedEvent;
           
           const origStart = parseISO(this.draggedEvent.startTime);
           const origEnd = parseISO(this.draggedEvent.endTime);
-          const duration = differenceInMinutes(origEnd, origStart);
+          const duration = Math.max(15, differenceInMinutes(origEnd, origStart));
 
           const newStart = setMinutes(setHours(targetDate, origStart.getHours()), origStart.getMinutes());
           const newEnd = addMinutes(newStart, duration);
+
+          const occurrenceDateKey = this.draggedEvent.occurrenceDate || format(origStart, 'yyyy-MM-dd');
 
           const updatedEvent: CalendarEvent = {
             ...this.draggedEvent,
@@ -72,7 +82,7 @@ class DragStore {
             'update',
             masterEvent,
             updatedEvent,
-            this.draggedEvent.occurrenceDate,
+            occurrenceDateKey,
             this.draggedEvent
           );
         } else {

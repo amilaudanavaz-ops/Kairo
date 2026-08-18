@@ -1,15 +1,15 @@
 <script lang="ts">
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
-  import { eventStore } from '../../stores/eventStore.svelte';
+  import { eventStore, getValidTokenAndCalendar, convertRRuleToRFC5545, type NormalizedGoogleEvent } from '../../stores/eventStore.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
-  import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes, format } from 'date-fns';
+  import { parseISO, setHours, setMinutes, differenceInMinutes, addMinutes, format, isSameDay, subDays } from 'date-fns';
   import { List, X } from 'lucide-svelte';
+  import { invoke } from '@tauri-apps/api/core';
 
   let selectedScope = $state<'this' | 'following' | 'all'>('this');
   let pending = $derived(contextMenuStore.pendingRecurringAction);
   let showPendingDiffs = $state(true);
 
-  // Date or weekday change check
   let isDateChange = $derived.by(() => {
     if (!pending?.updatedEvent) return false;
     const base = pending.initialSnapshot || pending.originalEvent;
@@ -24,15 +24,34 @@
     }
   });
 
-  function handleSave() {
+  async function handleSave() {
     if (!pending) return;
 
     const master = pending.originalEvent;
     const updated = pending.updatedEvent;
     const occurrenceDate = pending.occurrenceDate || format(parseISO(master.startTime), 'yyyy-MM-dd');
+    const masterStart = parseISO(master.startTime);
+    const occDate = parseISO(occurrenceDate);
+    const masterStartKey = format(masterStart, 'yyyy-MM-dd');
+
+    const targetMasterId = master.recurringEventId || master.googleEventId || master.id;
 
     if (pending.action === 'delete') {
       if (selectedScope === 'this' && occurrenceDate) {
+        if (master.googleEventId && master.recurringEventId) {
+          getValidTokenAndCalendar(master.calendarId).then(async (auth) => {
+            if (!auth) return;
+            try {
+              await invoke('delete_google_event', {
+                accessToken: auth.accessToken,
+                calendarId: auth.googleCalendarId,
+                eventId: master.googleEventId
+              });
+            } catch (e) {
+              console.error('Failed to delete occurrence on Google:', e);
+            }
+          });
+        }
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -40,17 +59,47 @@
           updatedAt: new Date().toISOString()
         });
       } else if (selectedScope === 'following' && occurrenceDate) {
-        eventStore.updateEvent({
-          ...master,
-          untilDate: occurrenceDate,
-          updatedAt: new Date().toISOString()
-        });
+        if (isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey) {
+          eventStore.deleteEvent(master.id);
+        } else {
+          const cutoffDateKey = format(subDays(occDate, 1), 'yyyy-MM-dd');
+          eventStore.updateEvent({
+            ...master,
+            untilDate: cutoffDateKey,
+            updatedAt: new Date().toISOString()
+          });
+
+          if (targetMasterId && targetMasterId.startsWith('g_')) {
+            getValidTokenAndCalendar(master.calendarId).then(async (auth) => {
+              if (!auth) return;
+              try {
+                await invoke<NormalizedGoogleEvent>('update_google_event', {
+                  accessToken: auth.accessToken,
+                  calendarId: auth.googleCalendarId,
+                  eventId: targetMasterId,
+                  event: {
+                    title: master.title,
+                    description: master.description || null,
+                    location: master.location || null,
+                    start_time: master.startTime,
+                    end_time: master.endTime,
+                    is_all_day: master.isAllDay,
+                    time_zone: master.timeZone || 'UTC',
+                    rrule: convertRRuleToRFC5545(master.rrule, master.startTime) + `;UNTIL=${cutoffDateKey.replace(/-/g, '')}T235959Z`
+                  }
+                });
+              } catch (e) {
+                console.error('Failed to update until cutoff on Google:', e);
+              }
+            });
+          }
+        }
       } else {
         eventStore.deleteEvent(master.id);
       }
     } else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // 1. Exclude this specific occurrence from master series
+        // 1. Exclude date on parent series
         const exdates = master.exdates || [];
         eventStore.updateEvent({
           ...master,
@@ -58,7 +107,7 @@
           updatedAt: new Date().toISOString()
         });
 
-        // 2. Create standalone detached instance
+        // 2. Create detached instance on the new date/time
         const detached = {
           ...updated,
           id: 'evt_' + Date.now(),
@@ -72,32 +121,50 @@
         };
         eventStore.addEvent(detached);
       } else if (selectedScope === 'following' && occurrenceDate) {
-        // 1. Terminate old series before this date
-        eventStore.updateEvent({
-          ...master,
-          untilDate: occurrenceDate,
-          updatedAt: new Date().toISOString()
-        });
+        if (isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey) {
+          eventStore.updateEvent({
+            ...master,
+            title: updated.title,
+            description: updated.description,
+            location: updated.location,
+            conferencingUrl: updated.conferencingUrl,
+            conferencingProvider: updated.conferencingProvider,
+            startTime: updated.startTime,
+            endTime: updated.endTime,
+            colorOverride: updated.colorOverride,
+            calendarId: updated.calendarId,
+            reminders: updated.reminders,
+            rrule: updated.rrule || master.rrule,
+            updatedAt: new Date().toISOString()
+          });
+        } else {
+          // 1. Terminate old series before this date
+          const cutoffDateKey = format(subDays(occDate, 1), 'yyyy-MM-dd');
+          eventStore.updateEvent({
+            ...master,
+            untilDate: cutoffDateKey,
+            updatedAt: new Date().toISOString()
+          });
 
-        // 2. Start new series from this date forward
-        const newSeries = {
-          ...updated,
-          id: 'evt_' + Date.now(),
-          rrule: master.rrule || updated.rrule || 'weekly',
-          exdates: [],
-          untilDate: undefined,
-          recurringEventId: undefined,
-          isRecurringInstance: false,
-          updatedAt: new Date().toISOString()
-        };
-        eventStore.addEvent(newSeries);
+          // 2. Start new series from this date forward
+          const newSeries = {
+            ...updated,
+            id: 'evt_' + Date.now(),
+            rrule: master.rrule || updated.rrule || 'weekly',
+            exdates: [],
+            untilDate: undefined,
+            recurringEventId: undefined,
+            isRecurringInstance: false,
+            updatedAt: new Date().toISOString()
+          };
+          eventStore.addEvent(newSeries);
+        }
       } else {
-        // 3. Update "All events" across master series
+        // "All events": Update the master recurring series
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
-        const duration = differenceInMinutes(newEnd, newStart);
+        const duration = Math.max(15, differenceInMinutes(newEnd, newStart));
 
-        const masterStart = parseISO(master.startTime);
         const adjustedMasterStart = setMinutes(setHours(masterStart, newStart.getHours()), newStart.getMinutes());
         const adjustedMasterEnd = addMinutes(adjustedMasterStart, duration);
 
@@ -107,6 +174,7 @@
           description: updated.description,
           location: updated.location,
           conferencingUrl: updated.conferencingUrl,
+          conferencingProvider: updated.conferencingProvider,
           startTime: adjustedMasterStart.toISOString(),
           endTime: adjustedMasterEnd.toISOString(),
           colorOverride: updated.colorOverride,
@@ -215,4 +283,4 @@
       </div>
     </div>
   </div>
-{/if}
+{/if} 
