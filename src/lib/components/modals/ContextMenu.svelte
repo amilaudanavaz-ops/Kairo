@@ -58,6 +58,20 @@
     { name: 'Sage', hex: '#33b679' }
   ];
 
+  // Normalized matching reconciles standard & imported Google Calendar palette variants
+  function isColorSelected(colorHex: string, activeHex?: string): boolean {
+    if (!activeHex) return false;
+    const a = colorHex.toLowerCase().trim();
+    const b = activeHex.toLowerCase().trim();
+    if (a === b) return true;
+    if ((a === '#d50000' || a === '#ef4444') && (b === '#d50000' || b === '#ef4444')) return true;
+    if ((a === '#f4511e' || a === '#f97316') && (b === '#f4511e' || b === '#f97316')) return true;
+    if ((a === '#0b8043' || a === '#10b981') && (b === '#0b8043' || b === '#10b981')) return true;
+    if ((a === '#039be5' || a === '#38bdf8') && (b === '#039be5' || b === '#38bdf8')) return true;
+    if ((a === '#f6bf26' || a === '#f59e0b') && (b === '#f6bf26' || b === '#f59e0b')) return true;
+    return false;
+  }
+
   function openGoogleCalendarWebSettings() {
     const cal = contextMenuStore.targetCalendar;
     if (!cal) return;
@@ -121,7 +135,7 @@
                       <span class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style="background-color: {color.hex};"></span>
                       <span class="text-zinc-200 group-hover:text-white">{color.name}</span>
                     </div>
-                    {#if cal.colorHex.toLowerCase() === color.hex.toLowerCase()}
+                    {#if isColorSelected(color.hex, cal.colorHex)}
                       <Check size={12} class="text-blue-400 shrink-0" />
                     {/if}
                   </button>
@@ -189,12 +203,12 @@
         </button>
       </div>
 
-    <!-- 2. EVENT CONTEXT MENU (Accurately highlights active calendar color) -->
+    <!-- 2. EVENT CONTEXT MENU -->
     {:else if contextMenuStore.mode === 'event' && contextMenuStore.targetEvent}
       {@const targetCal = calendarState.calendars.find((c: CalendarCategory) => c.id === contextMenuStore.targetEvent?.calendarId || c.googleCalendarId === contextMenuStore.targetEvent?.calendarId)}
       {@const effectiveHex = contextMenuStore.targetEvent.colorOverride || targetCal?.colorHex || '#3b82f6'}
 
-      <div class="w-48 flex flex-col gap-0.5">
+      <div class="w-52 flex flex-col gap-0.5">
         <button
           type="button"
           onclick={() => contextMenuStore.cut()}
@@ -223,18 +237,18 @@
         <div class="h-px bg-[#282828] my-0.5"></div>
 
         <div class="text-[10px] font-semibold text-zinc-400 px-3 py-0.5">Event color</div>
-        <div class="flex items-center justify-between px-3 py-1">
-          {#each Object.values(KAIRO_COLORS).slice(0, 7) as c}
-            {@const isChecked = effectiveHex.toLowerCase() === c.hex.toLowerCase()}
+        <div class="grid grid-cols-5 gap-1.5 px-3 py-1.5">
+          {#each Object.values(KAIRO_COLORS).slice(0, 10) as c}
+            {@const isChecked = isColorSelected(c.hex, effectiveHex)}
             <button
               type="button"
               onclick={() => contextMenuStore.setColorOverride(c.hex)}
-              class="w-3.5 h-3.5 rounded-full flex items-center justify-center transition-transform hover:scale-125 cursor-pointer shadow-sm"
+              class="w-4 h-4 rounded-full flex items-center justify-center transition-transform hover:scale-125 cursor-pointer shadow-sm mx-auto"
               style="background-color: {c.hex};"
               title={c.name}
             >
               {#if isChecked}
-                <Check size={9} class="text-white" />
+                <Check size={10} class="text-white drop-shadow" />
               {/if}
             </button>
           {/each}

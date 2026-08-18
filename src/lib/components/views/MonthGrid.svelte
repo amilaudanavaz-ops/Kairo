@@ -1,5 +1,17 @@
 <script lang="ts">
-  import { format, parseISO, setHours, setMinutes, getISOWeek, addWeeks, subWeeks } from 'date-fns';
+  import { 
+    format, 
+    parseISO, 
+    setHours, 
+    setMinutes, 
+    getISOWeek, 
+    addWeeks, 
+    subWeeks, 
+    startOfWeek, 
+    startOfMonth, 
+    addDays,
+    isSameMonth
+  } from 'date-fns';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
@@ -23,9 +35,34 @@
   const MAX_VISIBLE_EVENTS = 3;
   const TOTAL_BUFFER_ROWS = 7;
 
+  let weekStartsOnNumber = $derived<0 | 1>(settingsStore.startWeekOn === 'Monday' ? 1 : 0);
+
+  // Top visible week anchor — initialized by default to the 1st week of the current month
+  let rollingAnchor = $state<Date>(
+    startOfWeek(startOfMonth(calendarState.currentDate), { 
+      weekStartsOn: settingsStore.startWeekOn === 'Monday' ? 1 : 0 
+    })
+  );
+
+  let isWheelScrolling = false;
+
+  // Synchronize anchor when navigating externally (e.g. Today button, MiniCalendar click, Next/Prev arrows)
+  $effect(() => {
+    const activeDate = calendarState.currentDate;
+    if (isWheelScrolling) return;
+
+    const defaultMonthStartWeek = startOfWeek(startOfMonth(activeDate), { 
+      weekStartsOn: weekStartsOnNumber 
+    });
+
+    const currentDominantMonth = addDays(rollingAnchor, 17);
+    if (!isSameMonth(activeDate, currentDominantMonth)) {
+      rollingAnchor = defaultMonthStartWeek;
+    }
+  });
+
   let rawGridCells = $derived.by(() => {
-    const weekStartsOn = settingsStore.startWeekOn === 'Monday' ? 1 : 0;
-    return generateMonthGrid(calendarState.currentDate, weekStartsOn, TOTAL_BUFFER_ROWS);
+    return generateMonthGrid(rollingAnchor, weekStartsOnNumber, TOTAL_BUFFER_ROWS);
   });
   
   let gridCells = $derived.by(() => {
@@ -54,7 +91,7 @@
   function formatDisplayTime(isoString: string): string {
     try {
       const d = parseISO(isoString);
-      return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mmaaa').toLowerCase();
+      return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'haaa').toLowerCase();
     } catch {
       return '';
     }
@@ -72,7 +109,8 @@
 
     const primaryCal = calendarState.calendars.find((c: CalendarCategory) => c.isPrimary) || calendarState.calendars[0];
 
-    const newEvent: CalendarEvent = {
+    // In-memory draft without premature database insertion
+    const draftEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
       calendarId: primaryCal?.id || '1',
       title: '',
@@ -89,9 +127,8 @@
       updatedAt: new Date().toISOString()
     };
 
-    eventStore.addEvent(newEvent);
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    calendarState.openInspector(newEvent, rect, true, format(date, 'yyyy-MM-dd'));
+    calendarState.openInspector(draftEvent, rect, true, format(date, 'yyyy-MM-dd'));
   }
 
   function handleEventClick(e: MouseEvent, event: CalendarEvent, dateKey: string) {
@@ -124,6 +161,7 @@
 
     if (Math.abs(wheelAccumulator) >= 24) {
       isRolling = true;
+      isWheelScrolling = true;
       const direction = wheelAccumulator > 0 ? 1 : -1;
       wheelAccumulator = 0;
 
@@ -131,12 +169,20 @@
 
       setTimeout(() => {
         if (direction === 1) {
-          calendarState.setDate(addWeeks(calendarState.currentDate, 1));
+          rollingAnchor = addWeeks(rollingAnchor, 1);
         } else {
-          calendarState.setDate(subWeeks(calendarState.currentDate, 1));
+          rollingAnchor = subWeeks(rollingAnchor, 1);
         }
+
+        // Keep dominant title bar month in sync with rolling viewport
+        const dominantCenterDate = addDays(rollingAnchor, 17);
+        calendarState.setDate(dominantCenterDate);
+
         translateYPercent = 0;
         isRolling = false;
+        setTimeout(() => {
+          isWheelScrolling = false;
+        }, 150);
       }, 120);
     }
   }
@@ -240,11 +286,11 @@
                   onpointerdown={(e) => handlePointerDown(e, event)}
                   onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                   oncontextmenu={(e) => handleEventContextMenu(e, event)}
-                  class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all
+                  class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all group
                     {cell.isPast && !isSelected ? 'opacity-55 hover:opacity-100' : 'opacity-100'}
                     {isSelected 
                       ? 'ring-1 ring-white shadow-lg bg-[var(--bg-card-hover)] !opacity-100' 
-                      : 'bg-[var(--bg-card)] hover:bg-[var(--bg-card-hover)] border-[var(--border-subtle)]' }
+                      : 'bg-[var(--bg-card)] hover:bg-[var(--bg-card-hover)] border-[var(--border-subtle)] hover:border-current' }
                     {isBeingDragged ? '!opacity-30' : ''}"
                   style="border-color: {isSelected ? token.hex : 'var(--border-subtle)'};"
                   role="button"
@@ -252,21 +298,21 @@
                   onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, cell.dateKey)}
                 >
                   <span 
-                    class="w-[3.5px] h-3.5 rounded-full mr-1.5 shrink-0" 
+                    class="w-[3.5px] h-3.5 rounded-full mr-1.5 shrink-0 transition-transform group-hover:scale-110" 
                     style="background-color: {token.hex};"
                   ></span>
 
-                  <!-- Time Text: Lighter than event base color -->
+                  <!-- Time Text -->
                   <span 
-                    class="text-[10px] font-bold mr-1.5 shrink-0 pointer-events-none"
+                    class="text-[10px] font-bold mr-1.5 shrink-0 pointer-events-none transition-colors group-hover:brightness-125"
                     style="color: {token.timeText};"
                   >
                     {formatDisplayTime(event.startTime)}
                   </span>
 
-                  <!-- Title Text: Lighter and softer than time text -->
+                  <!-- Title Text -->
                   <span 
-                    class="truncate pointer-events-none font-semibold"
+                    class="truncate pointer-events-none font-bold transition-colors group-hover:!text-white"
                     style="color: {isSelected ? '#ffffff' : token.titleText};"
                   >
                     {event.title || '(No Title)'}

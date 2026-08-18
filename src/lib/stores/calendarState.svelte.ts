@@ -15,10 +15,11 @@ class CalendarState {
   isInspectorDocked = $state(false);
   isAddAccountModalOpen = $state(false);
   
-  // Selection tracking
+  // Selection & Draft Tracking
   selectedEventId = $state<string | null>(null);
   selectedDateKey = $state<string | null>(null);
   isCreatingNewEvent = $state(false);
+  draftEvent = $state<CalendarEvent | null>(null);
   inspectorRect = $state<DOMRect | null>(null);
   overflowData = $state<DayOverflowItem | null>(null);
   clipboardEvent = $state<CalendarEvent | null>(null);
@@ -33,9 +34,16 @@ class CalendarState {
   calendars = $state<CalendarCategory[]>([]);
 
   selectedEvent = $derived.by(() => {
+    if (this.isCreatingNewEvent && this.draftEvent) {
+      return this.draftEvent;
+    }
     if (!this.selectedEventId) return null;
-    return eventStore.events.find((e) => e.id === this.selectedEventId) || null;
+    return eventStore.events.find((e) => e.id === this.selectedEventId) || this.draftEvent || null;
   });
+
+  setCalendars(cals: CalendarCategory[]) {
+    this.calendars = cals;
+  }
 
   toggleSidebar() {
     this.isSidebarOpen = !this.isSidebarOpen;
@@ -71,11 +79,11 @@ class CalendarState {
 
   // Toggle calendar visibility checkbox
   toggleCalendarVisibility(calendarId: string) {
-    const target = this.calendars.find(c => c.id === calendarId);
+    const target = this.calendars.find(c => c.id === calendarId || c.googleCalendarId === calendarId);
     if (!target) return;
     const nextState = !target.isVisible;
     this.calendars = this.calendars.map((c) =>
-      c.id === calendarId ? { ...c, isVisible: nextState } : c
+      (c.id === calendarId || c.googleCalendarId === calendarId) ? { ...c, isVisible: nextState } : c
     );
     updateCalendarVisibilityInDb(calendarId, nextState).catch(console.error);
   }
@@ -84,7 +92,7 @@ class CalendarState {
   async setDefaultCalendar(calendarId: string) {
     this.calendars = this.calendars.map((c) => ({
       ...c,
-      isPrimary: c.id === calendarId
+      isPrimary: c.id === calendarId || c.googleCalendarId === calendarId
     }));
     await setExclusiveDefaultCalendarInDb(calendarId);
   }
@@ -93,24 +101,24 @@ class CalendarState {
   async showOnlyCalendar(calendarId: string) {
     this.calendars = this.calendars.map((c) => ({
       ...c,
-      isVisible: c.id === calendarId
+      isVisible: c.id === calendarId || c.googleCalendarId === calendarId
     }));
     for (const cal of this.calendars) {
-      await updateCalendarVisibilityInDb(cal.id, cal.id === calendarId);
+      await updateCalendarVisibilityInDb(cal.id, cal.id === calendarId || cal.googleCalendarId === calendarId);
     }
   }
 
   // Update calendar hex color
   async updateCalendarColor(calendarId: string, colorHex: string) {
     this.calendars = this.calendars.map((c) =>
-      c.id === calendarId ? { ...c, colorHex } : c
+      (c.id === calendarId || c.googleCalendarId === calendarId) ? { ...c, colorHex } : c
     );
     await updateCalendarColorInDb(calendarId, colorHex);
   }
 
   // Remove calendar from list
   async removeCalendar(calendarId: string) {
-    this.calendars = this.calendars.filter(c => c.id !== calendarId);
+    this.calendars = this.calendars.filter(c => c.id !== calendarId && c.googleCalendarId !== calendarId);
     eventStore.events = eventStore.events.filter(e => e.calendarId !== calendarId);
     await deleteCalendarFromDb(calendarId);
   }
@@ -127,6 +135,7 @@ class CalendarState {
     this.selectedEventId = event.id;
     this.selectedDateKey = dateKey || event.occurrenceDate || format(parseISO(event.startTime), 'yyyy-MM-dd');
     this.isCreatingNewEvent = isNew;
+    this.draftEvent = isNew ? event : null;
     this.inspectorRect = rect;
   }
 
@@ -134,6 +143,7 @@ class CalendarState {
     this.selectedEventId = null;
     this.selectedDateKey = null;
     this.isCreatingNewEvent = false;
+    this.draftEvent = null;
     this.inspectorRect = null;
   }
 

@@ -2,8 +2,8 @@ export interface CalendarColorToken {
   id: string;
   name: string;
   hex: string;
-  timeText: string;      // Lighter than base event color
-  titleText: string;     // Lighter than time text for soft readable title
+  timeText: string;      // 25% lighter than base event color
+  titleText: string;     // 65% lighter than base event color for soft high contrast
   bannerBg: string;      // Translucent banner fill
   bannerBorder: string;  // Banner border accent
   selectedBg: string;    // Solid accent on selection
@@ -26,14 +26,14 @@ export function lightenHex(hex: string, amount: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-// Complete palette of standard & Google Calendar colors
+// Complete palette of standard & imported Google Calendar colors
 export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
   blue: {
     id: 'blue',
     name: 'Blue',
     hex: '#3b82f6',
     timeText: '#60a5fa',
-    titleText: '#bfdbfe',
+    titleText: '#dbeafe',
     bannerBg: 'rgba(59, 130, 246, 0.22)',
     bannerBorder: 'rgba(59, 130, 246, 0.5)',
     selectedBg: '#2563eb',
@@ -45,7 +45,7 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
     name: 'Tangerine',
     hex: '#f4511e',
     timeText: '#fb923c',
-    titleText: '#fed7aa',
+    titleText: '#ffedd5',
     bannerBg: 'rgba(244, 81, 30, 0.22)',
     bannerBorder: 'rgba(244, 81, 30, 0.5)',
     selectedBg: '#ea580c',
@@ -57,7 +57,7 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
     name: 'Red',
     hex: '#d50000',
     timeText: '#f87171',
-    titleText: '#fecaca',
+    titleText: '#fee2e2',
     bannerBg: 'rgba(213, 0, 0, 0.22)',
     bannerBorder: 'rgba(213, 0, 0, 0.5)',
     selectedBg: '#b71c1c',
@@ -69,7 +69,7 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
     name: 'Banana',
     hex: '#f6bf26',
     timeText: '#fde047',
-    titleText: '#fef08a',
+    titleText: '#fef9c3',
     bannerBg: 'rgba(246, 191, 38, 0.22)',
     bannerBorder: 'rgba(246, 191, 38, 0.5)',
     selectedBg: '#eab308',
@@ -81,7 +81,7 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
     name: 'Basil',
     hex: '#0b8043',
     timeText: '#34d399',
-    titleText: '#a7f3d0',
+    titleText: '#d1fae5',
     bannerBg: 'rgba(11, 128, 67, 0.22)',
     bannerBorder: 'rgba(11, 128, 67, 0.5)',
     selectedBg: '#059669',
@@ -93,7 +93,7 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
     name: 'Peacock',
     hex: '#039be5',
     timeText: '#38bdf8',
-    titleText: '#bae6fd',
+    titleText: '#e0f2fe',
     bannerBg: 'rgba(3, 155, 229, 0.22)',
     bannerBorder: 'rgba(3, 155, 229, 0.5)',
     selectedBg: '#0284c7',
@@ -104,8 +104,8 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
     id: 'graphite',
     name: 'Graphite',
     hex: '#616161',
-    timeText: '#f4f4ff',
-    titleText: '#e4e4e7',
+    timeText: '#a1a1aa',
+    titleText: '#f4f4f5',
     bannerBg: 'rgba(97, 97, 97, 0.22)',
     bannerBorder: 'rgba(97, 97, 97, 0.5)',
     selectedBg: '#52525b',
@@ -117,7 +117,7 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
     name: 'Grape',
     hex: '#8e24aa',
     timeText: '#c084fc',
-    titleText: '#e9d5ff',
+    titleText: '#f3e8ff',
     bannerBg: 'rgba(142, 36, 170, 0.22)',
     bannerBorder: 'rgba(142, 36, 170, 0.5)',
     selectedBg: '#7e22ce',
@@ -129,7 +129,7 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
     name: 'Flamingo',
     hex: '#e67c73',
     timeText: '#fca5a5',
-    titleText: '#fed7d7',
+    titleText: '#ffe4e6',
     bannerBg: 'rgba(230, 124, 115, 0.22)',
     bannerBorder: 'rgba(230, 124, 115, 0.5)',
     selectedBg: '#e11d48',
@@ -141,7 +141,7 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
     name: 'Sage',
     hex: '#33b679',
     timeText: '#6ee7b7',
-    titleText: '#d1fae5',
+    titleText: '#dcfce7',
     bannerBg: 'rgba(51, 182, 121, 0.22)',
     bannerBorder: 'rgba(51, 182, 121, 0.5)',
     selectedBg: '#10b981',
@@ -162,7 +162,7 @@ export const KAIRO_COLORS: Record<string, CalendarColorToken> = {
   }
 };
 
-// Export alias for backward compatibility
+// Backward-compatibility export alias
 export const NOTION_COLORS = KAIRO_COLORS;
 
 export function resolveEventColorToken(hexOrId?: string): CalendarColorToken {
@@ -172,9 +172,9 @@ export function resolveEventColorToken(hexOrId?: string): CalendarColorToken {
   );
   if (match) return match;
 
-  // Custom colors: Time is 18% lighter than base, Title is 52% lighter
-  const timeTint = lightenHex(hexOrId, 0.18);
-  const titleTint = lightenHex(hexOrId, 0.52);
+  // Custom colors: Time is 25% lighter than base, Title is 65% lighter
+  const timeTint = lightenHex(hexOrId, 0.25);
+  const titleTint = lightenHex(hexOrId, 0.65);
 
   return {
     id: 'custom',

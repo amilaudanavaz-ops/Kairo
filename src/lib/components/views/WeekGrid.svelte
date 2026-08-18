@@ -6,7 +6,7 @@
     isToday, 
     isSameDay, 
     isBefore,
-    startOfDay,
+    startOfDay, 
     parseISO, 
     differenceInMinutes, 
     setHours, 
@@ -38,6 +38,19 @@
   const hours = Array.from({ length: 24 }, (_, i) => i);
   const HOUR_HEIGHT = 56;
   const todayStart = startOfDay(new Date());
+
+  // Current live time indicator line
+  let now = $state(new Date());
+  $effect(() => {
+    const timer = setInterval(() => {
+      now = new Date();
+    }, 60000);
+    return () => clearInterval(timer);
+  });
+
+  let currentMinutesTop = $derived.by(() => {
+    return ((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR_HEIGHT;
+  });
 
   function findCalendar(calendarId: string): CalendarCategory | undefined {
     return calendarState.calendars.find(
@@ -73,7 +86,7 @@
     try {
       const d = parseISO(isoString);
       if (!isValid(d)) return '';
-      return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'haaa').toLowerCase();
+      return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mmaaa').toLowerCase();
     } catch {
       return '';
     }
@@ -100,7 +113,7 @@
       || calendarState.calendars.find((c: CalendarCategory) => c.accessRole !== 'reader')
       || calendarState.calendars[0];
 
-    const newEvent: CalendarEvent = {
+    const draftEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
       calendarId: primaryCal?.id || '1',
       title: '',
@@ -117,9 +130,8 @@
       updatedAt: new Date().toISOString()
     };
 
-    eventStore.addEvent(newEvent);
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    calendarState.openInspector(newEvent, rect, true, format(day, 'yyyy-MM-dd'));
+    calendarState.openInspector(draftEvent, rect, true, format(day, 'yyyy-MM-dd'));
   }
 </script>
 
@@ -149,13 +161,18 @@
 
   <!-- Scrollable Timeline -->
   <div class="flex-1 overflow-y-auto custom-scrollbar flex relative bg-[var(--bg-canvas)]">
+    <!-- Uncompressed Exact 56px Hour Labels Column -->
     <div class="w-14 shrink-0 flex flex-col border-r border-[var(--border-subtle)] bg-[var(--bg-canvas)] select-none">
       {#each hours as h}
         <div 
-          class="text-[10px] font-mono text-[var(--text-muted)] pr-2 text-right -mt-2.5"
+          class="relative w-full shrink-0"
           style="height: {HOUR_HEIGHT}px;"
         >
-          {formatTimeHeader(h)}
+          {#if h > 0}
+            <span class="absolute -top-[7px] right-2 text-[10px] font-mono text-[var(--text-muted)] select-none leading-none">
+              {formatTimeHeader(h)}
+            </span>
+          {/if}
         </div>
       {/each}
     </div>
@@ -165,6 +182,7 @@
       {#each weekDays as day}
         {@const dayKey = format(day, 'yyyy-MM-dd')}
         {@const isPastDay = isBefore(startOfDay(day), todayStart)}
+        {@const isCurrentDayColumn = isToday(day)}
         {@const timedEvents = eventStore.events.filter((e: CalendarEvent) => !e.isAllDay && isSameDay(parseISO(e.startTime), day) && isCalendarVisible(e.calendarId))}
 
         <div 
@@ -179,7 +197,7 @@
           role="region"
           aria-label="Day column"
         >
-          <!-- Grid lines -->
+          <!-- Hour Grid Dividers -->
           {#each hours as h}
             <div 
               class="border-b border-[var(--border-subtle)] opacity-50 w-full"
@@ -187,7 +205,18 @@
             ></div>
           {/each}
 
-          <!-- Timed Events with Hover Highlight -->
+          <!-- Live Time Indicator Line for Today -->
+          {#if isCurrentDayColumn}
+            <div 
+              class="absolute left-0 right-0 z-30 pointer-events-none flex items-center"
+              style="top: {currentMinutesTop}px;"
+            >
+              <span class="w-2.5 h-2.5 rounded-full bg-red-500 -ml-1.5 shadow-sm"></span>
+              <div class="h-[2px] bg-red-500 flex-1 shadow"></div>
+            </div>
+          {/if}
+
+          <!-- Timed Events -->
           {#each timedEvents as event (event.id + '_' + dayKey)}
             {@const token = getEventToken(event)}
             {@const layout = calculateEventLayout(event)}
@@ -202,34 +231,40 @@
                 calendarState.openInspector(event, rect, false, dayKey);
               }}
               oncontextmenu={(e) => contextMenuStore.openForEvent(e, event)}
-              class="absolute left-1 right-1 rounded-lg px-2 py-1 overflow-hidden transition-all border group
+              class="absolute left-1 right-1 rounded-lg px-2.5 py-1.5 overflow-hidden transition-all border group
                 {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
                 {isPastDay && !isSelected ? 'opacity-55 hover:opacity-100' : 'opacity-95 hover:opacity-100'}
                 {isSelected 
                   ? 'ring-1 ring-white shadow-2xl z-20 bg-[#252525] !opacity-100' 
-                  : 'bg-[#181818] hover:bg-[#202020] hover:border-current hover:shadow-lg z-10'}"
+                  : 'bg-[#181818] hover:bg-[#222222] hover:shadow-xl z-10'}"
               style="
                 top: {layout.top}px; 
                 height: {layout.height}px; 
                 border-color: {isSelected ? token.hex : 'rgba(255,255,255,0.08)'};
               "
+              onmouseenter={(e) => {
+                if (!isSelected) (e.currentTarget as HTMLElement).style.borderColor = token.hex;
+              }}
+              onmouseleave={(e) => {
+                if (!isSelected) (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.08)';
+              }}
               role="button"
               tabindex="0"
               onkeydown={(e) => e.key === 'Enter' && calendarState.openInspector(event, (e.currentTarget as HTMLElement).getBoundingClientRect(), false, dayKey)}
             >
-              <div class="flex items-center gap-1.5 truncate">
-                <span class="w-2 h-2 rounded-full shrink-0 shadow-sm" style="background-color: {token.hex};"></span>
+              <div class="flex items-center gap-2 truncate">
+                <span class="w-2 h-2 rounded-full shrink-0 shadow-sm transition-transform group-hover:scale-125" style="background-color: {token.hex};"></span>
                 <span 
-                  class="text-[11px] font-semibold truncate font-sans group-hover:brightness-125 transition-colors"
-                  style="color: {token.titleText};"
+                  class="text-[11px] font-bold truncate font-sans transition-colors group-hover:!text-white"
+                  style="color: {isSelected ? '#ffffff' : token.titleText};"
                 >
                   {event.title || '(No Title)'}
                 </span>
               </div>
               
-              {#if layout.height > 36}
+              {#if layout.height > 34}
                 <div 
-                  class="text-[10px] font-semibold font-sans truncate mt-0.5 pl-3.5 opacity-90"
+                  class="text-[10px] font-bold font-sans truncate mt-0.5 pl-4 transition-colors group-hover:brightness-125"
                   style="color: {token.timeText};"
                 >
                   {formatDisplayTime(event.startTime)}

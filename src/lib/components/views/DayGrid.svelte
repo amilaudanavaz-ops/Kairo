@@ -8,6 +8,7 @@
     isSameDay,
     isBefore,
     startOfDay,
+    isToday,
     isValid 
   } from 'date-fns';
   import { calendarState } from '../../stores/calendarState.svelte';
@@ -24,6 +25,19 @@
   let currentDay = $derived(calendarState.currentDate);
   let dayKey = $derived(format(currentDay, 'yyyy-MM-dd'));
   let isPastDay = $derived(isBefore(startOfDay(currentDay), todayStart));
+  let isTodayActive = $derived(isToday(currentDay));
+
+  let now = $state(new Date());
+  $effect(() => {
+    const timer = setInterval(() => {
+      now = new Date();
+    }, 60000);
+    return () => clearInterval(timer);
+  });
+
+  let currentMinutesTop = $derived.by(() => {
+    return ((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR_HEIGHT;
+  });
 
   function findCalendar(calendarId: string): CalendarCategory | undefined {
     return calendarState.calendars.find(
@@ -76,7 +90,7 @@
       || calendarState.calendars.find((c: CalendarCategory) => c.accessRole !== 'reader')
       || calendarState.calendars[0];
 
-    const newEvent: CalendarEvent = {
+    const draftEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
       calendarId: primaryCal?.id || '1',
       title: '',
@@ -93,9 +107,8 @@
       updatedAt: new Date().toISOString()
     };
 
-    eventStore.addEvent(newEvent);
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    calendarState.openInspector(newEvent, rect, true, dayKey);
+    calendarState.openInspector(draftEvent, rect, true, dayKey);
   }
 
   let allDayEvents = $derived.by(() => {
@@ -108,6 +121,7 @@
 </script>
 
 <div class="flex-1 flex flex-col h-full bg-[var(--bg-canvas)] select-none overflow-hidden text-[var(--text-primary)]">
+  <!-- Day Header -->
   <div class="h-12 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] flex items-center px-4 justify-between shrink-0 z-20">
     <div class="flex items-center gap-3">
       <span class="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider">
@@ -118,6 +132,7 @@
       </span>
     </div>
 
+    <!-- All-Day Events Strip -->
     {#if allDayEvents.length > 0}
       <div class="flex items-center gap-1.5 max-w-xl overflow-x-auto custom-scrollbar">
         {#each allDayEvents as event (event.id)}
@@ -133,18 +148,25 @@
     {/if}
   </div>
 
+  <!-- Timeline Body -->
   <div class="flex-1 overflow-y-auto custom-scrollbar flex relative bg-[var(--bg-canvas)]">
+    <!-- Uncompressed Exact 56px Hour Labels Column -->
     <div class="w-16 shrink-0 flex flex-col border-r border-[var(--border-subtle)] bg-[var(--bg-canvas)]">
       {#each hours as h}
         <div 
-          class="text-[10px] font-mono text-[var(--text-muted)] pr-2.5 text-right -mt-2.5"
+          class="relative w-full shrink-0"
           style="height: {HOUR_HEIGHT}px;"
         >
-          {formatTimeHeader(h)}
+          {#if h > 0}
+            <span class="absolute -top-[7px] right-2.5 text-[10px] font-mono text-[var(--text-muted)] select-none leading-none">
+              {formatTimeHeader(h)}
+            </span>
+          {/if}
         </div>
       {/each}
     </div>
 
+    <!-- Day Canvas -->
     <div 
       class="flex-1 relative h-[1344px]"
       ondblclick={(e) => {
@@ -157,13 +179,26 @@
       role="region"
       aria-label="Day canvas"
     >
+      <!-- Hour Dividers -->
       {#each hours as h}
         <div 
-          class="border-b border-[var(--border-subtle)] opacity-60 w-full"
+          class="border-b border-[var(--border-subtle)] opacity-50 w-full"
           style="height: {HOUR_HEIGHT}px;"
         ></div>
       {/each}
 
+      <!-- Live Time Indicator Line -->
+      {#if isTodayActive}
+        <div 
+          class="absolute left-0 right-0 z-30 pointer-events-none flex items-center"
+          style="top: {currentMinutesTop}px;"
+        >
+          <span class="w-2.5 h-2.5 rounded-full bg-red-500 -ml-1.5 shadow-sm"></span>
+          <div class="h-[2px] bg-red-500 flex-1 shadow"></div>
+        </div>
+      {/if}
+
+      <!-- Timed Events -->
       {#each timedEvents as event (event.id + '_' + dayKey)}
         {@const token = getEventToken(event)}
         {@const layout = calculateEventLayout(event)}
@@ -178,28 +213,38 @@
             calendarState.openInspector(event, rect, false, dayKey);
           }}
           oncontextmenu={(e) => contextMenuStore.openForEvent(e, event)}
-          class="absolute left-3 right-3 rounded-lg p-2.5 overflow-hidden transition-all border
+          class="absolute left-3 right-3 rounded-lg p-2.5 overflow-hidden transition-all border group
             {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
             {isPastDay && !isSelected ? 'opacity-55 hover:opacity-100' : 'opacity-95 hover:opacity-100'}
-            {isSelected ? 'ring-1 ring-white shadow-2xl z-20 bg-[var(--bg-card-hover)] !opacity-100' : 'z-10'}"
+            {isSelected 
+              ? 'ring-1 ring-white shadow-2xl z-20 bg-[#252525] !opacity-100' 
+              : 'bg-[#181818] hover:bg-[#222222] hover:shadow-xl z-10'}"
           style="
             top: {layout.top}px; 
             height: {layout.height}px; 
-            border-color: {token.hex}; 
-            background-color: {isSelected ? token.bannerBg : 'var(--bg-card)'};
+            border-color: {isSelected ? token.hex : 'rgba(255,255,255,0.08)'};
           "
+          onmouseenter={(e) => {
+            if (!isSelected) (e.currentTarget as HTMLElement).style.borderColor = token.hex;
+          }}
+          onmouseleave={(e) => {
+            if (!isSelected) (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.08)';
+          }}
           role="button"
           tabindex="0"
           onkeydown={(e) => e.key === 'Enter' && calendarState.openInspector(event, (e.currentTarget as HTMLElement).getBoundingClientRect(), false, dayKey)}
         >
           <div class="flex items-center gap-2 truncate">
-            <span class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style="background-color: {token.hex};"></span>
-            <span class="text-xs font-semibold truncate {isSelected ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}">
+            <span class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm transition-transform group-hover:scale-125" style="background-color: {token.hex};"></span>
+            <span 
+              class="text-xs font-bold truncate font-sans transition-colors group-hover:!text-white"
+              style="color: {isSelected ? '#ffffff' : token.titleText};"
+            >
               {event.title || '(No Title)'}
             </span>
           </div>
           {#if event.description}
-            <p class="text-[11px] text-[var(--text-muted)] mt-1 truncate">{event.description}</p>
+            <p class="text-[11px] text-[var(--text-muted)] mt-1 truncate group-hover:text-zinc-300">{event.description}</p>
           {/if}
         </div>
       {/each}
