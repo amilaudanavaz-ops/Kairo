@@ -155,7 +155,7 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
     return false;
   }
 
-  // Non-recurring or detached occurrence
+  // Non-recurring or concrete instance (including all Google expanded instances)
   if (!event.rrule || event.rrule === 'none' || Boolean(event.recurringEventId)) {
     if (event.isAllDay) {
       return targetDayStart >= eventDayStart && targetDayStart <= endDayStart;
@@ -163,10 +163,9 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
     return isSameDay(start, targetDay);
   }
 
-  // Master Recurring Series Projection (event.rrule is narrowed to a defined string)
+  // Local unsynced master recurring series projection
   const rrule = event.rrule;
 
-  // Shorthand rules
   if (rrule === 'daily') return true;
   if (rrule === 'weekday') {
     const day = targetDay.getDay();
@@ -273,8 +272,22 @@ export function generateMonthGrid(
 export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEvent[] {
   const dateKey = format(day, 'yyyy-MM-dd');
 
+  // Collect all recurring parent IDs that have active expanded instances
+  const expandedParentIds = new Set<string>();
+  for (const ev of events) {
+    if (ev.recurringEventId) {
+      expandedParentIds.add(ev.recurringEventId);
+    }
+  }
+
   return events
-    .filter((event) => eventOccursOnDay(event, day))
+    .filter((event) => {
+      // If concrete instances exist for this parent, do not duplicate-project the parent
+      if (event.googleEventId && expandedParentIds.has(event.googleEventId)) {
+        return false;
+      }
+      return eventOccursOnDay(event, day);
+    })
     .map((event) => {
       const isSingleInstance = !event.rrule || event.rrule === 'none' || Boolean(event.recurringEventId);
 

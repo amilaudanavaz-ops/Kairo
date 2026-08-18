@@ -7,7 +7,7 @@ export async function getDb(): Promise<Database> {
   if (!dbInstance) {
     dbInstance = await Database.load('sqlite:kairo.db');
 
-    // Remove legacy placeholder calendars
+    // Clean legacy placeholder calendars
     await dbInstance.execute(`DELETE FROM calendars WHERE name IN ('Personal & Work', 'Scraping & Dev', 'Holidays') AND google_calendar_id IS NULL;`).catch(() => {});
     await dbInstance.execute(`DELETE FROM accounts WHERE id = 'acc_primary' AND access_token IS NULL;`).catch(() => {});
 
@@ -477,6 +477,14 @@ export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
     if (existing.length > 0) {
       resolvedEventId = existing[0].id;
     }
+  }
+
+  // If saving Google expanded instances, remove temporary local draft master to prevent duplicate rows
+  if (event.recurringEventId) {
+    await db.execute(
+      `DELETE FROM events WHERE calendar_id = $1 AND google_event_id = $2 AND recurring_event_id IS NULL AND id LIKE 'evt_%' AND id NOT LIKE 'evt_g_%'`,
+      [targetCalendarId, event.recurringEventId]
+    );
   }
 
   await db.execute(

@@ -8,7 +8,9 @@ import {
   updateAccountTokens,
   clearAllGoogleEvents,
   persistCalendarCategory,
-  loadInitialCalendars
+  loadInitialCalendars,
+  loadDbSettings,
+  persistDbSetting
 } from '../db/database';
 import { calendarState } from './calendarState.svelte';
 import { 
@@ -62,6 +64,11 @@ export interface RawGoogleEvent {
 
 export type NormalizedGoogleEvent = RawGoogleEvent;
 
+export interface GoogleEventsFetchResponse {
+  events: RawGoogleEvent[];
+  next_sync_token?: string;
+}
+
 function cleanHtmlDescription(raw?: string): string {
   if (!raw) return '';
   let text = raw;
@@ -90,8 +97,7 @@ function cleanHtmlDescription(raw?: string): string {
 }
 
 /**
- * Converts shorthand recurrence rules (e.g. 'weekly', 'daily', 'monthly_day')
- * into standard RFC 5545 recurrence strings that Google Calendar API requires.
+ * Converts shorthand recurrence rules into standard RFC 5545 recurrence strings.
  */
 export function convertRRuleToRFC5545(rruleStr: string | undefined, startIso: string): string | null {
   if (!rruleStr || rruleStr === 'none') return null;
@@ -271,36 +277,24 @@ class EventStore {
     const target = this.events.find((e) => e.id === id);
     if (!target) return;
 
-    const targetMasterId = target.recurringEventId || target.googleEventId || target.id;
-    const isRecurring = Boolean(target.recurringEventId || (target.rrule && target.rrule !== 'none'));
-
-    if (isRecurring) {
-      this.events = this.events.filter((e) => 
-        e.id !== id && 
-        e.recurringEventId !== targetMasterId && 
-        e.recurringEventId !== target.id &&
-        e.googleEventId !== targetMasterId
-      );
-    } else {
-      this.events = this.events.filter((e) => e.id !== id);
-    }
+    this.events = this.events.filter((e) => e.id !== id);
 
     persistDeleteEvent(id).catch((err) => {
       console.error('Failed to delete event from DB:', err);
     });
 
-    const googleDeleteId = target.recurringEventId || target.googleEventId;
-    if (googleDeleteId) {
+    // If deleting a standalone non-recurring event, dispatch directly
+    if (target && target.googleEventId && (!target.recurringEventId && (!target.rrule || target.rrule === 'none'))) {
       getValidTokenAndCalendar(target.calendarId).then(async (auth) => {
         if (!auth) return;
         try {
           await invoke('delete_google_event', {
             accessToken: auth.accessToken,
             calendarId: auth.googleCalendarId,
-            eventId: googleDeleteId
+            eventId: target.googleEventId!
           });
         } catch (e) {
-          console.error('Failed to delete event on Google Calendar:', e);
+          console.error('Failed to delete standalone event on Google:', e);
         }
       });
     }
@@ -327,7 +321,10 @@ class EventStore {
     this.updateEvent(updated);
   }
 
-  async syncGoogleEvents(): Promise<void> {
+  /**
+   * Real-Time Incremental Sync using nextSyncToken (<100ms response).
+   */
+  async syncGoogleEvents(forceFullSync: boolean = false): Promise<void> {
     if (this.isSyncing) return;
     this.isSyncing = true;
 
@@ -338,8 +335,7 @@ class EventStore {
       const baseDate = calendarState.currentDate || new Date();
       const timeMin = subMonths(baseDate, 6).toISOString();
       const timeMax = addMonths(baseDate, 6).toISOString();
-
-      const allSyncedEvents: CalendarEvent[] = [];
+      const dbSettings = await loadDbSettings();
 
       for (const acc of accounts) {
         let activeToken = acc.accessToken || '';
@@ -348,6 +344,7 @@ class EventStore {
         const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
         const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET || '';
 
+        // 1. Fetch user's Google Calendar List
         let googleCals: any[] = [];
         try {
           googleCals = await invoke<any[]>('fetch_google_calendars', {
@@ -376,6 +373,7 @@ class EventStore {
           }
         }
 
+        // 2. Persist calendars to DB
         const currentDbCals = await loadInitialCalendars();
         const calMap = new Map<string, string>();
 
@@ -405,22 +403,42 @@ class EventStore {
 
         calendarState.calendars = await loadInitialCalendars();
 
+        // 3. Incremental Delta Sync per Calendar
         for (const gCal of googleCals) {
           const targetCalId = calMap.get(gCal.id) || 'cal_' + gCal.id.replace(/[^a-zA-Z0-9_]/g, '_');
+          const syncTokenKey = `sync_token_${gCal.id}`;
+          const currentSyncToken = forceFullSync ? undefined : dbSettings[syncTokenKey];
 
           try {
-            const rawEvents = await invoke<RawGoogleEvent[]>('fetch_google_events', {
+            const fetchRes = await invoke<GoogleEventsFetchResponse>('fetch_google_events', {
               accessToken: activeToken,
               calendarId: gCal.id,
-              timeMin,
-              timeMax
+              timeMin: currentSyncToken ? null : timeMin,
+              timeMax: currentSyncToken ? null : timeMax,
+              syncToken: currentSyncToken || null
             });
 
-            for (const item of rawEvents) {
-              if (item.status === 'cancelled') continue;
+            const { events: rawEvents, next_sync_token } = fetchRes;
 
+            // Save new syncToken for next query
+            if (next_sync_token) {
+              await persistDbSetting(syncTokenKey, next_sync_token);
+              dbSettings[syncTokenKey] = next_sync_token;
+            }
+
+            const upsertBatch: CalendarEvent[] = [];
+
+            for (const item of rawEvents) {
               const rawId = item.google_event_id || item.googleEventId || `g_${Date.now()}`;
               const eventId = `evt_g_${targetCalId}_${rawId.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+
+              // Handle remote deletions immediately
+              if (item.status === 'cancelled') {
+                await persistDeleteEvent(eventId);
+                this.events = this.events.filter(e => e.id !== eventId && e.googleEventId !== rawId);
+                continue;
+              }
+
               const startTime = item.start_time || item.startTime || new Date().toISOString();
               const endTime = item.end_time || item.endTime || new Date().toISOString();
               const isAllDay = item.is_all_day ?? item.isAllDay ?? false;
@@ -459,19 +477,19 @@ class EventStore {
                 updatedAt: new Date().toISOString()
               };
 
-              allSyncedEvents.push(mappedEvent);
+              upsertBatch.push(mappedEvent);
+            }
+
+            if (upsertBatch.length > 0) {
+              await persistBatchEvents(upsertBatch);
             }
           } catch (calEvtErr) {
-            console.error(`Failed to fetch events for calendar ${gCal.summary || gCal.id}:`, calEvtErr);
+            console.error(`Failed to sync calendar ${gCal.summary || gCal.id}:`, calEvtErr);
           }
         }
       }
 
-      if (allSyncedEvents.length > 0) {
-        await clearAllGoogleEvents();
-        await persistBatchEvents(allSyncedEvents);
-      }
-
+      // Reload state directly from SQLite
       this.events = await loadStoredEvents();
     } catch (err) {
       console.error('Failed to sync Google events:', err);

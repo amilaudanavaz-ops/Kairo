@@ -27,140 +27,225 @@
   async function handleSave() {
     if (!pending) return;
 
-    const master = pending.originalEvent;
+    const instance = pending.originalEvent;
     const updated = pending.updatedEvent;
-    const occurrenceDate = pending.occurrenceDate || format(parseISO(master.startTime), 'yyyy-MM-dd');
-    const masterStart = parseISO(master.startTime);
+    const occurrenceDate = pending.occurrenceDate || format(parseISO(instance.startTime), 'yyyy-MM-dd');
+    
+    // Resolve master series ID
+    const rootMasterGoogleId = instance.recurringEventId || instance.googleEventId || instance.id;
+
+    // Find all sibling occurrences of this series
+    const siblingInstances = eventStore.events.filter(e => 
+      e.recurringEventId === rootMasterGoogleId || 
+      e.googleEventId === rootMasterGoogleId ||
+      e.id === instance.id
+    ).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+
+    // True earliest start timestamp of the series
+    const masterStart = siblingInstances.length > 0 ? parseISO(siblingInstances[0].startTime) : parseISO(instance.startTime);
     const occDate = parseISO(occurrenceDate);
     const masterStartKey = format(masterStart, 'yyyy-MM-dd');
 
-    const targetMasterId = master.recurringEventId || master.googleEventId || master.id;
-
     if (pending.action === 'delete') {
       if (selectedScope === 'this' && occurrenceDate) {
-        if (master.googleEventId && master.recurringEventId) {
-          getValidTokenAndCalendar(master.calendarId).then(async (auth) => {
+        // Delete only this single instance from local state
+        eventStore.deleteEvent(instance.id);
+
+        // Send deletion of this specific instance ID to Google
+        if (instance.googleEventId) {
+          getValidTokenAndCalendar(instance.calendarId).then(async (auth) => {
             if (!auth) return;
             try {
               await invoke('delete_google_event', {
                 accessToken: auth.accessToken,
                 calendarId: auth.googleCalendarId,
-                eventId: master.googleEventId
+                eventId: instance.googleEventId!
               });
             } catch (e) {
-              console.error('Failed to delete occurrence on Google:', e);
+              console.error('Failed to delete instance on Google:', e);
             }
           });
         }
-        const exdates = master.exdates || [];
-        eventStore.updateEvent({
-          ...master,
-          exdates: [...exdates.filter(d => d !== occurrenceDate), occurrenceDate],
-          updatedAt: new Date().toISOString()
-        });
       } else if (selectedScope === 'following' && occurrenceDate) {
         if (isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey) {
-          eventStore.deleteEvent(master.id);
+          // If deleting from the very start, delete the entire series
+          eventStore.events = eventStore.events.filter(e => 
+            e.id !== instance.id && 
+            e.recurringEventId !== rootMasterGoogleId && 
+            e.googleEventId !== rootMasterGoogleId
+          );
+          eventStore.deleteEvent(instance.id);
+
+          if (rootMasterGoogleId) {
+            getValidTokenAndCalendar(instance.calendarId).then(async (auth) => {
+              if (!auth) return;
+              try {
+                await invoke('delete_google_event', {
+                  accessToken: auth.accessToken,
+                  calendarId: auth.googleCalendarId,
+                  eventId: rootMasterGoogleId
+                });
+              } catch (e) {
+                console.error('Failed to delete master series on Google:', e);
+              }
+            });
+          }
         } else {
-          const cutoffDateKey = format(subDays(occDate, 1), 'yyyy-MM-dd');
-          eventStore.updateEvent({
-            ...master,
-            untilDate: cutoffDateKey,
-            updatedAt: new Date().toISOString()
+          // 1. Purge all local occurrences scheduled on or after occDate
+          eventStore.events = eventStore.events.filter(e => {
+            if ((e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId) && e.startTime >= occDate.toISOString()) {
+              eventStore.deleteEvent(e.id);
+              return false;
+            }
+            return true;
           });
 
-          if (targetMasterId && targetMasterId.startsWith('g_')) {
-            getValidTokenAndCalendar(master.calendarId).then(async (auth) => {
+          // 2. Set strict UTC UNTIL cutoff date on Google root master (Preserve masterStart!)
+          const cutoffDate = subDays(occDate, 1);
+          const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
+
+          if (rootMasterGoogleId) {
+            getValidTokenAndCalendar(instance.calendarId).then(async (auth) => {
               if (!auth) return;
               try {
                 await invoke<NormalizedGoogleEvent>('update_google_event', {
                   accessToken: auth.accessToken,
                   calendarId: auth.googleCalendarId,
-                  eventId: targetMasterId,
+                  eventId: rootMasterGoogleId,
                   event: {
-                    title: master.title,
-                    description: master.description || null,
-                    location: master.location || null,
-                    start_time: master.startTime,
-                    end_time: master.endTime,
-                    is_all_day: master.isAllDay,
-                    time_zone: master.timeZone || 'UTC',
-                    rrule: convertRRuleToRFC5545(master.rrule, master.startTime) + `;UNTIL=${cutoffDateKey.replace(/-/g, '')}T235959Z`
+                    title: instance.title,
+                    description: instance.description || null,
+                    location: instance.location || null,
+                    start_time: masterStart.toISOString(), // Preserves the true root origin
+                    end_time: addMinutes(masterStart, Math.max(15, differenceInMinutes(parseISO(instance.endTime), parseISO(instance.startTime)))).toISOString(),
+                    is_all_day: instance.isAllDay,
+                    time_zone: instance.timeZone || 'UTC',
+                    rrule: convertRRuleToRFC5545(instance.rrule || 'weekly', masterStart.toISOString()) + `;UNTIL=${untilUtcStr}`
                   }
                 });
               } catch (e) {
-                console.error('Failed to update until cutoff on Google:', e);
+                console.error('Failed to update cutoff on Google:', e);
               }
             });
           }
         }
       } else {
-        eventStore.deleteEvent(master.id);
+        // "All events": Purge root master and all occurrences locally and on Google
+        eventStore.events = eventStore.events.filter(e => 
+          e.id !== instance.id && 
+          e.recurringEventId !== rootMasterGoogleId && 
+          e.googleEventId !== rootMasterGoogleId
+        );
+        eventStore.deleteEvent(instance.id);
+
+        if (rootMasterGoogleId) {
+          getValidTokenAndCalendar(instance.calendarId).then(async (auth) => {
+            if (!auth) return;
+            try {
+              await invoke('delete_google_event', {
+                accessToken: auth.accessToken,
+                calendarId: auth.googleCalendarId,
+                eventId: rootMasterGoogleId
+              });
+            } catch (e) {
+              console.error('Failed to delete master series on Google:', e);
+            }
+          });
+        }
       }
     } else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // 1. Exclude date on parent series
-        const exdates = master.exdates || [];
-        eventStore.updateEvent({
-          ...master,
-          exdates: [...exdates.filter(d => d !== occurrenceDate), occurrenceDate],
-          updatedAt: new Date().toISOString()
-        });
-
-        // 2. Create detached instance on the new date/time
-        const detached = {
+        // 1. Update this single instance in local store
+        const patchedInstance = {
           ...updated,
-          id: 'evt_' + Date.now(),
-          rrule: 'none',
-          exdates: [],
-          untilDate: undefined,
-          recurringEventId: master.id,
-          originalStartTime: occurrenceDate,
+          id: instance.id,
+          googleEventId: instance.googleEventId,
+          recurringEventId: instance.recurringEventId,
+          originalStartTime: instance.originalStartTime || occurrenceDate,
           isRecurringInstance: false,
           updatedAt: new Date().toISOString()
         };
-        eventStore.addEvent(detached);
-      } else if (selectedScope === 'following' && occurrenceDate) {
-        if (isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey) {
-          eventStore.updateEvent({
-            ...master,
-            title: updated.title,
-            description: updated.description,
-            location: updated.location,
-            conferencingUrl: updated.conferencingUrl,
-            conferencingProvider: updated.conferencingProvider,
-            startTime: updated.startTime,
-            endTime: updated.endTime,
-            colorOverride: updated.colorOverride,
-            calendarId: updated.calendarId,
-            reminders: updated.reminders,
-            rrule: updated.rrule || master.rrule,
-            updatedAt: new Date().toISOString()
-          });
-        } else {
-          // 1. Terminate old series before this date
-          const cutoffDateKey = format(subDays(occDate, 1), 'yyyy-MM-dd');
-          eventStore.updateEvent({
-            ...master,
-            untilDate: cutoffDateKey,
-            updatedAt: new Date().toISOString()
-          });
+        eventStore.updateEvent(patchedInstance);
 
-          // 2. Start new series from this date forward
-          const newSeries = {
-            ...updated,
-            id: 'evt_' + Date.now(),
-            rrule: master.rrule || updated.rrule || 'weekly',
-            exdates: [],
-            untilDate: undefined,
-            recurringEventId: undefined,
-            isRecurringInstance: false,
-            updatedAt: new Date().toISOString()
-          };
-          eventStore.addEvent(newSeries);
+        // 2. PATCH this instance on Google Calendar (Creates an official exception)
+        if (instance.googleEventId) {
+          getValidTokenAndCalendar(instance.calendarId).then(async (auth) => {
+            if (!auth) return;
+            try {
+              await invoke<NormalizedGoogleEvent>('update_google_event', {
+                accessToken: auth.accessToken,
+                calendarId: auth.googleCalendarId,
+                eventId: instance.googleEventId!,
+                event: {
+                  title: updated.title,
+                  description: updated.description || null,
+                  location: updated.location || null,
+                  start_time: updated.startTime,
+                  end_time: updated.endTime,
+                  is_all_day: updated.isAllDay,
+                  time_zone: updated.timeZone || 'UTC',
+                  rrule: null
+                }
+              });
+            } catch (e) {
+              console.error('Failed to patch Google recurring instance exception:', e);
+            }
+          });
         }
+      } else if (selectedScope === 'following' && occurrenceDate) {
+        const cutoffDate = subDays(occDate, 1);
+        const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
+
+        // 1. Cap old master series on Google using its true origin start
+        if (rootMasterGoogleId) {
+          getValidTokenAndCalendar(instance.calendarId).then(async (auth) => {
+            if (!auth) return;
+            try {
+              await invoke<NormalizedGoogleEvent>('update_google_event', {
+                accessToken: auth.accessToken,
+                calendarId: auth.googleCalendarId,
+                eventId: rootMasterGoogleId,
+                event: {
+                  title: instance.title,
+                  description: instance.description || null,
+                  location: instance.location || null,
+                  start_time: masterStart.toISOString(), // Preserves Aug 4
+                  end_time: addMinutes(masterStart, Math.max(15, differenceInMinutes(parseISO(instance.endTime), parseISO(instance.startTime)))).toISOString(),
+                  is_all_day: instance.isAllDay,
+                  time_zone: instance.timeZone || 'UTC',
+                  rrule: convertRRuleToRFC5545(instance.rrule || 'weekly', masterStart.toISOString()) + `;UNTIL=${untilUtcStr}`
+                }
+              });
+            } catch (e) {
+              console.error('Failed to set UNTIL cutoff on Google:', e);
+            }
+          });
+        }
+
+        // 2. Remove old series instances from occDate forward
+        eventStore.events = eventStore.events.filter(e => {
+          if ((e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId) && e.startTime >= occDate.toISOString()) {
+            eventStore.deleteEvent(e.id);
+            return false;
+          }
+          return true;
+        });
+
+        // 3. Create the new forward-recurring series
+        const newSeries = {
+          ...updated,
+          id: 'evt_' + Date.now(),
+          rrule: instance.rrule || updated.rrule || 'weekly',
+          exdates: [],
+          untilDate: undefined,
+          googleEventId: undefined,
+          recurringEventId: undefined,
+          isRecurringInstance: false,
+          updatedAt: new Date().toISOString()
+        };
+        eventStore.addEvent(newSeries);
       } else {
-        // "All events": Update the master recurring series
+        // "All events": Adjust Master Series time-of-day and title
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
         const duration = Math.max(15, differenceInMinutes(newEnd, newStart));
@@ -168,21 +253,47 @@
         const adjustedMasterStart = setMinutes(setHours(masterStart, newStart.getHours()), newStart.getMinutes());
         const adjustedMasterEnd = addMinutes(adjustedMasterStart, duration);
 
-        eventStore.updateEvent({
-          ...master,
-          title: updated.title,
-          description: updated.description,
-          location: updated.location,
-          conferencingUrl: updated.conferencingUrl,
-          conferencingProvider: updated.conferencingProvider,
-          startTime: adjustedMasterStart.toISOString(),
-          endTime: adjustedMasterEnd.toISOString(),
-          colorOverride: updated.colorOverride,
-          calendarId: updated.calendarId,
-          reminders: updated.reminders,
-          rrule: updated.rrule || master.rrule,
-          updatedAt: new Date().toISOString()
+        // Update all related local occurrences in-place
+        eventStore.events = eventStore.events.map(e => {
+          if (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id) {
+            return {
+              ...e,
+              title: updated.title,
+              description: updated.description,
+              location: updated.location,
+              conferencingUrl: updated.conferencingUrl,
+              colorOverride: updated.colorOverride,
+              updatedAt: new Date().toISOString()
+            };
+          }
+          return e;
         });
+
+        // Patch Master Series on Google Calendar
+        if (rootMasterGoogleId) {
+          getValidTokenAndCalendar(instance.calendarId).then(async (auth) => {
+            if (!auth) return;
+            try {
+              await invoke<NormalizedGoogleEvent>('update_google_event', {
+                accessToken: auth.accessToken,
+                calendarId: auth.googleCalendarId,
+                eventId: rootMasterGoogleId,
+                event: {
+                  title: updated.title,
+                  description: updated.description || null,
+                  location: updated.location || null,
+                  start_time: adjustedMasterStart.toISOString(),
+                  end_time: adjustedMasterEnd.toISOString(),
+                  is_all_day: updated.isAllDay,
+                  time_zone: updated.timeZone || 'UTC',
+                  rrule: convertRRuleToRFC5545(updated.rrule || instance.rrule, adjustedMasterStart.toISOString())
+                }
+              });
+            } catch (e) {
+              console.error('Failed to update master series on Google:', e);
+            }
+          });
+        }
       }
     }
 
@@ -283,4 +394,4 @@
       </div>
     </div>
   </div>
-{/if} 
+{/if}

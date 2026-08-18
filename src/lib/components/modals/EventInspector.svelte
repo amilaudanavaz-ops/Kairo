@@ -627,7 +627,11 @@
       return;
     }
 
-    const isRecurring = Boolean((masterEvent.rrule && masterEvent.rrule !== 'none') || masterEvent.recurringEventId);
+    const isRecurring = Boolean(
+      (masterEvent.rrule && masterEvent.rrule !== 'none') || 
+      masterEvent.recurringEventId || 
+      masterEvent.isRecurringInstance
+    );
 
     if (!isRecurring) {
       if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
@@ -643,7 +647,7 @@
         'update',
         masterEvent,
         draft,
-        calendarState.selectedDateKey || undefined,
+        calendarState.selectedDateKey || draft.occurrenceDate || undefined,
         initialEventSnapshot
       );
     } else {

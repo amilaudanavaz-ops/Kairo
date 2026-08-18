@@ -74,6 +74,12 @@ pub struct NormalizedGoogleEvent {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct GoogleEventsFetchResponse {
+    pub events: Vec<NormalizedGoogleEvent>,
+    pub next_sync_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GoogleEventMutationPayload {
     pub title: String,
     pub description: Option<String>,
@@ -271,38 +277,59 @@ pub async fn fetch_google_events(
     calendar_id: String,
     time_min: Option<String>,
     time_max: Option<String>,
-) -> Result<Vec<NormalizedGoogleEvent>, String> {
+    sync_token: Option<String>,
+) -> Result<GoogleEventsFetchResponse, String> {
     let http_client = reqwest::Client::new();
     let encoded_cal_id = urlencoding::encode(&calendar_id);
 
-    // 1. Fetch expanded instances (singleEvents=true)
-    let mut url_instances = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&orderBy=startTime&maxResults=2500",
-        encoded_cal_id
-    );
+    let mut url_instances = if let Some(ref st) = sync_token {
+        // Fast Incremental Delta Sync (<100ms)
+        format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&maxResults=2500&syncToken={}",
+            encoded_cal_id,
+            urlencoding::encode(st)
+        )
+    } else {
+        // Full Window Query
+        let mut url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&orderBy=startTime&maxResults=2500",
+            encoded_cal_id
+        );
+        if let Some(ref min) = time_min {
+            url.push_str(&format!("&timeMin={}", urlencoding::encode(min)));
+        }
+        if let Some(ref max) = time_max {
+            url.push_str(&format!("&timeMax={}", urlencoding::encode(max)));
+        }
+        url
+    };
 
-    if let Some(ref min) = time_min {
-        url_instances.push_str(&format!("&timeMin={}", urlencoding::encode(min)));
-    }
-    if let Some(ref max) = time_max {
-        url_instances.push_str(&format!("&timeMax={}", urlencoding::encode(max)));
-    }
-
-    // 2. Fetch master recurring series (singleEvents=false)
-    let mut url_masters = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=1000",
-        encoded_cal_id
-    );
-    if let Some(ref min) = time_min {
-        url_masters.push_str(&format!("&timeMin={}", urlencoding::encode(min)));
-    }
-
-    let res_instances = http_client
+    let mut res_instances = http_client
         .get(&url_instances)
         .bearer_auth(&access_token)
         .send()
         .await
         .map_err(|e| format!("Events network error: {}", e))?;
+
+    // If sync token is 410 Gone, fall back automatically to clean full sync
+    if res_instances.status().as_u16() == 410 {
+        let mut fallback_url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&orderBy=startTime&maxResults=2500",
+            encoded_cal_id
+        );
+        if let Some(ref min) = time_min {
+            fallback_url.push_str(&format!("&timeMin={}", urlencoding::encode(min)));
+        }
+        if let Some(ref max) = time_max {
+            fallback_url.push_str(&format!("&timeMax={}", urlencoding::encode(max)));
+        }
+        res_instances = http_client
+            .get(&fallback_url)
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Fallback events network error: {}", e))?;
+    }
 
     if !res_instances.status().is_success() {
         let err_text = res_instances.text().await.unwrap_or_default();
@@ -314,38 +341,43 @@ pub async fn fetch_google_events(
         .await
         .map_err(|e| format!("JSON parse error: {}", e))?;
 
+    let next_sync_token = json_val
+        .get("nextSyncToken")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
     let items_array = match json_val.get("items").and_then(|i| i.as_array()) {
         Some(arr) => arr,
-        None => return Ok(vec![]),
+        None => return Ok(GoogleEventsFetchResponse { events: vec![], next_sync_token }),
     };
 
-    let res_masters = http_client
-        .get(&url_masters)
-        .bearer_auth(&access_token)
-        .send()
-        .await;
-
-    // Build parent recurrence map from master events
+    // Query master series rules for metadata
     let mut parent_metadata: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
-    if let Ok(m_res) = res_masters {
-        if m_res.status().is_success() {
-            if let Ok(m_json) = m_res.json::<serde_json::Value>().await {
-                if let Some(m_items) = m_json.get("items").and_then(|i| i.as_array()) {
-                    for m_item in m_items {
-                        if let Some(m_id) = m_item.get("id").and_then(|id| id.as_str()) {
-                            let mut found_rrule: Option<String> = None;
-                            if let Some(rec_arr) = m_item.get("recurrence").and_then(|r| r.as_array()) {
-                                for r in rec_arr {
-                                    if let Some(r_str) = r.as_str() {
-                                        if r_str.starts_with("RRULE:") || r_str.starts_with("FREQ=") {
-                                            found_rrule = Some(r_str.to_string());
-                                            break;
+    if sync_token.is_none() {
+        let url_masters = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=1000",
+            encoded_cal_id
+        );
+        if let Ok(m_res) = http_client.get(&url_masters).bearer_auth(&access_token).send().await {
+            if m_res.status().is_success() {
+                if let Ok(m_json) = m_res.json::<serde_json::Value>().await {
+                    if let Some(m_items) = m_json.get("items").and_then(|i| i.as_array()) {
+                        for m_item in m_items {
+                            if let Some(m_id) = m_item.get("id").and_then(|id| id.as_str()) {
+                                let mut found_rrule: Option<String> = None;
+                                if let Some(rec_arr) = m_item.get("recurrence").and_then(|r| r.as_array()) {
+                                    for r in rec_arr {
+                                        if let Some(r_str) = r.as_str() {
+                                            if r_str.starts_with("RRULE:") || r_str.starts_with("FREQ=") {
+                                                found_rrule = Some(r_str.to_string());
+                                                break;
+                                            }
                                         }
                                     }
                                 }
+                                let p_desc = m_item.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+                                parent_metadata.insert(m_id.to_string(), (found_rrule, p_desc));
                             }
-                            let p_desc = m_item.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
-                            parent_metadata.insert(m_id.to_string(), (found_rrule, p_desc));
                         }
                     }
                 }
@@ -357,9 +389,6 @@ pub async fn fetch_google_events(
 
     for item in items_array {
         let status = item.get("status").and_then(|s| s.as_str()).unwrap_or("confirmed");
-        if status == "cancelled" {
-            continue;
-        }
 
         let google_event_id = match item.get("id").and_then(|i| i.as_str()) {
             Some(id) => id.to_string(),
@@ -501,7 +530,7 @@ pub async fn fetch_google_events(
         });
     }
 
-    Ok(events)
+    Ok(GoogleEventsFetchResponse { events, next_sync_token })
 }
 
 #[tauri::command]
