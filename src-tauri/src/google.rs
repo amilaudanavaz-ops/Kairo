@@ -282,15 +282,13 @@ pub async fn fetch_google_events(
     let http_client = reqwest::Client::new();
     let encoded_cal_id = urlencoding::encode(&calendar_id);
 
-    let mut url_instances = if let Some(ref st) = sync_token {
-        // Fast Incremental Delta Sync (<100ms)
+    let url_instances = if let Some(ref st) = sync_token {
         format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&maxResults=2500&syncToken={}",
             encoded_cal_id,
             urlencoding::encode(st)
         )
     } else {
-        // Full Window Query
         let mut url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&orderBy=startTime&maxResults=2500",
             encoded_cal_id
@@ -311,7 +309,6 @@ pub async fn fetch_google_events(
         .await
         .map_err(|e| format!("Events network error: {}", e))?;
 
-    // If sync token is 410 Gone, fall back automatically to clean full sync
     if res_instances.status().as_u16() == 410 {
         let mut fallback_url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&orderBy=startTime&maxResults=2500",
@@ -351,7 +348,6 @@ pub async fn fetch_google_events(
         None => return Ok(GoogleEventsFetchResponse { events: vec![], next_sync_token }),
     };
 
-    // Query master series rules for metadata
     let mut parent_metadata: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
     if sync_token.is_none() {
         let url_masters = format!(
@@ -531,6 +527,27 @@ pub async fn fetch_google_events(
     }
 
     Ok(GoogleEventsFetchResponse { events, next_sync_token })
+}
+
+#[tauri::command]
+pub async fn sync_google_calendar(
+    access_token: String,
+) -> Result<(Vec<GoogleCalendarItem>, Vec<NormalizedGoogleEvent>), String> {
+    let calendars = fetch_google_calendars(access_token.clone()).await?;
+    let mut all_events = Vec::new();
+
+    for cal in &calendars {
+        match fetch_google_events(access_token.clone(), cal.id.clone(), None, None, None).await {
+            Ok(res) => {
+                all_events.extend(res.events);
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to fetch events for calendar {}: {}", cal.id, e);
+            }
+        }
+    }
+
+    Ok((calendars, all_events))
 }
 
 #[tauri::command]

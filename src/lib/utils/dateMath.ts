@@ -9,6 +9,7 @@ import {
   isToday,
   isBefore,
   startOfDay,
+  endOfDay,
   format,
   parseISO,
   set,
@@ -17,6 +18,7 @@ import {
   differenceInMinutes,
   addMinutes,
   addDays,
+  subDays,
   subWeeks,
   isValid
 } from 'date-fns';
@@ -37,7 +39,42 @@ export interface RecurrenceDisplay {
 }
 
 /**
- * Parses shorthand or RFC 5545 recurrence strings into descriptive labels.
+ * Normalizes an RFC 5545 UNTIL date string or ISO string into a JavaScript Date object.
+ */
+export function parseRRuleUntilDate(untilRaw?: string): Date | null {
+  if (!untilRaw) return null;
+  const clean = untilRaw.trim();
+
+  // Standard ISO representation (e.g., 2026-08-10 or 2026-08-10T23:59:59Z)
+  if (clean.includes('-')) {
+    const d = parseISO(clean);
+    return isValid(d) ? d : null;
+  }
+
+  // RFC 5545 compact representation (e.g., 20260810T235959Z or 20260810)
+  const match = clean.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z?)?$/i);
+  if (match) {
+    const [, y, m, d, hh, mm, ss] = match;
+    if (hh !== undefined) {
+      return new Date(Date.UTC(
+        parseInt(y, 10),
+        parseInt(m, 10) - 1,
+        parseInt(d, 10),
+        parseInt(hh, 10),
+        parseInt(mm, 10),
+        parseInt(ss, 10)
+      ));
+    } else {
+      return new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10), 23, 59, 59);
+    }
+  }
+
+  const fallback = new Date(clean);
+  return isValid(fallback) ? fallback : null;
+}
+
+/**
+ * Formats shorthand or RFC 5545 recurrence definitions into user-facing labels.
  */
 export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): RecurrenceDisplay {
   if (!rruleStr || rruleStr === 'none') {
@@ -123,7 +160,8 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
 }
 
 /**
- * Evaluates whether an event occurs on a target date.
+ * Evaluates whether an event occurs on a target calendar date.
+ * Strict recurrence boundary checks (untilDate, UNTIL, EXDATE) are enforced before frequency matching.
  */
 export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean {
   if (!event.startTime) return false;
@@ -143,29 +181,43 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
   const targetDateKey = format(targetDay, 'yyyy-MM-dd');
 
   // Event cannot occur before its initial start date
-  if (targetDayStart < eventDayStart) return false;
+  if (targetDayStart.getTime() < eventDayStart.getTime()) return false;
 
-  // Excluded occurrence dates
+  // Excluded occurrence dates (EXDATE)
   if (event.exdates && event.exdates.includes(targetDateKey)) {
     return false;
   }
 
-  // Recurrence cutoff date boundary
-  if (event.untilDate && targetDateKey > event.untilDate) {
-    return false;
+  // 1. Check standalone untilDate property
+  if (event.untilDate) {
+    const untilParsed = parseRRuleUntilDate(event.untilDate);
+    if (untilParsed && targetDayStart.getTime() > startOfDay(untilParsed).getTime()) {
+      return false;
+    }
   }
 
-  // Non-recurring or concrete instance (including all Google expanded instances)
-  if (!event.rrule || event.rrule === 'none' || Boolean(event.recurringEventId)) {
+  // 2. Check embedded UNTIL property in RRULE
+  if (event.rrule && event.rrule !== 'none') {
+    const untilMatch = event.rrule.match(/UNTIL=([^;]+)/i);
+    if (untilMatch && untilMatch[1]) {
+      const untilParsed = parseRRuleUntilDate(untilMatch[1]);
+      if (untilParsed && targetDayStart.getTime() > startOfDay(untilParsed).getTime()) {
+        return false;
+      }
+    }
+  }
+
+  // 3. Non-recurring or detached individual instances
+  if (event.recurringEventId || !event.rrule || event.rrule === 'none') {
     if (event.isAllDay) {
-      return targetDayStart >= eventDayStart && targetDayStart <= endDayStart;
+      return targetDayStart.getTime() >= eventDayStart.getTime() && targetDayStart.getTime() <= endDayStart.getTime();
     }
     return isSameDay(start, targetDay);
   }
 
-  // Local unsynced master recurring series projection
   const rrule = event.rrule;
 
+  // 4. Shorthand Rules
   if (rrule === 'daily') return true;
   if (rrule === 'weekday') {
     const day = targetDay.getDay();
@@ -189,7 +241,7 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
     return start.getMonth() === targetDay.getMonth() && start.getDate() === targetDay.getDate();
   }
 
-  // RFC 5545 Rule Evaluation
+  // 5. RFC 5545 Key-Value Rule Evaluation
   const clean = rrule.replace(/^RRULE:/i, '').trim();
   const parts: Record<string, string> = {};
   for (const p of clean.split(';')) {
@@ -269,29 +321,16 @@ export function generateMonthGrid(
   }));
 }
 
+/**
+ * Projects matching event instances for a given day.
+ */
 export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEvent[] {
   const dateKey = format(day, 'yyyy-MM-dd');
 
-  // Collect all recurring parent IDs that have active expanded instances
-  const expandedParentIds = new Set<string>();
-  for (const ev of events) {
-    if (ev.recurringEventId) {
-      expandedParentIds.add(ev.recurringEventId);
-    }
-  }
-
   return events
-    .filter((event) => {
-      // If concrete instances exist for this parent, do not duplicate-project the parent
-      if (event.googleEventId && expandedParentIds.has(event.googleEventId)) {
-        return false;
-      }
-      return eventOccursOnDay(event, day);
-    })
+    .filter((event) => eventOccursOnDay(event, day))
     .map((event) => {
-      const isSingleInstance = !event.rrule || event.rrule === 'none' || Boolean(event.recurringEventId);
-
-      if (isSingleInstance) {
+      if (event.recurringEventId || !event.rrule || event.rrule === 'none') {
         return {
           ...event,
           occurrenceDate: dateKey
@@ -319,6 +358,9 @@ export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEve
     });
 }
 
+/**
+ * Creates an updated event projection with shifted start and end times.
+ */
 export function moveEventDate(event: CalendarEvent, targetDate: Date): CalendarEvent {
   const originalStart = parseISO(event.startTime);
   const originalEnd = parseISO(event.endTime);

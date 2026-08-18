@@ -58,7 +58,7 @@ class ContextMenuStore {
           ? `${format(oldStart, 'MMM d, h:mm a')}–${format(oldEnd, 'h:mm a')}`
           : `${format(oldStart, 'h:mm a')}–${format(oldEnd, 'h:mm a')}`;
 
-        const newFormatted = oldDateKey !== newDateKey
+        const newFormatted = oldDateKey !== newDateKey 
           ? `${format(newStart, 'MMM d, h:mm a')}–${format(newEnd, 'h:mm a')}`
           : `${format(newStart, 'h:mm a')}–${format(newEnd, 'h:mm a')}`;
 
@@ -133,7 +133,7 @@ class ContextMenuStore {
           id: originalEvent.id
         });
       } else if (scope === 'this') {
-        // 1. Add date to master series exdates
+        // 1. Exclude this specific date occurrence from master series
         const currentExdates = originalEvent.exdates || [];
         if (!currentExdates.includes(targetDateKey)) {
           eventStore.updateEvent({
@@ -141,7 +141,7 @@ class ContextMenuStore {
             exdates: [...currentExdates, targetDateKey]
           });
         }
-        // 2. Insert modified instance as a detached event
+        // 2. Insert modified occurrence as a standalone detached event
         const detachedEvent: CalendarEvent = {
           ...updatedEvent,
           id: 'evt_' + Date.now(),
@@ -152,24 +152,33 @@ class ContextMenuStore {
         };
         eventStore.addEvent(detachedEvent);
       } else if (scope === 'following') {
+        // If updating from the first event in the series, update the master directly
         if (isSameDay(masterStart, targetDate)) {
           eventStore.updateEvent({
             ...updatedEvent,
             id: originalEvent.id
           });
         } else {
-          const cutoffDateKey = format(subDays(targetDate, 1), 'yyyy-MM-dd');
+          // Truncate original series with both untilDate boundary and embedded UNTIL in RRULE
+          const cutoffDate = subDays(targetDate, 1);
+          const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
+          const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
+          const cleanRRule = originalEvent.rrule ? originalEvent.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
+
           eventStore.updateEvent({
             ...originalEvent,
-            untilDate: cutoffDateKey
+            untilDate: cutoffDateKey,
+            rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
           });
 
+          // Create new recurring series beginning from the target date
           const followingSeries: CalendarEvent = {
             ...updatedEvent,
             id: 'evt_' + Date.now(),
             recurringEventId: undefined,
             exdates: [],
-            untilDate: undefined
+            untilDate: undefined,
+            rrule: cleanRRule
           };
           eventStore.addEvent(followingSeries);
         }
@@ -189,10 +198,15 @@ class ContextMenuStore {
         if (isSameDay(masterStart, targetDate)) {
           eventStore.deleteEvent(originalEvent.id);
         } else {
-          const cutoffDateKey = format(subDays(targetDate, 1), 'yyyy-MM-dd');
+          const cutoffDate = subDays(targetDate, 1);
+          const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
+          const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
+          const cleanRRule = originalEvent.rrule ? originalEvent.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
+
           eventStore.updateEvent({
             ...originalEvent,
-            untilDate: cutoffDateKey
+            untilDate: cutoffDateKey,
+            rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
           });
         }
       }
@@ -304,14 +318,8 @@ class ContextMenuStore {
   setColorOverride(colorHex: string | undefined) {
     if (!this.targetEvent) return;
     const updated = { ...this.targetEvent, colorOverride: colorHex };
-    const isRecurring = Boolean((this.targetEvent.rrule && this.targetEvent.rrule !== 'none') || this.targetEvent.recurringEventId || this.targetEvent.isRecurringInstance);
-
-    if (isRecurring) {
-      const masterEvent = eventStore.events.find(
-        (e: CalendarEvent) => (this.targetEvent?.recurringEventId && (e.id === this.targetEvent.recurringEventId || e.googleEventId === this.targetEvent.recurringEventId)) || e.id === this.targetEvent?.id
-      ) || this.targetEvent;
-
-      this.promptRecurringAction('update', masterEvent, updated, this.targetEvent.occurrenceDate, this.targetEvent);
+    if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
+      this.promptRecurringAction('update', this.targetEvent, updated, this.targetEvent.occurrenceDate, this.targetEvent);
     } else {
       eventStore.updateEvent(updated);
     }
@@ -344,19 +352,8 @@ class ContextMenuStore {
 
   delete() {
     if (!this.targetEvent) return;
-    const isRecurring = Boolean(
-      (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') || 
-      this.targetEvent.recurringEventId || 
-      this.targetEvent.isRecurringInstance
-    );
-
-    if (isRecurring) {
-      const masterEvent = eventStore.events.find(
-        (e: CalendarEvent) => (this.targetEvent?.recurringEventId && (e.id === this.targetEvent.recurringEventId || e.googleEventId === this.targetEvent.recurringEventId)) || e.id === this.targetEvent?.id
-      ) || this.targetEvent;
-
-      const dateKey = this.targetEvent.occurrenceDate || format(parseISO(this.targetEvent.startTime), 'yyyy-MM-dd');
-      this.promptRecurringAction('delete', masterEvent, undefined, dateKey, this.targetEvent);
+    if (this.targetEvent.rrule && this.targetEvent.rrule !== 'none') {
+      this.promptRecurringAction('delete', this.targetEvent, undefined, this.targetEvent.occurrenceDate, this.targetEvent);
     } else {
       eventStore.deleteEvent(this.targetEvent.id);
       if (calendarState.selectedEventId === this.targetEvent.id) {
