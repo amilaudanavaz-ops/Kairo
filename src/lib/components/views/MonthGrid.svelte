@@ -37,7 +37,7 @@
 
   let weekStartsOnNumber = $derived<0 | 1>(settingsStore.startWeekOn === 'Monday' ? 1 : 0);
 
-  // Top visible week anchor — initialized by default to the 1st week of the current month
+  // Initialized to the 1st week of the current month by default
   let rollingAnchor = $state<Date>(
     startOfWeek(startOfMonth(calendarState.currentDate), { 
       weekStartsOn: settingsStore.startWeekOn === 'Monday' ? 1 : 0 
@@ -46,7 +46,7 @@
 
   let isWheelScrolling = false;
 
-  // Synchronize anchor when navigating externally (e.g. Today button, MiniCalendar click, Next/Prev arrows)
+  // Sync anchor when navigating via Today button, MiniCalendar, or TitleBar arrows
   $effect(() => {
     const activeDate = calendarState.currentDate;
     if (isWheelScrolling) return;
@@ -109,7 +109,6 @@
 
     const primaryCal = calendarState.calendars.find((c: CalendarCategory) => c.isPrimary) || calendarState.calendars[0];
 
-    // In-memory draft without premature database insertion
     const draftEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
       calendarId: primaryCal?.id || '1',
@@ -174,7 +173,6 @@
           rollingAnchor = subWeeks(rollingAnchor, 1);
         }
 
-        // Keep dominant title bar month in sync with rolling viewport
         const dominantCenterDate = addDays(rollingAnchor, 17);
         calendarState.setDate(dominantCenterDate);
 

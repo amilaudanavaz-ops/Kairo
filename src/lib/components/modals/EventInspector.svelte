@@ -88,7 +88,7 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
-  // Live Location Suggestions via OpenStreetMap Photon
+  // Live Location Suggestions via OpenStreetMap Photon API
   let liveLocations = $state<LocationSuggestion[]>([]);
   let locationFetchTimeout: number | undefined;
 
@@ -242,42 +242,32 @@
 
   let repeatOptions = $derived.by(() => {
     if (!draft) return [];
-    const d = draft.originalStartTime ? parseISO(draft.originalStartTime) : parseISO(draft.startTime);
+    const d = draft.startTime ? parseISO(draft.startTime) : new Date();
     const dayName = format(d, 'EEE');
     const dayOfMonth = format(d, 'do');
     const monthDay = format(d, 'MMM d');
     const weekNum = ['1st', '2nd', '3rd', '4th', '5th'][getWeekOfMonth(d) - 1] || 'last';
 
-    const list = [
+    return [
       { id: 'none', label: 'Does not repeat' },
       { id: 'daily', label: 'Every day' },
       { id: 'weekday', label: 'Every weekday', sub: 'Mon – Fri' },
-      { id: 'weekly', label: `Every week`, sub: `on ${dayName}` },
-      { id: 'biweekly', label: `Every 2 weeks`, sub: `on ${dayName}` },
-      { id: 'monthly_date', label: `Every month`, sub: `on the ${dayOfMonth}` },
-      { id: 'monthly_day', label: `Every month`, sub: `on the ${weekNum} ${dayName}` },
-      { id: 'yearly', label: `Every year`, sub: `on ${monthDay}` }
+      { id: 'weekly', label: 'Every week', sub: `on ${dayName}` },
+      { id: 'biweekly', label: 'Every 2 weeks', sub: `on ${dayName}` },
+      { id: 'monthly_date', label: 'Every month', sub: `on the ${dayOfMonth}` },
+      { id: 'monthly_day', label: 'Every month', sub: `on the ${weekNum} ${dayName}` },
+      { id: 'yearly', label: 'Every year', sub: `on ${monthDay}` }
     ];
-
-    if (draft.rrule && draft.rrule !== 'none') {
-      const parsed = formatRRuleLabel(draft.rrule, d);
-      const exists = list.some(o => o.id === parsed.id || (o.label === parsed.label && o.sub === parsed.sub));
-      if (!exists && parsed.id !== 'none') {
-        list.push({ id: draft.rrule, label: parsed.label, sub: parsed.sub });
-      }
-    }
-
-    return list;
   });
 
   let parsedRRuleDisplay = $derived.by(() => {
     if (!draft) return { id: 'none', label: 'Does not repeat' };
+    const refDate = draft.startTime ? parseISO(draft.startTime) : new Date();
     if (draft.rrule && draft.rrule !== 'none') {
-      const refDate = draft.originalStartTime ? parseISO(draft.originalStartTime) : parseISO(draft.startTime);
       return formatRRuleLabel(draft.rrule, refDate);
     }
     if (draft.recurringEventId || draft.isRecurringInstance) {
-      return { id: 'weekly', label: 'Every week', sub: `on ${format(parseISO(draft.startTime), 'EEE')}` };
+      return { id: 'weekly', label: 'Every week', sub: `on ${format(refDate, 'EEE')}` };
     }
     return { id: 'none', label: 'Does not repeat' };
   });
@@ -608,6 +598,7 @@
         (draft.location && draft.location.trim().length > 0) ||
         (draft.participants && draft.participants.length > 0);
 
+      // Only insert into store & SQLite if the user intentionally added content
       if (hasMeaningfulContent) {
         eventStore.addEvent(draft);
       }
@@ -794,7 +785,7 @@
       />
 
       <div class="flex flex-col gap-1 shrink-0">
-        <div class="flex items-center gap-2 text-xs">
+        <div class="flex items-center gap-1.5 text-xs">
           <Clock size={14} class="text-zinc-400 shrink-0" />
           
           {#if !draft.isAllDay}
@@ -806,7 +797,7 @@
                 onfocus={() => !isReadOnly && (activeSideMenu = 'start_time')}
                 onblur={() => applyCustomTime(true, startTimeInput)}
                 onkeydown={(e) => e.key === 'Enter' && applyCustomTime(true, startTimeInput)}
-                class="w-[72px] shrink-0 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-1 py-0.5 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors text-center"
+                class="w-[68px] shrink-0 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-1 py-0.5 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors text-center"
               />
               <span class="text-zinc-500 text-xs shrink-0">→</span>
               
@@ -817,19 +808,19 @@
                 onfocus={() => !isReadOnly && (activeSideMenu = 'end_time')}
                 onblur={() => applyCustomTime(false, endTimeInput)}
                 onkeydown={(e) => e.key === 'Enter' && applyCustomTime(false, endTimeInput)}
-                class="w-[72px] shrink-0 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-1 py-0.5 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors text-center"
+                class="w-[68px] shrink-0 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-1 py-0.5 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors text-center"
               />
             </div>
 
             {#if durationText}
-              <span class="text-xs font-medium text-zinc-400 shrink-0 whitespace-nowrap ml-0.5">{durationText}</span>
+              <span class="text-xs font-medium text-zinc-400 shrink-0 whitespace-nowrap ml-1">{durationText}</span>
             {/if}
           {:else}
             <span class="text-zinc-300 font-semibold text-xs py-0.5">All Day</span>
           {/if}
         </div>
 
-        <div class="pl-5.5">
+        <div class="pl-5">
           <input
             type="text"
             bind:value={dateInput}
@@ -890,7 +881,7 @@
           class="flex items-center gap-2 text-xs text-zinc-300 {isReadOnly ? 'cursor-default' : 'hover:text-white cursor-pointer'} truncate flex-1"
         >
           <Repeat size={13} class="shrink-0 text-zinc-400" />
-          <span class="truncate">{repeatLabel}</span>
+          <span class="truncate font-medium">{repeatLabel}</span>
         </button>
 
         {#if parsedRRuleDisplay.id !== 'none' || draft.recurringEventId || draft.isRecurringInstance}

@@ -17,7 +17,8 @@ import {
   differenceInMinutes,
   addMinutes,
   addDays,
-  subWeeks
+  subWeeks,
+  isValid
 } from 'date-fns';
 import type { CalendarEvent } from '../../types/event';
 
@@ -36,14 +37,29 @@ export interface RecurrenceDisplay {
 }
 
 /**
- * Standard RFC 5545 RRULE Parser & Formatter.
- * Translates raw Google RRULE definitions into Notion-style labels.
+ * Parses shorthand or RFC 5545 recurrence strings into descriptive labels.
  */
 export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): RecurrenceDisplay {
   if (!rruleStr || rruleStr === 'none') {
     return { id: 'none', label: 'Does not repeat' };
   }
 
+  const d = referenceDate && isValid(referenceDate) ? referenceDate : new Date();
+  const dayName = format(d, 'EEE');
+  const dayOfMonth = format(d, 'do');
+  const monthDay = format(d, 'MMM d');
+  const weekNum = ['1st', '2nd', '3rd', '4th', '5th'][getWeekOfMonth(d) - 1] || 'last';
+
+  // 1. Shorthand Recurrence Identifiers
+  if (rruleStr === 'daily') return { id: 'daily', label: 'Every day' };
+  if (rruleStr === 'weekday') return { id: 'weekday', label: 'Every weekday', sub: 'Mon – Fri' };
+  if (rruleStr === 'weekly') return { id: 'weekly', label: 'Every week', sub: `on ${dayName}` };
+  if (rruleStr === 'biweekly') return { id: 'biweekly', label: 'Every 2 weeks', sub: `on ${dayName}` };
+  if (rruleStr === 'monthly_date' || rruleStr === 'monthly') return { id: 'monthly_date', label: 'Every month', sub: `on the ${dayOfMonth}` };
+  if (rruleStr === 'monthly_day') return { id: 'monthly_day', label: 'Every month', sub: `on the ${weekNum} ${dayName}` };
+  if (rruleStr === 'yearly') return { id: 'yearly', label: 'Every year', sub: `on ${monthDay}` };
+
+  // 2. RFC 5545 String Parsing
   const clean = rruleStr.replace(/^RRULE:/i, '').trim();
   const parts: Record<string, string> = {};
   for (const p of clean.split(';')) {
@@ -66,31 +82,30 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
 
   if (freq === 'DAILY') {
     if (interval === 1) return { id: 'daily', label: 'Every day' };
-    return { id: 'daily', label: `Every ${interval} days` };
+    return { id: `every_${interval}_days`, label: `Every ${interval} days` };
   }
 
   if (freq === 'WEEKLY') {
     if (byday === 'MO,TU,WE,TH,FR') {
       return { id: 'weekday', label: 'Every weekday', sub: 'Mon – Fri' };
     }
-
-    const dayNames = byday.split(',').filter(Boolean).map(code => daysMap[code] || code);
-    const dayText = dayNames.join(', ');
+    const formattedDays = byday
+      ? byday.split(',').map(s => s.trim()).filter(Boolean).map(code => daysMap[code] || code).join(', ')
+      : dayName;
 
     if (interval === 1) {
-      return { id: 'weekly', label: 'Every week', sub: dayText ? `on ${dayText}` : undefined };
+      return { id: 'weekly', label: 'Every week', sub: `on ${formattedDays}` };
     }
     if (interval === 2) {
-      return { id: 'biweekly', label: 'Every 2 weeks', sub: dayText ? `on ${dayText}` : undefined };
+      return { id: 'biweekly', label: 'Every 2 weeks', sub: `on ${formattedDays}` };
     }
-    return { id: `every_${interval}_weeks`, label: `Every ${interval} weeks`, sub: dayText ? `on ${dayText}` : undefined };
+    return { id: `every_${interval}_weeks`, label: `Every ${interval} weeks`, sub: `on ${formattedDays}` };
   }
 
   if (freq === 'MONTHLY') {
     const match = byday.match(/^(-?\d+)?([A-Z]{2})$/);
     if (match && match[2] && daysMap[match[2]]) {
-      const posNum = match[1] || '1';
-      const posStr = posMap[posNum] || `${posNum}th`;
+      const posStr = posMap[match[1] || '1'] || `${match[1]}th`;
       const dayStr = daysMap[match[2]];
       return { id: 'monthly_day', label: 'Every month', sub: `on the ${posStr} ${dayStr}` };
     }
@@ -101,23 +116,143 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
   }
 
   if (freq === 'YEARLY') {
-    return { id: 'yearly', label: 'Every year' };
+    return { id: 'yearly', label: 'Every year', sub: `on ${monthDay}` };
   }
 
-  return { id: clean, label: 'Repeats (Recurring Series)' };
+  return { id: 'weekly', label: 'Every week', sub: `on ${dayName}` };
 }
 
 /**
- * Continuous Rolling Week Grid Generator.
- * Generates 7 rows (1 buffer row above, 5 visible rows, 1 buffer row below)
- * anchored to the start of the active week.
+ * Evaluates whether an event occurs on a target date.
+ */
+export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean {
+  if (!event.startTime) return false;
+  let start: Date;
+  let end: Date;
+  try {
+    start = parseISO(event.startTime);
+    end = event.endTime ? parseISO(event.endTime) : start;
+    if (!isValid(start)) return false;
+  } catch {
+    return false;
+  }
+
+  const targetDayStart = startOfDay(targetDay);
+  const eventDayStart = startOfDay(start);
+  const endDayStart = startOfDay(end);
+  const targetDateKey = format(targetDay, 'yyyy-MM-dd');
+
+  // Event cannot occur before its initial start date
+  if (targetDayStart < eventDayStart) return false;
+
+  // Excluded occurrence dates
+  if (event.exdates && event.exdates.includes(targetDateKey)) {
+    return false;
+  }
+
+  // Recurrence cutoff date (Strict boundary enforcement)
+  if (event.untilDate && targetDateKey > event.untilDate) {
+    return false;
+  }
+
+  // Non-recurring event
+  if (event.recurringEventId || !event.rrule || event.rrule === 'none') {
+    if (event.isAllDay) {
+      return targetDayStart >= eventDayStart && targetDayStart <= endDayStart;
+    }
+    return isSameDay(start, targetDay);
+  }
+
+  const rrule = event.rrule;
+
+  // Shorthand rules
+  if (rrule === 'daily') return true;
+  if (rrule === 'weekday') {
+    const day = targetDay.getDay();
+    return day >= 1 && day <= 5;
+  }
+  if (rrule === 'weekly') {
+    return start.getDay() === targetDay.getDay();
+  }
+  if (rrule === 'biweekly') {
+    if (start.getDay() !== targetDay.getDay()) return false;
+    const diffWeeks = Math.abs(differenceInWeeks(targetDayStart, eventDayStart));
+    return diffWeeks % 2 === 0;
+  }
+  if (rrule === 'monthly_date' || rrule === 'monthly') {
+    return start.getDate() === targetDay.getDate();
+  }
+  if (rrule === 'monthly_day') {
+    return start.getDay() === targetDay.getDay() && getWeekOfMonth(start) === getWeekOfMonth(targetDay);
+  }
+  if (rrule === 'yearly') {
+    return start.getMonth() === targetDay.getMonth() && start.getDate() === targetDay.getDate();
+  }
+
+  // RFC 5545 Rule Evaluation
+  const clean = rrule.replace(/^RRULE:/i, '').trim();
+  const parts: Record<string, string> = {};
+  for (const p of clean.split(';')) {
+    const [k, v] = p.split('=');
+    if (k && v) parts[k.toUpperCase()] = v.toUpperCase();
+  }
+
+  const freq = parts['FREQ'] || '';
+  const interval = parseInt(parts['INTERVAL'] || '1', 10);
+  const byday = parts['BYDAY'] || '';
+  const bymonthday = parts['BYMONTHDAY'] || '';
+
+  const dayCodes = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+  const targetDayCode = dayCodes[targetDay.getDay()];
+
+  if (freq === 'DAILY') {
+    const diffDays = Math.round((targetDayStart.getTime() - eventDayStart.getTime()) / (1000 * 60 * 60 * 24));
+    return diffDays % interval === 0;
+  }
+
+  if (freq === 'WEEKLY') {
+    const diffWeeks = Math.abs(differenceInWeeks(targetDayStart, eventDayStart));
+    if (diffWeeks % interval !== 0) return false;
+
+    if (byday) {
+      const allowedDays = byday.split(',').map(s => s.trim().toUpperCase());
+      return allowedDays.includes(targetDayCode);
+    }
+    return start.getDay() === targetDay.getDay();
+  }
+
+  if (freq === 'MONTHLY') {
+    if (bymonthday) {
+      return targetDay.getDate() === parseInt(bymonthday, 10);
+    }
+    if (byday) {
+      const match = byday.match(/^(-?\d+)?([A-Z]{2})$/);
+      if (match) {
+        const targetCode = match[2];
+        const pos = parseInt(match[1] || '1', 10);
+        if (targetDayCode !== targetCode) return false;
+        return getWeekOfMonth(targetDay) === pos;
+      }
+    }
+    return start.getDate() === targetDay.getDate();
+  }
+
+  if (freq === 'YEARLY') {
+    return start.getMonth() === targetDay.getMonth() && start.getDate() === targetDay.getDate();
+  }
+
+  return isSameDay(start, targetDay);
+}
+
+/**
+ * Continuous rolling month grid matrix generator.
  */
 export function generateMonthGrid(
-  activeDate: Date, 
+  anchorDate: Date, 
   weekStartsOn: 0 | 1 = 0, 
   totalWeeks: number = 7
 ): DayCell[] {
-  const visibleStart = startOfWeek(activeDate, { weekStartsOn });
+  const visibleStart = startOfWeek(anchorDate, { weekStartsOn });
   const gridStart = subWeeks(visibleStart, 1);
   const gridEnd = addDays(gridStart, totalWeeks * 7 - 1);
   const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
@@ -134,73 +269,13 @@ export function generateMonthGrid(
   }));
 }
 
-/**
- * Evaluates whether an event occurs on a target day.
- */
-export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean {
-  const start = parseISO(event.startTime);
-  const end = parseISO(event.endTime);
-  const targetDayStart = new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate());
-  const eventDayStart = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-  const endDayStart = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-  const targetDateKey = format(targetDay, 'yyyy-MM-dd');
-
-  if (targetDayStart < eventDayStart) return false;
-
-  if (event.exdates && event.exdates.includes(targetDateKey)) {
-    return false;
-  }
-
-  if (event.untilDate && targetDateKey >= event.untilDate) {
-    return false;
-  }
-
-  if (event.recurringEventId || event.googleEventId || !event.rrule || event.rrule === 'none') {
-    if (event.isAllDay) {
-      return targetDayStart >= eventDayStart && targetDayStart <= endDayStart;
-    }
-    return isSameDay(start, targetDay);
-  }
-
-  if (event.rrule === 'daily') return true;
-
-  if (event.rrule === 'weekday') {
-    const day = targetDay.getDay();
-    return day >= 1 && day <= 5;
-  }
-
-  if (event.rrule === 'weekly') {
-    return start.getDay() === targetDay.getDay();
-  }
-
-  if (event.rrule === 'biweekly') {
-    if (start.getDay() !== targetDay.getDay()) return false;
-    const diffWeeks = Math.abs(differenceInWeeks(targetDay, start));
-    return diffWeeks % 2 === 0;
-  }
-
-  if (event.rrule === 'monthly_date' || event.rrule === 'monthly') {
-    return start.getDate() === targetDay.getDate();
-  }
-
-  if (event.rrule === 'monthly_day') {
-    return start.getDay() === targetDay.getDay() && getWeekOfMonth(start) === getWeekOfMonth(targetDay);
-  }
-
-  if (event.rrule === 'yearly') {
-    return start.getMonth() === targetDay.getMonth() && start.getDate() === targetDay.getDate();
-  }
-
-  return isSameDay(start, targetDay);
-}
-
 export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEvent[] {
   const dateKey = format(day, 'yyyy-MM-dd');
 
   return events
     .filter((event) => eventOccursOnDay(event, day))
     .map((event) => {
-      if (event.recurringEventId || event.googleEventId || !event.rrule || event.rrule === 'none') {
+      if (event.recurringEventId || !event.rrule || event.rrule === 'none') {
         return {
           ...event,
           occurrenceDate: dateKey
@@ -208,8 +283,8 @@ export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEve
       }
 
       const origStart = parseISO(event.startTime);
-      const origEnd = parseISO(event.endTime);
-      const duration = differenceInMinutes(origEnd, origStart);
+      const origEnd = event.endTime ? parseISO(event.endTime) : origStart;
+      const duration = Math.max(15, differenceInMinutes(origEnd, origStart));
 
       const newStart = set(day, {
         hours: origStart.getHours(),
@@ -226,26 +301,4 @@ export function getEventsForDay(events: CalendarEvent[], day: Date): CalendarEve
         isRecurringInstance: true
       };
     });
-}
-
-export function moveEventDate(event: CalendarEvent, targetDate: Date): CalendarEvent {
-  const originalStart = parseISO(event.startTime);
-  const originalEnd = parseISO(event.endTime);
-
-  const newStart = set(targetDate, {
-    hours: originalStart.getHours(),
-    minutes: originalStart.getMinutes(),
-    seconds: originalStart.getSeconds()
-  });
-
-  const durationMs = originalEnd.getTime() - originalStart.getTime();
-  const newEnd = new Date(newStart.getTime() + durationMs);
-
-  return {
-    ...event,
-    startTime: newStart.toISOString(),
-    endTime: newEnd.toISOString(),
-    syncStatus: 'pending_update',
-    updatedAt: new Date().toISOString()
-  };
 }

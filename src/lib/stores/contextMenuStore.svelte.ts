@@ -1,7 +1,7 @@
 import type { CalendarEvent, CalendarCategory } from '../../types/event';
 import { eventStore } from './eventStore.svelte';
 import { calendarState } from './calendarState.svelte';
-import { format, parseISO, setHours, setMinutes } from 'date-fns';
+import { format, parseISO, setHours, setMinutes, subDays, isSameDay } from 'date-fns';
 
 export type ContextMenuMode = 'event' | 'cell' | 'calendar';
 
@@ -119,6 +119,93 @@ class ContextMenuStore {
     this.isRecurrenceModalOpen = true;
   }
 
+  executeRecurringAction(scope: 'this' | 'following' | 'all') {
+    if (!this.pendingRecurringAction) return;
+    const { action, originalEvent, updatedEvent, occurrenceDate } = this.pendingRecurringAction;
+    const targetDateKey = occurrenceDate || format(parseISO(originalEvent.startTime), 'yyyy-MM-dd');
+    const targetDate = parseISO(targetDateKey);
+    const masterStart = parseISO(originalEvent.startTime);
+
+    if (action === 'update' && updatedEvent) {
+      if (scope === 'all') {
+        eventStore.updateEvent({
+          ...updatedEvent,
+          id: originalEvent.id
+        });
+      } else if (scope === 'this') {
+        // 1. Add date to master series exdates
+        const currentExdates = originalEvent.exdates || [];
+        if (!currentExdates.includes(targetDateKey)) {
+          eventStore.updateEvent({
+            ...originalEvent,
+            exdates: [...currentExdates, targetDateKey]
+          });
+        }
+        // 2. Insert modified instance as a non-recurring detached event
+        const detachedEvent: CalendarEvent = {
+          ...updatedEvent,
+          id: 'evt_' + Date.now(),
+          recurringEventId: originalEvent.id,
+          rrule: 'none',
+          exdates: [],
+          untilDate: undefined
+        };
+        eventStore.addEvent(detachedEvent);
+      } else if (scope === 'following') {
+        // If moving the 1st occurrence, update the master directly
+        if (isSameDay(masterStart, targetDate)) {
+          eventStore.updateEvent({
+            ...updatedEvent,
+            id: originalEvent.id
+          });
+        } else {
+          // Set cutoff date strictly BEFORE the split point
+          const cutoffDateKey = format(subDays(targetDate, 1), 'yyyy-MM-dd');
+          eventStore.updateEvent({
+            ...originalEvent,
+            untilDate: cutoffDateKey
+          });
+
+          // Insert new recurring series starting from new date
+          const followingSeries: CalendarEvent = {
+            ...updatedEvent,
+            id: 'evt_' + Date.now(),
+            recurringEventId: undefined,
+            exdates: [],
+            untilDate: undefined
+          };
+          eventStore.addEvent(followingSeries);
+        }
+      }
+    } else if (action === 'delete') {
+      if (scope === 'all') {
+        eventStore.deleteEvent(originalEvent.id);
+      } else if (scope === 'this') {
+        const currentExdates = originalEvent.exdates || [];
+        if (!currentExdates.includes(targetDateKey)) {
+          eventStore.updateEvent({
+            ...originalEvent,
+            exdates: [...currentExdates, targetDateKey]
+          });
+        }
+      } else if (scope === 'following') {
+        if (isSameDay(masterStart, targetDate)) {
+          eventStore.deleteEvent(originalEvent.id);
+        } else {
+          const cutoffDateKey = format(subDays(targetDate, 1), 'yyyy-MM-dd');
+          eventStore.updateEvent({
+            ...originalEvent,
+            untilDate: cutoffDateKey
+          });
+        }
+      }
+    }
+
+    this.isRecurrenceModalOpen = false;
+    this.pendingRecurringAction = null;
+    calendarState.closeInspector();
+  }
+
   openForEvent(e: MouseEvent, event: CalendarEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -172,7 +259,7 @@ class ContextMenuStore {
 
     const primaryCal = calendarState.calendars.find(c => c.isPrimary) || calendarState.calendars[0];
 
-    const newEvent: CalendarEvent = {
+    const draftEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
       calendarId: primaryCal?.id || '1',
       title: '',
@@ -189,8 +276,7 @@ class ContextMenuStore {
       updatedAt: new Date().toISOString()
     };
 
-    eventStore.addEvent(newEvent);
-    calendarState.openInspector(newEvent, new DOMRect(this.x, this.y, 20, 20), true);
+    calendarState.openInspector(draftEvent, new DOMRect(this.x, this.y, 20, 20), true);
     this.close();
   }
 
