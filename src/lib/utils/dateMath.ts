@@ -7,6 +7,8 @@ import {
   isSameMonth,
   isSameDay,
   isToday,
+  isBefore,
+  startOfDay,
   format,
   parseISO,
   set,
@@ -14,7 +16,8 @@ import {
   getWeekOfMonth,
   differenceInMinutes,
   addMinutes,
-  addDays
+  addDays,
+  subWeeks
 } from 'date-fns';
 import type { CalendarEvent } from '../../types/event';
 
@@ -22,6 +25,7 @@ export interface DayCell {
   date: Date;
   isCurrentMonth: boolean;
   isCurrentDay: boolean;
+  isPast: boolean;
   dateKey: string;
 }
 
@@ -104,25 +108,28 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
 }
 
 /**
- * Continuous Rolling Week Month Grid Generator.
- * Generates a rolling 5-week window anchored to the start of the week.
+ * Continuous Rolling Week Grid Generator.
+ * Generates 7 rows (1 buffer row above, 5 visible rows, 1 buffer row below)
+ * anchored to the start of the active week.
  */
 export function generateMonthGrid(
   activeDate: Date, 
   weekStartsOn: 0 | 1 = 0, 
-  numWeeks: number = 5
+  totalWeeks: number = 7
 ): DayCell[] {
-  const gridStart = startOfWeek(activeDate, { weekStartsOn });
-  const gridEnd = addDays(gridStart, numWeeks * 7 - 1);
+  const visibleStart = startOfWeek(activeDate, { weekStartsOn });
+  const gridStart = subWeeks(visibleStart, 1);
+  const gridEnd = addDays(gridStart, totalWeeks * 7 - 1);
   const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
 
-  // Dominant month is calculated from the middle visible row (Row 3)
-  const middleRowDate = addDays(gridStart, 17);
+  const middleRowDate = addDays(visibleStart, 17);
+  const todayStart = startOfDay(new Date());
 
   return days.map((date) => ({
     date,
     isCurrentMonth: isSameMonth(date, middleRowDate),
     isCurrentDay: isToday(date),
+    isPast: isBefore(startOfDay(date), todayStart),
     dateKey: format(date, 'yyyy-MM-dd')
   }));
 }

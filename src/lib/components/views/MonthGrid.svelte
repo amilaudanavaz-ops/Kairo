@@ -7,7 +7,7 @@
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
   import { generateMonthGrid } from '../../utils/dateMath';
-  import type { CalendarEvent } from '../../../types/event';
+  import type { CalendarEvent, CalendarCategory } from '../../../types/event';
 
   let activeWeekDays = $derived.by(() => {
     let days = settingsStore.startWeekOn === 'Monday'
@@ -15,42 +15,49 @@
       : ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
     if (!settingsStore.showWeekends) {
-      days = days.filter(d => d !== 'SUN' && d !== 'SAT');
+      days = days.filter((d: string) => d !== 'SUN' && d !== 'SAT');
     }
     return days;
   });
 
   const MAX_VISIBLE_EVENTS = 3;
+  const TOTAL_BUFFER_ROWS = 7;
 
   let rawGridCells = $derived.by(() => {
     const weekStartsOn = settingsStore.startWeekOn === 'Monday' ? 1 : 0;
-    return generateMonthGrid(calendarState.currentDate, weekStartsOn, 5);
+    return generateMonthGrid(calendarState.currentDate, weekStartsOn, TOTAL_BUFFER_ROWS);
   });
   
   let gridCells = $derived.by(() => {
     if (settingsStore.showWeekends) return rawGridCells;
-    return rawGridCells.filter(c => {
+    return rawGridCells.filter((c: any) => {
       const day = c.date.getDay();
       return day !== 0 && day !== 6;
     });
   });
 
   let colsCount = $derived(settingsStore.showWeekends ? 7 : 5);
-  let totalWeeks = $derived(Math.ceil(gridCells.length / colsCount));
+
+  let translateYPercent = $state(0);
+  let isRolling = $state(false);
 
   function getEventToken(event: CalendarEvent) {
-    const cal = calendarState.calendars.find((c) => c.id === event.calendarId);
+    const cal = calendarState.calendars.find((c: CalendarCategory) => c.id === event.calendarId || c.googleCalendarId === event.calendarId);
     return resolveEventColorToken(event.colorOverride || cal?.colorHex);
   }
 
   function isCalendarVisible(calendarId: string): boolean {
-    const cal = calendarState.calendars.find((c) => c.id === calendarId);
+    const cal = calendarState.calendars.find((c: CalendarCategory) => c.id === calendarId || c.googleCalendarId === calendarId);
     return cal ? cal.isVisible : true;
   }
 
   function formatDisplayTime(isoString: string): string {
-    const d = parseISO(isoString);
-    return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mmaaa').toLowerCase();
+    try {
+      const d = parseISO(isoString);
+      return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mmaaa').toLowerCase();
+    } catch {
+      return '';
+    }
   }
 
   function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
@@ -63,7 +70,7 @@
     const startTime = setMinutes(setHours(date, currentNow.getHours()), 0);
     const endTime = setMinutes(setHours(date, currentNow.getHours() + 1), 0);
 
-    const primaryCal = calendarState.calendars.find(c => c.isPrimary) || calendarState.calendars[0];
+    const primaryCal = calendarState.calendars.find((c: CalendarCategory) => c.isPrimary) || calendarState.calendars[0];
 
     const newEvent: CalendarEvent = {
       id: 'evt_' + Date.now(),
@@ -108,144 +115,178 @@
     calendarState.openOverflow(day, dayEvents, rect);
   }
 
-  // Smooth, Debounced 1-Row (1-Week) Rolling Stepper
-  let isScrolling = false;
+  let wheelAccumulator = 0;
   function handleWheel(e: WheelEvent) {
-    if (isScrolling) return;
-    if (Math.abs(e.deltaY) > 18) {
-      isScrolling = true;
-      requestAnimationFrame(() => {
-        if (e.deltaY > 0) {
+    e.preventDefault();
+    if (isRolling) return;
+
+    wheelAccumulator += e.deltaY;
+
+    if (Math.abs(wheelAccumulator) >= 24) {
+      isRolling = true;
+      const direction = wheelAccumulator > 0 ? 1 : -1;
+      wheelAccumulator = 0;
+
+      translateYPercent = direction === 1 ? -14.2857 : 14.2857;
+
+      setTimeout(() => {
+        if (direction === 1) {
           calendarState.setDate(addWeeks(calendarState.currentDate, 1));
         } else {
           calendarState.setDate(subWeeks(calendarState.currentDate, 1));
         }
-        setTimeout(() => {
-          isScrolling = false;
-        }, 70);
-      });
+        translateYPercent = 0;
+        isRolling = false;
+      }, 120);
     }
   }
 </script>
 
 <div 
   onwheel={handleWheel}
-  class="flex-1 flex flex-col h-full bg-[#121212] select-none overflow-hidden"
+  class="flex-1 flex flex-col h-full bg-[var(--bg-canvas)] select-none overflow-hidden text-[var(--text-primary)]"
 >
+  <!-- Weekday Header -->
   <div 
-    class="grid border-b border-[#242424] bg-[#141414] shrink-0"
+    class="grid border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] shrink-0 z-20"
     style="grid-template-columns: repeat({colsCount}, minmax(0, 1fr));"
   >
     {#each activeWeekDays as day}
-      <div class="py-2 text-center text-[10px] font-bold text-zinc-500 uppercase tracking-wider">
+      <div class="py-2 text-center text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">
         {day}
       </div>
     {/each}
   </div>
 
-  <div 
-    class="flex-1 grid gap-[1px] bg-[#1e1e1e] overflow-hidden no-scrollbar"
-    style="grid-template-columns: repeat({colsCount}, minmax(0, 1fr)); grid-template-rows: repeat({totalWeeks}, minmax(0, 1fr));"
-  >
-    {#each gridCells as cell, i (cell.dateKey)}
-      {@const allDayEvents = eventStore.getEventsForDateKey(cell.dateKey).filter(e => isCalendarVisible(e.calendarId))}
-      {@const visibleEvents = allDayEvents.slice(0, MAX_VISIBLE_EVENTS)}
-      {@const overflowCount = allDayEvents.length - MAX_VISIBLE_EVENTS}
-      {@const isHighlighted = dragStore.hoveredDateKey === cell.dateKey}
-      {@const showWeekNum = settingsStore.showWeekNumbers && i % colsCount === 0}
+  <!-- Animated Rolling Month Viewport -->
+  <div class="flex-1 relative overflow-hidden bg-[var(--border-subtle)]">
+    <div 
+      class="absolute left-0 right-0 grid gap-[1px] bg-[var(--border-subtle)] no-scrollbar"
+      style="
+        top: -20%;
+        height: 140%;
+        grid-template-columns: repeat({colsCount}, minmax(0, 1fr)); 
+        grid-template-rows: repeat({TOTAL_BUFFER_ROWS}, minmax(0, 1fr));
+        transform: translateY({translateYPercent}%);
+        transition: {isRolling ? 'transform 120ms cubic-bezier(0.2, 0, 0, 1)' : 'none'};
+      "
+    >
+      {#each gridCells as cell, i (cell.dateKey)}
+        {@const allDayEvents = eventStore.getEventsForDateKey(cell.dateKey).filter((e: CalendarEvent) => isCalendarVisible(e.calendarId))}
+        {@const visibleEvents = allDayEvents.slice(0, MAX_VISIBLE_EVENTS)}
+        {@const overflowCount = allDayEvents.length - MAX_VISIBLE_EVENTS}
+        {@const isHighlighted = dragStore.hoveredDateKey === cell.dateKey}
+        {@const showWeekNum = settingsStore.showWeekNumbers && i % colsCount === 0}
+        {@const isFirstDayOfMonth = cell.date.getDate() === 1}
 
-      <div
-        data-day-cell={cell.dateKey}
-        ondblclick={(e) => handleDayDoubleClick(e, cell.date)}
-        oncontextmenu={(e) => handleCellContextMenu(e, cell.date)}
-        class="bg-[#141414] p-1.5 flex flex-col gap-0.5 relative overflow-hidden transition-colors h-full
-          {cell.isCurrentMonth ? 'text-zinc-200' : 'text-zinc-600 bg-[#101010]'}
-          {isHighlighted ? '!bg-[#1a2333] ring-1 ring-blue-500 z-10' : ''}"
-        role="gridcell"
-        tabindex="0"
-      >
-        <div class="flex items-center justify-between pointer-events-none px-1 pt-0.5 pb-1">
-          <span
-            class="text-[11px] font-semibold rounded-full w-5 h-5 flex items-center justify-center
-              {cell.isCurrentDay ? 'bg-blue-600 text-white font-bold' : ''}"
-          >
-            {format(cell.date, 'd')}
-          </span>
-
-          {#if showWeekNum}
-            <span class="text-[9px] font-mono text-zinc-600">W{getISOWeek(cell.date)}</span>
-          {/if}
-        </div>
-
-        <div class="flex-1 flex flex-col gap-1 overflow-hidden">
-          {#each visibleEvents as event (event.id + '_' + cell.dateKey)}
-            {@const token = getEventToken(event)}
-            {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === cell.dateKey}
-            {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
-
-            {#if event.isAllDay}
-              <div
-                data-calendar-event="true"
-                onpointerdown={(e) => handlePointerDown(e, event)}
-                onclick={(e) => handleEventClick(e, event, cell.dateKey)}
-                oncontextmenu={(e) => handleEventContextMenu(e, event)}
-                class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-all
-                  {isSelected ? 'ring-2 ring-white shadow-xl' : 'opacity-90 hover:opacity-100'}
-                  {isBeingDragged ? 'opacity-30' : ''}"
-                style="background-color: {token.hex}; color: #ffffff;"
-                role="button"
-                tabindex="0"
-                onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, cell.dateKey)}
-              >
-                <span class="truncate pointer-events-none">{event.title || '(No Title)'}</span>
-              </div>
-            
-            {:else}
-              <div
-                data-calendar-event="true"
-                onpointerdown={(e) => handlePointerDown(e, event)}
-                onclick={(e) => handleEventClick(e, event, cell.dateKey)}
-                oncontextmenu={(e) => handleEventContextMenu(e, event)}
-                class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all
-                  {isSelected 
-                    ? 'ring-1 ring-white shadow-lg bg-[#242424]' 
-                    : 'bg-[#181818]/95 hover:bg-[#222222] border-[#262626]' }
-                  {isBeingDragged ? 'opacity-30' : 'opacity-100'}"
-                style="border-color: {isSelected ? token.hex : '#262626'};"
-                role="button"
-                tabindex="0"
-                onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, cell.dateKey)}
-              >
-                <span 
-                  class="w-[3.5px] h-3.5 rounded-full mr-1.5 shrink-0" 
-                  style="background-color: {token.hex};"
-                ></span>
-
-                <span 
-                  class="text-[10px] font-semibold mr-1.5 shrink-0 pointer-events-none text-zinc-400"
-                >
-                  {formatDisplayTime(event.startTime)}
-                </span>
-
-                <span 
-                  class="truncate pointer-events-none font-medium {isSelected ? 'text-white' : 'text-zinc-200'}"
-                >
-                  {event.title || '(No Title)'}
-                </span>
-              </div>
-            {/if}
-          {/each}
-
-          {#if overflowCount > 0}
-            <button
-              onclick={(e) => handleOverflowClick(e, cell.date, allDayEvents)}
-              class="text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#202020] px-1.5 py-0.5 rounded text-left transition-colors flex items-center gap-1 mt-auto cursor-pointer"
+        <div
+          data-day-cell={cell.dateKey}
+          ondblclick={(e) => handleDayDoubleClick(e, cell.date)}
+          oncontextmenu={(e) => handleCellContextMenu(e, cell.date)}
+          class="bg-[var(--bg-card)] p-1.5 flex flex-col gap-0.5 relative overflow-hidden transition-colors h-full text-[var(--text-primary)]
+            {isHighlighted ? '!bg-blue-950/40 ring-1 ring-blue-500 z-10' : ''}"
+          role="gridcell"
+          tabindex="0"
+        >
+          <!-- Date Label ("Aug 1", "Sep 1" on 1st of Month) -->
+          <div class="flex items-center justify-between pointer-events-none px-1 pt-0.5 pb-1">
+            <span
+              class="text-[11px] font-semibold rounded-full flex items-center justify-center transition-colors
+                {cell.isCurrentDay ? 'bg-blue-600 text-white font-bold px-1.5 min-w-5 h-5' : 'text-[var(--text-primary)]'}
+                {isFirstDayOfMonth && !cell.isCurrentDay ? 'font-bold text-[var(--text-primary)]' : ''}"
             >
-              <span>{overflowCount} more</span>
-            </button>
-          {/if}
+              {#if isFirstDayOfMonth}
+                {format(cell.date, 'MMM d')}
+              {:else}
+                {format(cell.date, 'd')}
+              {/if}
+            </span>
+
+            {#if showWeekNum}
+              <span class="text-[9px] font-mono text-[var(--text-muted)]">W{getISOWeek(cell.date)}</span>
+            {/if}
+          </div>
+
+          <!-- Event Chips Matrix -->
+          <div class="flex-1 flex flex-col gap-1 overflow-hidden">
+            {#each visibleEvents as event (event.id + '_' + cell.dateKey)}
+              {@const token = getEventToken(event)}
+              {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === cell.dateKey}
+              {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
+
+              <!-- 1. All-Day Event Banner -->
+              {#if event.isAllDay}
+                <div
+                  data-calendar-event="true"
+                  onpointerdown={(e) => handlePointerDown(e, event)}
+                  onclick={(e) => handleEventClick(e, event, cell.dateKey)}
+                  oncontextmenu={(e) => handleEventContextMenu(e, event)}
+                  class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-all
+                    {cell.isPast && !isSelected ? 'opacity-55 hover:opacity-100' : 'opacity-100'}
+                    {isSelected ? 'ring-2 ring-white shadow-xl !opacity-100' : ''}
+                    {isBeingDragged ? '!opacity-30' : ''}"
+                  style="background-color: {token.hex}; color: #ffffff;"
+                  role="button"
+                  tabindex="0"
+                  onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, cell.dateKey)}
+                >
+                  <span class="truncate pointer-events-none">{event.title || '(No Title)'}</span>
+                </div>
+              
+              <!-- 2. Timed Event Item -->
+              {:else}
+                <div
+                  data-calendar-event="true"
+                  onpointerdown={(e) => handlePointerDown(e, event)}
+                  onclick={(e) => handleEventClick(e, event, cell.dateKey)}
+                  oncontextmenu={(e) => handleEventContextMenu(e, event)}
+                  class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all
+                    {cell.isPast && !isSelected ? 'opacity-55 hover:opacity-100' : 'opacity-100'}
+                    {isSelected 
+                      ? 'ring-1 ring-white shadow-lg bg-[var(--bg-card-hover)] !opacity-100' 
+                      : 'bg-[var(--bg-card)] hover:bg-[var(--bg-card-hover)] border-[var(--border-subtle)]' }
+                    {isBeingDragged ? '!opacity-30' : ''}"
+                  style="border-color: {isSelected ? token.hex : 'var(--border-subtle)'};"
+                  role="button"
+                  tabindex="0"
+                  onkeydown={(e) => e.key === 'Enter' && handleEventClick(e as any, event, cell.dateKey)}
+                >
+                  <span 
+                    class="w-[3.5px] h-3.5 rounded-full mr-1.5 shrink-0" 
+                    style="background-color: {token.hex};"
+                  ></span>
+
+                  <!-- Time Text: Lighter than event base color -->
+                  <span 
+                    class="text-[10px] font-bold mr-1.5 shrink-0 pointer-events-none"
+                    style="color: {token.timeText};"
+                  >
+                    {formatDisplayTime(event.startTime)}
+                  </span>
+
+                  <!-- Title Text: Lighter and softer than time text -->
+                  <span 
+                    class="truncate pointer-events-none font-semibold"
+                    style="color: {isSelected ? '#ffffff' : token.titleText};"
+                  >
+                    {event.title || '(No Title)'}
+                  </span>
+                </div>
+              {/if}
+            {/each}
+
+            <!-- Full-width "X more" Button Trigger -->
+            {#if overflowCount > 0}
+              <button
+                onclick={(e) => handleOverflowClick(e, cell.date, allDayEvents)}
+                class="w-full text-[10px] font-bold text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)] px-1.5 py-0.5 rounded text-left transition-colors flex items-center gap-1 cursor-pointer mt-0.5"
+              >
+                <span>{overflowCount} more</span>
+              </button>
+            {/if}
+          </div>
         </div>
-      </div>
-    {/each}
+      {/each}
+    </div>
   </div>
 </div>

@@ -55,7 +55,7 @@
   import { eventStore } from '../../stores/eventStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
-  import { resolveEventColorToken, NOTION_COLORS } from '../../utils/colors';
+  import { resolveEventColorToken, KAIRO_COLORS } from '../../utils/colors';
   import { generateMonthGrid, formatRRuleLabel } from '../../utils/dateMath';
   import { dispatchEventReminder } from '../../utils/notifications';
   import type { CalendarEvent, CalendarCategory, ParticipantContact, LocationSuggestion } from '../../../types/event';
@@ -87,7 +87,7 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
-  // Live Location Suggestions via OpenStreetMap Photon Engine
+  // Live Location Suggestions via OpenStreetMap Photon
   let liveLocations = $state<LocationSuggestion[]>([]);
   let locationFetchTimeout: number | undefined;
 
@@ -235,7 +235,6 @@
 
   let repeatOptions = $derived.by(() => {
     if (!draft) return [];
-    // If an original start time exists (e.g. moved occurrence), use it to generate the proper default day slots
     const d = draft.originalStartTime ? parseISO(draft.originalStartTime) : parseISO(draft.startTime);
     const dayName = format(d, 'EEE');
     const dayOfMonth = format(d, 'do');
@@ -253,7 +252,6 @@
       { id: 'yearly', label: `Every year`, sub: `on ${monthDay}` }
     ];
 
-    // If Google supplied a specific custom RRULE (e.g. monthly on 3rd Sat), add it as an exact option if not already present
     if (draft.rrule && draft.rrule !== 'none') {
       const parsed = formatRRuleLabel(draft.rrule, d);
       const exists = list.some(o => o.id === parsed.id || (o.label === parsed.label && o.sub === parsed.sub));
@@ -423,7 +421,6 @@
 
     commitDraftChanges(false);
 
-    // If recurring instances are synced from Google, jump directly between concrete sibling instances
     if (draft.recurringEventId) {
       const siblings = eventStore.events
         .filter((e: CalendarEvent) => e.recurringEventId === draft?.recurringEventId && e.calendarId === draft?.calendarId)
@@ -444,7 +441,6 @@
       }
     }
 
-    // Fallback for local recurring series
     const currentOcc = parseISO(draft.startTime);
     let targetDate = currentOcc;
     const ruleId = parsedRRuleDisplay.id;
@@ -545,8 +541,8 @@
   }
 
   function calculatePosition(rect: DOMRect | null): string {
-    const width = 280;
-    const targetHeight = 480;
+    const width = 300;
+    const targetHeight = 500;
     const topNavOffset = 48;
     const bottomPadding = 16;
     const maxAvailableHeight = Math.max(300, window.innerHeight - topNavOffset - bottomPadding);
@@ -638,11 +634,11 @@
   <aside
     bind:this={inspectorElement}
     class="{calendarState.isInspectorDocked 
-      ? 'w-70 h-full border-l border-[#262626] bg-[#161616] flex flex-col z-60 shrink-0 select-text relative overflow-visible' 
-      : 'fixed z-60 w-70 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
+      ? 'w-76 h-full border-l border-[#262626] bg-[#161616] flex flex-col z-60 shrink-0 select-text relative overflow-visible' 
+      : 'fixed z-60 w-76 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col select-text overflow-visible animate-in fade-in zoom-in-95 duration-100'}"
     style={calendarState.isInspectorDocked ? '' : calculatePosition(calendarState.inspectorRect)}
   >
-    <!-- Top Header Toolbar -->
+    <!-- Top Toolbar -->
     <div class="flex items-center justify-between px-3 pt-2.5 pb-2 border-b border-[#242424] shrink-0 rounded-t-2xl bg-[#181818]">
       <div class="flex items-center gap-1.5">
         <div class="relative">
@@ -767,7 +763,7 @@
       </div>
     </div>
 
-    <!-- Scrollable Body with Clean Native Scrolling -->
+    <!-- Scrollable Body with Clean Inputs -->
     <div class="flex-1 min-h-0 overflow-y-auto px-3.5 py-2.5 flex flex-col gap-2.5 custom-scrollbar">
       <input
         type="text"
@@ -778,43 +774,45 @@
         class="w-full bg-transparent text-sm font-semibold text-zinc-100 placeholder-zinc-500 focus:outline-none shrink-0 {isReadOnly ? 'cursor-default opacity-90' : ''}"
       />
 
-      <!-- Time & Date Inputs -->
+      <!-- Time & Duration Row -->
       <div class="flex flex-col gap-1 shrink-0">
-        <div class="flex items-center gap-1.5 text-xs">
+        <div class="flex items-center gap-2 text-xs">
           <Clock size={14} class="text-zinc-400 shrink-0" />
           
           {#if !draft.isAllDay}
-            <input
-              type="text"
-              bind:value={startTimeInput}
-              disabled={isReadOnly}
-              onfocus={() => !isReadOnly && (activeSideMenu = 'start_time')}
-              onblur={() => applyCustomTime(true, startTimeInput)}
-              onkeydown={(e) => e.key === 'Enter' && applyCustomTime(true, startTimeInput)}
-              class="w-20 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-2 py-1 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
-            />
-            <span class="text-zinc-500 text-xs">→</span>
-            
-            <input
-              type="text"
-              bind:value={endTimeInput}
-              disabled={isReadOnly}
-              onfocus={() => !isReadOnly && (activeSideMenu = 'end_time')}
-              onblur={() => applyCustomTime(false, endTimeInput)}
-              onkeydown={(e) => e.key === 'Enter' && applyCustomTime(false, endTimeInput)}
-              class="w-20 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-2 py-1 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors"
-            />
+            <div class="flex items-center gap-1.5 shrink-0">
+              <input
+                type="text"
+                bind:value={startTimeInput}
+                disabled={isReadOnly}
+                onfocus={() => !isReadOnly && (activeSideMenu = 'start_time')}
+                onblur={() => applyCustomTime(true, startTimeInput)}
+                onkeydown={(e) => e.key === 'Enter' && applyCustomTime(true, startTimeInput)}
+                class="w-[66px] shrink-0 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-1 py-0.5 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors text-center"
+              />
+              <span class="text-zinc-500 text-xs shrink-0">→</span>
+              
+              <input
+                type="text"
+                bind:value={endTimeInput}
+                disabled={isReadOnly}
+                onfocus={() => !isReadOnly && (activeSideMenu = 'end_time')}
+                onblur={() => applyCustomTime(false, endTimeInput)}
+                onkeydown={(e) => e.key === 'Enter' && applyCustomTime(false, endTimeInput)}
+                class="w-[66px] shrink-0 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500'} rounded-md px-1 py-0.5 text-xs font-semibold text-zinc-100 focus:outline-none transition-colors text-center"
+              />
+            </div>
 
             {#if durationText}
-              <span class="text-[11px] ml-1 truncate font-semibold" style="color: {colorToken.timeText};">{durationText}</span>
+              <span class="text-xs font-medium text-zinc-400 shrink-0 whitespace-nowrap">{durationText}</span>
             {/if}
           {:else}
             <span class="text-zinc-300 font-semibold text-xs py-0.5">All Day</span>
           {/if}
         </div>
 
-        <!-- Notion Date Input Box -->
-        <div class="pl-5">
+        <!-- Date Input -->
+        <div class="pl-5.5">
           <input
             type="text"
             bind:value={dateInput}
@@ -832,7 +830,7 @@
                 activeSideMenu = 'none';
               }
             }}
-            class="w-28 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 cursor-pointer'} {activeSideMenu === 'date' ? 'bg-[#1a2333] ring-1 ring-blue-500 text-white' : 'text-zinc-200'} rounded-md px-2 py-1 text-xs font-semibold focus:outline-none transition-all"
+            class="w-28 bg-[#222222] {isReadOnly ? 'cursor-default' : 'hover:bg-[#282828] focus:bg-[#1a2333] focus:ring-1 focus:ring-blue-500 cursor-pointer'} {activeSideMenu === 'date' ? 'bg-[#1a2333] ring-1 ring-blue-500 text-white' : 'text-zinc-200'} rounded-md px-2 py-0.5 text-xs font-semibold focus:outline-none transition-all"
           />
         </div>
       </div>
@@ -870,7 +868,7 @@
         {/if}
       </button>
 
-      <!-- Recurrence with Notion < > Series Navigators -->
+      <!-- Recurrence with Series Navigators -->
       <div class="flex items-center justify-between py-0.5 rounded {isReadOnly ? '' : 'hover:bg-[#222222]'} transition-colors group">
         <button 
           disabled={isReadOnly}
@@ -950,7 +948,7 @@
 
       <div class="h-px bg-[#242424] -mx-1 shrink-0"></div>
 
-      <!-- Conferencing Provider Row with Real SVG Icons -->
+      <!-- Conferencing Row -->
       <div class="flex flex-col gap-1.5 text-xs shrink-0">
         <button 
           disabled={isReadOnly}
@@ -1000,7 +998,7 @@
           </button>
         {/if}
 
-        <!-- Location Search Input with Live OpenStreetMap Photon -->
+        <!-- Location Search -->
         <div class="flex items-center gap-2 text-zinc-400 py-0.5">
           <MapPin size={13} class="shrink-0 text-zinc-500" />
           <input
@@ -1163,7 +1161,7 @@
       </div>
     </div>
 
-    <!-- ================= UNCLIPPED SIDE-DOCKED MENUS ================= -->
+    <!-- SIDE-DOCKED POPUPS -->
 
     <!-- 1. Participant Autocomplete Popover -->
     {#if activeSideMenu === 'participants' && !isReadOnly}
@@ -1293,7 +1291,7 @@
 
         <div class="text-[10px] font-semibold text-zinc-400 px-1">Event color</div>
         <div class="flex items-center justify-between px-1">
-          {#each Object.values(NOTION_COLORS) as c}
+          {#each Object.values(KAIRO_COLORS) as c (c.id)}
             <button
               onpointerdown={(e) => { e.stopPropagation(); updateDraft('colorOverride', c.id === 'charcoal' ? undefined : c.hex); activeSideMenu = 'none'; }}
               class="w-4 h-4 rounded-full flex items-center justify-center transition-transform hover:scale-125 cursor-pointer"
@@ -1404,7 +1402,7 @@
       </div>
     {/if}
 
-    <!-- 8. Recurrence Popover with Exact Checked Highlight -->
+    <!-- 8. Recurrence Popover -->
     {#if activeSideMenu === 'repeat' && !isReadOnly}
       <div 
         class="absolute top-32 w-56 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1.5 z-999 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100

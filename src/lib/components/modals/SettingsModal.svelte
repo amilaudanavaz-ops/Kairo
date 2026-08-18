@@ -267,7 +267,7 @@
                 <span class="text-zinc-500 text-xs">No meetings</span>
               </div>
 
-              <!-- Calendars List (Three-dots trigger ContextMenu directly) -->
+              <!-- Calendars List -->
               <div class="flex flex-col gap-2 pt-2">
                 <span class="text-xs font-bold text-zinc-400">Calendars</span>
 

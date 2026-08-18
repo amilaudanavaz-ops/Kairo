@@ -14,7 +14,8 @@
   } from 'lucide-svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
-  import { NOTION_COLORS } from '../../utils/colors';
+  import { KAIRO_COLORS } from '../../utils/colors';
+  import type { CalendarCategory } from '../../../types/event';
 
   let isColorHovered = $state(false);
   let closeTimeout: number | undefined;
@@ -30,7 +31,6 @@
     }, 120);
   }
 
-  // Close context menu on outside click
   $effect(() => {
     function handlePointerDown(e: MouseEvent) {
       const target = e.target as HTMLElement | null;
@@ -77,7 +77,7 @@
     role="menu"
     tabindex="0"
   >
-    <!-- ================= 1. CALENDAR CONTEXT MENU ================= -->
+    <!-- 1. CALENDAR CONTEXT MENU -->
     {#if contextMenuStore.mode === 'calendar' && contextMenuStore.targetCalendar}
       {@const cal = contextMenuStore.targetCalendar}
       <div class="w-60 flex flex-col gap-0.5 relative">
@@ -189,8 +189,11 @@
         </button>
       </div>
 
-    <!-- ================= 2. EVENT CONTEXT MENU ================= -->
+    <!-- 2. EVENT CONTEXT MENU (Accurately highlights active calendar color) -->
     {:else if contextMenuStore.mode === 'event' && contextMenuStore.targetEvent}
+      {@const targetCal = calendarState.calendars.find((c: CalendarCategory) => c.id === contextMenuStore.targetEvent?.calendarId || c.googleCalendarId === contextMenuStore.targetEvent?.calendarId)}
+      {@const effectiveHex = contextMenuStore.targetEvent.colorOverride || targetCal?.colorHex || '#3b82f6'}
+
       <div class="w-48 flex flex-col gap-0.5">
         <button
           type="button"
@@ -221,15 +224,16 @@
 
         <div class="text-[10px] font-semibold text-zinc-400 px-3 py-0.5">Event color</div>
         <div class="flex items-center justify-between px-3 py-1">
-          {#each Object.values(NOTION_COLORS) as c}
+          {#each Object.values(KAIRO_COLORS).slice(0, 7) as c}
+            {@const isChecked = effectiveHex.toLowerCase() === c.hex.toLowerCase()}
             <button
               type="button"
-              onclick={() => contextMenuStore.setColorOverride(c.id === 'charcoal' ? undefined : c.hex)}
-              class="w-3.5 h-3.5 rounded-full flex items-center justify-center transition-transform hover:scale-125 cursor-pointer"
+              onclick={() => contextMenuStore.setColorOverride(c.hex)}
+              class="w-3.5 h-3.5 rounded-full flex items-center justify-center transition-transform hover:scale-125 cursor-pointer shadow-sm"
               style="background-color: {c.hex};"
               title={c.name}
             >
-              {#if contextMenuStore.targetEvent.colorOverride === c.hex || (!contextMenuStore.targetEvent.colorOverride && c.id === 'charcoal')}
+              {#if isChecked}
                 <Check size={9} class="text-white" />
               {/if}
             </button>
@@ -248,7 +252,7 @@
         </button>
       </div>
 
-    <!-- ================= 3. GRID CELL CONTEXT MENU ================= -->
+    <!-- 3. GRID CELL CONTEXT MENU -->
     {:else if contextMenuStore.mode === 'cell' && contextMenuStore.targetDate}
       <div class="w-44 flex flex-col gap-0.5">
         <button

@@ -73,8 +73,9 @@ class SettingsStore {
       if (saved.timeFormat) this.timeFormat = saved.timeFormat as any;
       if (saved.theme) {
         this.theme = saved.theme as any;
-        this.applyTheme(this.theme);
       }
+      this.applyTheme(this.theme);
+
       if (saved.notificationsEnabled !== undefined) this.notificationsEnabled = saved.notificationsEnabled === 'true';
       if (saved.playNotificationSound !== undefined) this.playNotificationSound = saved.playNotificationSound === 'true';
       if (saved.defaultReminderOffset) this.defaultReminderOffset = saved.defaultReminderOffset;
@@ -89,7 +90,7 @@ class SettingsStore {
 
       const sessionActive = saved.isLoggedIn === 'true';
       if (sessionActive && storedAccounts.length > 0) {
-        const primary = storedAccounts.find(a => a.isPrimary) || storedAccounts[0];
+        const primary = storedAccounts.find((a: UserAccount) => a.isPrimary) || storedAccounts[0];
         this.isLoggedIn = true;
         this.preferredName = primary.name;
         this.email = primary.email;
@@ -101,6 +102,14 @@ class SettingsStore {
         this.email = '';
         this.username = '';
         this.avatarUrl = '';
+      }
+
+      if (typeof window !== 'undefined') {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+          if (this.theme === 'auto') {
+            this.applyTheme('auto');
+          }
+        });
       }
     } catch (err) {
       console.error('Failed to load settings from DB:', err);
@@ -119,20 +128,30 @@ class SettingsStore {
     this.theme = selectedTheme;
     this.updateSetting('theme', selectedTheme);
 
+    if (typeof document === 'undefined') return;
     const root = document.documentElement;
+
     if (selectedTheme === 'dark') {
       root.classList.add('dark');
+      root.classList.remove('light');
+      root.setAttribute('data-theme', 'dark');
       root.style.colorScheme = 'dark';
     } else if (selectedTheme === 'light') {
+      root.classList.add('light');
       root.classList.remove('dark');
+      root.setAttribute('data-theme', 'light');
       root.style.colorScheme = 'light';
     } else {
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
       if (prefersDark) {
         root.classList.add('dark');
+        root.classList.remove('light');
+        root.setAttribute('data-theme', 'dark');
         root.style.colorScheme = 'dark';
       } else {
+        root.classList.add('light');
         root.classList.remove('dark');
+        root.setAttribute('data-theme', 'light');
         root.style.colorScheme = 'light';
       }
     }
@@ -167,6 +186,39 @@ class SettingsStore {
     this.username = cleanEmail.split('@')[0].toLowerCase();
     this.isLoggedIn = true;
     await this.updateSetting('isLoggedIn', 'true');
+    await this.addAccount(cleanEmail, cleanName);
+  }
+
+  async addAccount(email: string, name: string = 'Google User'): Promise<void> {
+    if (!email.trim()) return;
+    const exists = this.accounts.some((a: UserAccount) => a.email.toLowerCase() === email.toLowerCase());
+    if (!exists) {
+      const isPrimary = this.accounts.length === 0;
+      const candidate: UserAccount = {
+        id: 'acc_' + Date.now(),
+        email: email.trim(),
+        name: name.trim() || email.split('@')[0],
+        provider: 'google',
+        isPrimary,
+        syncEnabled: true
+      };
+      
+      const savedAccount = await persistDbAccount(candidate);
+      this.accounts = [...this.accounts, savedAccount];
+
+      const newCal: CalendarCategory = {
+        id: 'cal_' + Date.now(),
+        accountId: savedAccount.id,
+        name: savedAccount.email,
+        colorId: 'blue',
+        colorHex: '#3b82f6',
+        isPrimary,
+        isVisible: true,
+        accessRole: 'owner'
+      };
+      await persistCalendarCategory(newCal);
+      calendarState.calendars = [...calendarState.calendars, newCal];
+    }
   }
 
   async connectGoogleOAuth(): Promise<void> {
@@ -186,7 +238,7 @@ class SettingsStore {
       });
 
       const profile = authResult.profile;
-      const isPrimary = this.accounts.length === 0;
+      const isPrimaryAccount = this.accounts.length === 0;
 
       const candidate: UserAccount = {
         id: 'acc_' + profile.id,
@@ -194,12 +246,15 @@ class SettingsStore {
         name: profile.name || profile.email.split('@')[0],
         provider: 'google',
         avatarUrl: profile.picture,
-        isPrimary,
+        isPrimary: isPrimaryAccount,
         syncEnabled: true
       };
 
-      const savedAccount = await persistDbAccount(candidate, authResult.accessToken, authResult.refreshToken);
-      this.accounts = [...this.accounts.filter(a => a.email !== savedAccount.email), savedAccount];
+      const tokenAccess = authResult.accessToken || authResult.access_token;
+      const tokenRefresh = authResult.refreshToken || authResult.refresh_token;
+
+      const savedAccount = await persistDbAccount(candidate, tokenAccess, tokenRefresh);
+      this.accounts = [...this.accounts.filter((a: UserAccount) => a.email !== savedAccount.email), savedAccount];
 
       this.isLoggedIn = true;
       await this.updateSetting('isLoggedIn', 'true');
@@ -208,31 +263,48 @@ class SettingsStore {
       this.username = savedAccount.email.split('@')[0].toLowerCase();
       this.avatarUrl = savedAccount.avatarUrl || '';
 
-      // 1. Wipe stale imported events
       await clearAllGoogleEvents();
 
-      // 2. Map Google Calendars with authentic colors
+      const incomingCalendars = authResult.calendars || [];
       const calendarMap = new Map<string, string>();
-      if (Array.isArray(authResult.calendars) && authResult.calendars.length > 0) {
-        for (const cal of authResult.calendars) {
+
+      if (Array.isArray(incomingCalendars) && incomingCalendars.length > 0) {
+        const hasExplicitPrimary = incomingCalendars.some((c: any) => c.primary === true);
+
+        if (isPrimaryAccount) {
+          calendarState.calendars = calendarState.calendars.map((c: CalendarCategory) => ({
+            ...c,
+            isPrimary: false
+          }));
+        }
+
+        for (let i = 0; i < incomingCalendars.length; i++) {
+          const cal = incomingCalendars[i];
           const calId = 'cal_' + cal.id.replace(/[^a-zA-Z0-9_]/g, '_');
           calendarMap.set(cal.id, calId);
+          const colorHex = cal.backgroundColor || cal.background_color || '#3b82f6';
+          const accessRole = cal.accessRole || cal.access_role || 'owner';
+          
+          const isCalPrimary = hasExplicitPrimary 
+            ? Boolean(cal.primary) 
+            : (i === 0 && isPrimaryAccount);
 
           const newCal: CalendarCategory = {
             id: calId,
             accountId: savedAccount.id,
             googleCalendarId: cal.id,
             name: cal.summary || savedAccount.email,
-            colorId: 'google',
-            colorHex: cal.backgroundColor || cal.background_color || '#3b82f6',
-            isPrimary: Boolean(cal.primary),
-            isVisible: true
+            colorId: 'google_custom',
+            colorHex,
+            isPrimary: isCalPrimary,
+            isVisible: true,
+            accessRole
           };
+
           await persistCalendarCategory(newCal);
         }
       }
 
-      // 3. Parse and insert Google Calendar Event occurrences
       if (Array.isArray(authResult.events) && authResult.events.length > 0) {
         for (const gEvt of authResult.events) {
           if (gEvt.status === 'cancelled') continue;
@@ -305,10 +377,11 @@ class SettingsStore {
 
   async syncGoogleAccount(): Promise<void> {
     if (this.accounts.length === 0) return;
-    const primary = this.accounts.find(a => a.isPrimary) || this.accounts[0];
+    const primary = this.accounts.find((a: UserAccount) => a.isPrimary) || this.accounts[0];
     const token = await getAccountAccessToken(primary.id);
     if (!token) return;
 
+    this.isAuthenticating = true;
     try {
       const [cals, events] = await invoke<any>('sync_google_calendar', {
         accessToken: token
@@ -325,10 +398,11 @@ class SettingsStore {
           accountId: primary.id,
           googleCalendarId: cal.id,
           name: cal.summary || primary.email,
-          colorId: 'google',
+          colorId: 'google_custom',
           colorHex: cal.backgroundColor || cal.background_color || '#3b82f6',
           isPrimary: Boolean(cal.primary),
-          isVisible: true
+          isVisible: true,
+          accessRole: cal.accessRole || cal.access_role || 'owner'
         };
         await persistCalendarCategory(newCal);
       }
@@ -392,6 +466,10 @@ class SettingsStore {
       eventStore.events = await loadStoredEvents();
     } catch (e) {
       console.error('Failed to sync Google account:', e);
+    } finally {
+      setTimeout(() => {
+        this.isAuthenticating = false;
+      }, 500);
     }
   }
 
@@ -405,10 +483,10 @@ class SettingsStore {
   }
 
   async removeAccount(id: string): Promise<void> {
-    const acc = this.accounts.find(a => a.id === id);
+    const acc = this.accounts.find((a: UserAccount) => a.id === id);
     if (!acc) return;
-    this.accounts = this.accounts.filter(a => a.id !== id);
-    calendarState.calendars = calendarState.calendars.filter(c => c.accountId !== id);
+    this.accounts = this.accounts.filter((a: UserAccount) => a.id !== id);
+    calendarState.calendars = calendarState.calendars.filter((c: CalendarCategory) => c.accountId !== id);
     await deleteDbAccount(id);
     if (this.accounts.length === 0) {
       await this.logout();
@@ -424,14 +502,14 @@ class SettingsStore {
   }
 
   async setPrimaryAccount(id: string): Promise<void> {
-    this.accounts = this.accounts.map(a => ({
+    this.accounts = this.accounts.map((a: UserAccount) => ({
       ...a,
       isPrimary: a.id === id
     }));
     for (const a of this.accounts) {
       await persistDbAccount(a);
     }
-    const primary = this.accounts.find(a => a.id === id);
+    const primary = this.accounts.find((a: UserAccount) => a.id === id);
     if (primary) {
       this.preferredName = primary.name;
       this.email = primary.email;
