@@ -45,13 +45,13 @@ export interface GoogleAuthResultPayload {
   }>;
 }
 
-// Read bundled developer credentials from environment variables
 const ENV_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID || import.meta.env.GOOGLE_CLIENT_ID || '').trim();
 const ENV_CLIENT_SECRET = (import.meta.env.VITE_GOOGLE_CLIENT_SECRET || import.meta.env.GOOGLE_CLIENT_SECRET || '').trim();
 
 class SettingsStore {
   // Modal & Navigation State
   isLoaded = $state(false);
+  isLoggedIn = $state(false);
   isOpen = $state(false);
   isSettingsModalOpen = $state(false);
   activeTab = $state<SettingsTab>('general');
@@ -62,14 +62,14 @@ class SettingsStore {
 
   // General & Time Preferences
   timeFormat = $state<'12h' | '24h'>('12h');
-  weekStartsOn = $state<0 | 1>(0); // 0 = Sunday, 1 = Monday
+  weekStartsOn = $state<0 | 1>(0);
   startWeekOn = $state<'Sunday' | 'Monday'>('Sunday');
   language = $state<string>('English');
   showWeekends = $state<boolean>(true);
   showDeclinedEvents = $state<boolean>(false);
   showWeekNumbers = $state<boolean>(false);
   dimPastEvents = $state<boolean>(true);
-  defaultEventDuration = $state<number>(30); // in minutes
+  defaultEventDuration = $state<number>(30);
   defaultView = $state<'month' | 'week' | 'day'>('month');
   defaultCalendarId = $state<string>('');
   timeZone = $state<string>('GMT+5:30 Colombo');
@@ -109,7 +109,7 @@ class SettingsStore {
      REACTIVE DERIVATIONS
      ========================================================================== */
 
-  hasConnectedAccounts = $derived.by(() => this.accounts.length > 0);
+  hasConnectedAccounts = $derived.by(() => this.isLoggedIn || this.accounts.length > 0);
   
   primaryAccount = $derived.by(() => {
     return this.accounts.find(a => a.isPrimary) || this.accounts[0] || null;
@@ -130,7 +130,6 @@ class SettingsStore {
     try {
       await getDb();
 
-      // 1. Load key-value settings from SQLite
       const settings = await loadDbSettings();
 
       if (settings['preferred_name'] || settings['preferredName']) {
@@ -230,8 +229,8 @@ class SettingsStore {
         this.autoSyncIntervalMinutes = parseInt(settings['auto_sync_interval'] || settings['autoSyncInterval'] || '5', 10);
       }
 
-      // 2. Load connected user accounts
       this.accounts = await loadDbAccounts();
+      this.isLoggedIn = this.accounts.length > 0 || settings['isLoggedIn'] === 'true' || settings['is_logged_in'] === 'true';
 
       this.isLoaded = true;
     } catch (err) {
@@ -426,6 +425,11 @@ class SettingsStore {
         this.accounts = [...this.accounts, newAccount];
       }
 
+      // Mark logged in and update state immediately
+      this.isLoggedIn = true;
+      await this.setSetting('isLoggedIn', 'true');
+
+      // Trigger sync
       eventStore.syncGoogleEvents().catch(err => {
         console.warn('Initial Google sync following authentication failed:', err);
       });
@@ -443,6 +447,11 @@ class SettingsStore {
     try {
       await deleteDbAccount(accountId);
       this.accounts = this.accounts.filter(a => a.id !== accountId);
+
+      if (this.accounts.length === 0) {
+        this.isLoggedIn = false;
+        await this.setSetting('isLoggedIn', 'false');
+      }
 
       calendarState.calendars = await loadInitialCalendars();
       await eventStore.init();
@@ -492,6 +501,8 @@ class SettingsStore {
     try {
       await clearAllDbAccounts();
       this.accounts = [];
+      this.isLoggedIn = false;
+      await this.setSetting('isLoggedIn', 'false');
       calendarState.calendars = [];
       eventStore.events = [];
     } catch (err) {

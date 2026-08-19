@@ -18,6 +18,7 @@ pub struct GoogleTokenResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GoogleUserProfile {
+    #[serde(alias = "sub")]
     pub id: String,
     pub email: String,
     #[serde(default)]
@@ -286,7 +287,7 @@ pub async fn fetch_google_events(
     let http_client = reqwest::Client::new();
     let encoded_cal_id = urlencoding::encode(&calendar_id);
 
-    // Query singleEvents=false to fetch master RFC 5545 recurrence definitions without server-side duplication
+    // Query singleEvents=false to fetch RFC 5545 master events cleanly without duplication
     let url_events = if let Some(ref st) = sync_token {
         format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500&syncToken={}",
@@ -314,7 +315,6 @@ pub async fn fetch_google_events(
         .await
         .map_err(|e| format!("Events network error: {}", e))?;
 
-    // Handle expired sync token by falling back to initial full fetch
     if res.status().as_u16() == 410 {
         let mut fallback_url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500",
@@ -395,7 +395,6 @@ pub async fn fetch_google_events(
             orig.get("dateTime").or_else(|| orig.get("date")).and_then(|d| d.as_str()).map(|s| s.to_string())
         });
 
-        // Extract native master RRULE string
         let mut rrule: Option<String> = None;
         if let Some(rec_arr) = item.get("recurrence").and_then(|r| r.as_array()) {
             for r in rec_arr {

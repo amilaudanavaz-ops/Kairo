@@ -14,7 +14,6 @@
   async function handleGoogleLogin() {
     errorMessage = null;
     try {
-      // Direct 1-click login: Opens browser -> Auth callback -> Logs in seamlessly
       await settingsStore.startGoogleAuth();
     } catch (err: any) {
       console.error('Google OAuth failed:', err);
