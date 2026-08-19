@@ -97,8 +97,8 @@
     }
   }
 
-  function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
-    dragStore.startDrag(e, event);
+  function handlePointerDown(event: CalendarEvent, dateKey: string) {
+    dragStore.startDrag(event, dateKey);
   }
 
   function handleDayDoubleClick(e: MouseEvent, date: Date) {
@@ -121,7 +121,7 @@
       busyStatus: 'busy',
       visibility: 'default',
       reminders: [settingsStore.defaultReminderOffset],
-      creatorEmail: settingsStore.email || '',
+      creatorEmail: settingsStore.primaryAccount?.email || '',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
     };
@@ -212,14 +212,14 @@
         grid-template-columns: repeat({colsCount}, minmax(0, 1fr)); 
         grid-template-rows: repeat({TOTAL_BUFFER_ROWS}, minmax(0, 1fr));
         transform: translateY({translateYPercent}%);
-        transition: {isRolling ? 'transform 120ms cubic-bezier(0.2, 0, 0, 1)' : 'none'};
+        transition: {isRolling ? 'transform 120ms cubic-bezier(0.2, 0, 1)' : 'none'};
       "
     >
       {#each gridCells as cell, i (cell.dateKey)}
         {@const allDayEvents = eventStore.getEventsForDateKey(cell.dateKey).filter((e: CalendarEvent) => isCalendarVisible(e.calendarId))}
         {@const visibleEvents = allDayEvents.slice(0, MAX_VISIBLE_EVENTS)}
         {@const overflowCount = allDayEvents.length - MAX_VISIBLE_EVENTS}
-        {@const isHighlighted = dragStore.hoveredDateKey === cell.dateKey}
+        {@const isHighlighted = dragStore.dropTargetDateKey === cell.dateKey}
         {@const showWeekNum = settingsStore.showWeekNumbers && i % colsCount === 0}
         {@const isFirstDayOfMonth = cell.date.getDate() === 1}
 
@@ -227,12 +227,15 @@
           data-day-cell={cell.dateKey}
           ondblclick={(e) => handleDayDoubleClick(e, cell.date)}
           oncontextmenu={(e) => handleCellContextMenu(e, cell.date)}
+          ondragover={(e) => { e.preventDefault(); dragStore.setDropTarget(cell.dateKey); }}
+          ondragleave={() => { if (dragStore.dropTargetDateKey === cell.dateKey) dragStore.setDropTarget(null); }}
+          ondrop={(e) => { e.preventDefault(); dragStore.handleDrop(cell.dateKey); }}
           class="bg-[var(--bg-card)] p-1.5 flex flex-col gap-0.5 relative overflow-hidden transition-colors h-full text-[var(--text-primary)]
             {isHighlighted ? '!bg-blue-950/40 ring-1 ring-blue-500 z-10' : ''}"
           role="gridcell"
           tabindex="0"
         >
-          <!-- Date Label ("Aug 1", "Sep 1" on 1st of Month) -->
+          <!-- Date Label -->
           <div class="flex items-center justify-between pointer-events-none px-1 pt-0.5 pb-1">
             <span
               class="text-[11px] font-semibold rounded-full flex items-center justify-center transition-colors
@@ -262,7 +265,9 @@
               {#if event.isAllDay}
                 <div
                   data-calendar-event="true"
-                  onpointerdown={(e) => handlePointerDown(e, event)}
+                  draggable="true"
+                  ondragstart={() => handlePointerDown(event, cell.dateKey)}
+                  ondragend={() => dragStore.endDrag()}
                   onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                   oncontextmenu={(e) => handleEventContextMenu(e, event)}
                   class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-all
@@ -281,7 +286,9 @@
               {:else}
                 <div
                   data-calendar-event="true"
-                  onpointerdown={(e) => handlePointerDown(e, event)}
+                  draggable="true"
+                  ondragstart={() => handlePointerDown(event, cell.dateKey)}
+                  ondragend={() => dragStore.endDrag()}
                   onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                   oncontextmenu={(e) => handleEventContextMenu(e, event)}
                   class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all group

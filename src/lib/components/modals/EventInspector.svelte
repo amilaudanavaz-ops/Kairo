@@ -156,6 +156,8 @@
           projected.startTime = newStart.toISOString();
           projected.endTime = newEnd.toISOString();
           projected.occurrenceDate = dateKey;
+        } else {
+          projected.occurrenceDate = dateKey || format(parseISO(currentEvent.startTime), 'yyyy-MM-dd');
         }
         draft = JSON.parse(JSON.stringify(projected));
         initialEventSnapshot = JSON.parse(JSON.stringify(projected));
@@ -420,7 +422,6 @@
       ...draft,
       startTime: newStart.toISOString(),
       endTime: newEnd.toISOString(),
-      occurrenceDate: format(newStart, 'yyyy-MM-dd'),
       updatedAt: new Date().toISOString()
     };
     dateInput = format(newStart, 'EEE MMM d');
@@ -643,12 +644,15 @@
     }
 
     if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
+      const oldDate = format(parseISO(initialEventSnapshot.startTime), 'yyyy-MM-dd');
+      const originalOccurrence = initialEventSnapshot.occurrenceDate || calendarState.selectedDateKey || oldDate;
+
       contextMenuStore.promptRecurringAction(
         'update',
         masterEvent,
         draft,
-        calendarState.selectedDateKey || draft.occurrenceDate || undefined,
-        initialEventSnapshot
+        originalOccurrence,
+        initialEventSnapshot || masterEvent
       );
     } else {
       if (closeWhenClean) calendarState.closeInspector();
@@ -760,7 +764,8 @@
                   onpointerdown={(e) => {
                     e.stopPropagation();
                     if (draft?.rrule && draft.rrule !== 'none') {
-                      contextMenuStore.promptRecurringAction('delete', draft);
+                      const originalOccurrence = initialEventSnapshot?.occurrenceDate || calendarState.selectedDateKey || (draft.startTime ? format(parseISO(draft.startTime), 'yyyy-MM-dd') : undefined);
+                      contextMenuStore.promptRecurringAction('delete', masterEvent || draft, undefined, originalOccurrence);
                     } else if (draft) {
                       eventStore.deleteEvent(draft.id);
                       handleInspectorClose();

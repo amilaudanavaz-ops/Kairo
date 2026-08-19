@@ -13,6 +13,7 @@
   import { calendarState } from '../../stores/calendarState.svelte';
   import { 
     parseISO, 
+    set,
     setHours, 
     setMinutes, 
     differenceInMinutes, 
@@ -87,12 +88,14 @@
           const cutoffDate = subDays(occDate, 1);
           const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
           const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
-          const cleanRRule = masterEvent.rrule ? masterEvent.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
+          
+          const canonicalMasterRRule = convertRRuleToRFC5545(masterEvent.rrule || 'weekly', masterEvent.startTime)
+            .replace(/;?UNTIL=[^;]+/gi, '');
 
           eventStore.updateEvent({
             ...masterEvent,
             untilDate: cutoffDateKey,
-            rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
+            rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
           });
 
           // Delete detached instances from the split date forward
@@ -111,7 +114,7 @@
        ------------------------------------------------------------------------ */
     else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // Exclude date from master and insert detached exception instance
+        // Exclude date from master
         const currentExdates = masterEvent.exdates || [];
         if (!currentExdates.includes(occurrenceDate)) {
           eventStore.updateEvent({
@@ -120,11 +123,21 @@
           });
         }
 
+        // Calculate original start timestamp corresponding to the specific occurrence date
+        const origDateObj = parseISO(occurrenceDate);
+        const masterStartObj = parseISO(masterEvent.startTime);
+        const calculatedOriginalStart = set(origDateObj, {
+          hours: masterStartObj.getHours(),
+          minutes: masterStartObj.getMinutes(),
+          seconds: masterStartObj.getSeconds()
+        }).toISOString();
+
         const detachedInstance: CalendarEvent = {
           ...updated,
           id: 'evt_' + Date.now(),
           googleEventId: undefined,
           recurringEventId: rootMasterGoogleId,
+          originalStartTime: instance.originalStartTime || calculatedOriginalStart,
           occurrenceDate,
           isRecurringInstance: false,
           rrule: 'none',
@@ -137,13 +150,15 @@
         const cutoffDate = subDays(occDate, 1);
         const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
         const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
-        const cleanRRule = masterEvent.rrule ? masterEvent.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
-
+        
         // 1. Truncate the original series before the occurrence date
+        const canonicalMasterRRule = convertRRuleToRFC5545(masterEvent.rrule || 'weekly', masterEvent.startTime)
+          .replace(/;?UNTIL=[^;]+/gi, '');
+
         eventStore.updateEvent({
           ...masterEvent,
           untilDate: cutoffDateKey,
-          rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
+          rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
         });
 
         // 2. Remove detached future instances from SQLite and local state
@@ -153,12 +168,15 @@
         });
         await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
 
-        // 3. Spawn the new recurring series starting on the selected occurrence date
+        // 3. Spawn the new recurring series with cadence matching the new target start day
+        const newSeriesRRule = convertRRuleToRFC5545(updated.rrule || canonicalMasterRRule, updated.startTime)
+          .replace(/;?UNTIL=[^;]+/gi, '');
+
         const newSeriesId = 'evt_' + Date.now();
         const newSeries: CalendarEvent = {
           ...updated,
           id: newSeriesId,
-          rrule: cleanRRule,
+          rrule: newSeriesRRule,
           exdates: [],
           untilDate: undefined,
           googleEventId: undefined,
@@ -167,7 +185,6 @@
           updatedAt: new Date().toISOString()
         };
         
-        // Dispatches single cloud creation cleanly
         eventStore.addEvent(newSeries);
       } else {
         // Update all events across the master series
@@ -177,6 +194,8 @@
 
         const adjustedMasterStart = setMinutes(setHours(masterStart, newStart.getHours()), newStart.getMinutes());
         const adjustedMasterEnd = addMinutes(adjustedMasterStart, duration);
+
+        const canonicalRRule = convertRRuleToRFC5545(updated.rrule || masterEvent.rrule, adjustedMasterStart.toISOString());
 
         eventStore.updateEvent({
           ...masterEvent,
@@ -190,7 +209,7 @@
           endTime: adjustedMasterEnd.toISOString(),
           isAllDay: updated.isAllDay,
           timeZone: sanitizeTimezone(updated.timeZone),
-          rrule: updated.rrule || masterEvent.rrule,
+          rrule: canonicalRRule,
           updatedAt: new Date().toISOString()
         });
       }

@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
@@ -94,6 +93,10 @@ pub struct GoogleEventMutationPayload {
     #[serde(alias = "timeZone")]
     pub time_zone: Option<String>,
     pub rrule: Option<String>,
+    #[serde(alias = "recurringEventId")]
+    pub recurring_event_id: Option<String>,
+    #[serde(alias = "originalStartTime")]
+    pub original_start_time: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -287,7 +290,7 @@ pub async fn fetch_google_events(
     let http_client = reqwest::Client::new();
     let encoded_cal_id = urlencoding::encode(&calendar_id);
 
-    // Query singleEvents=false to fetch RFC 5545 master events without server-side duplication
+    // Fetch master events with singleEvents=false to let local dateMath project series
     let url_events = if let Some(ref st) = sync_token {
         format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500&syncToken={}",
@@ -315,7 +318,6 @@ pub async fn fetch_google_events(
         .await
         .map_err(|e| format!("Events network error: {}", e))?;
 
-    // Handle expired sync token by falling back to initial full fetch
     if res.status().as_u16() == 410 {
         let mut fallback_url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500",
@@ -396,7 +398,6 @@ pub async fn fetch_google_events(
             orig.get("dateTime").or_else(|| orig.get("date")).and_then(|d| d.as_str()).map(|s| s.to_string())
         });
 
-        // Extract master RRULE rule definition
         let mut rrule: Option<String> = None;
         if let Some(rec_arr) = item.get("recurrence").and_then(|r| r.as_array()) {
             for r in rec_arr {
@@ -554,6 +555,20 @@ pub async fn create_google_event(
         }
     }
 
+    // Pass recurrence exception override identifiers to Google API
+    if let Some(ref rec_id) = event.recurring_event_id {
+        body["recurringEventId"] = serde_json::json!(rec_id);
+    }
+
+    if let Some(ref orig_time) = event.original_start_time {
+        if event.is_all_day {
+            let orig_date = orig_time.split('T').next().unwrap_or(orig_time);
+            body["originalStartTime"] = serde_json::json!({ "date": orig_date });
+        } else {
+            body["originalStartTime"] = serde_json::json!({ "dateTime": orig_time, "timeZone": tz });
+        }
+    }
+
     let res = http_client
         .post(&url)
         .bearer_auth(&access_token)
@@ -580,8 +595,8 @@ pub async fn create_google_event(
 
     Ok(NormalizedGoogleEvent {
         google_event_id,
-        recurring_event_id: None,
-        original_start_time: None,
+        recurring_event_id: event.recurring_event_id,
+        original_start_time: event.original_start_time,
         rrule: None,
         title: summary,
         description,
@@ -646,6 +661,19 @@ pub async fn update_google_event(
         }
     }
 
+    if let Some(ref rec_id) = event.recurring_event_id {
+        body["recurringEventId"] = serde_json::json!(rec_id);
+    }
+
+    if let Some(ref orig_time) = event.original_start_time {
+        if event.is_all_day {
+            let orig_date = orig_time.split('T').next().unwrap_or(orig_time);
+            body["originalStartTime"] = serde_json::json!({ "date": orig_date });
+        } else {
+            body["originalStartTime"] = serde_json::json!({ "dateTime": orig_time, "timeZone": tz });
+        }
+    }
+
     let res = http_client
         .patch(&url)
         .bearer_auth(&access_token)
@@ -672,8 +700,8 @@ pub async fn update_google_event(
 
     Ok(NormalizedGoogleEvent {
         google_event_id,
-        recurring_event_id: None,
-        original_start_time: None,
+        recurring_event_id: event.recurring_event_id,
+        original_start_time: event.original_start_time,
         rrule: None,
         title: summary,
         description,

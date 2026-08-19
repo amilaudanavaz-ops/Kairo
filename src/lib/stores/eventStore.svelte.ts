@@ -50,6 +50,10 @@ export interface NormalizedGoogleEvent {
   time_zone?: string;
   recurrence?: string[];
   rrule?: string;
+  recurring_event_id?: string;
+  recurringEventId?: string;
+  original_start_time?: string;
+  originalStartTime?: string;
   [key: string]: any;
 }
 
@@ -74,14 +78,12 @@ export function sanitizeTimezone(tz?: string): string {
 export function convertRRuleToRFC5545(rule?: string, startTimeIso?: string): string {
   if (!rule || rule === 'none') return '';
 
-  // 1. Extract and preserve any existing UNTIL parameter
   let untilParam = '';
   const untilMatch = rule.match(/;?UNTIL=([^;]+)/i);
   if (untilMatch && untilMatch[1]) {
     untilParam = `;UNTIL=${untilMatch[1].trim()}`;
   }
 
-  // 2. Clean the base rule of any UNTIL suffix or RRULE prefix
   const baseRule = rule
     .replace(/;?UNTIL=[^;]+/gi, '')
     .replace(/^RRULE:/i, '')
@@ -367,7 +369,9 @@ class EventStore {
             endTime: event.endTime,
             isAllDay: event.isAllDay,
             timeZone: sanitizeTimezone(event.timeZone),
-            rrule: convertRRuleToRFC5545(event.rrule, event.startTime)
+            rrule: convertRRuleToRFC5545(event.rrule, event.startTime),
+            recurringEventId: event.recurringEventId || null,
+            originalStartTime: event.originalStartTime || null
           }
         })
       );
@@ -412,7 +416,9 @@ class EventStore {
             endTime: event.endTime,
             isAllDay: event.isAllDay,
             timeZone: sanitizeTimezone(event.timeZone),
-            rrule: convertRRuleToRFC5545(event.rrule, event.startTime)
+            rrule: convertRRuleToRFC5545(event.rrule, event.startTime),
+            recurringEventId: event.recurringEventId || null,
+            originalStartTime: event.originalStartTime || null
           }
         })
       );
@@ -644,6 +650,7 @@ class EventStore {
       calendarId: targetCalId,
       googleEventId: rawGid,
       recurringEventId: gEvt.recurring_event_id || gEvt.recurringEventId,
+      originalStartTime: gEvt.original_start_time || gEvt.originalStartTime,
       title: gEvt.title || gEvt.summary || '(No Title)',
       description: gEvt.description || '',
       location: gEvt.location || '',
@@ -653,7 +660,7 @@ class EventStore {
       endTime,
       isAllDay,
       timeZone: gEvt.time_zone || gEvt.timeZone || gEvt.start?.timeZone || 'GMT+5:30 Colombo',
-      rrule: gEvt.rrule || recurrenceRule,
+      rrule: recurrenceRule,
       exdates: [],
       untilDate: extractedUntilDate,
       status: 'confirmed',

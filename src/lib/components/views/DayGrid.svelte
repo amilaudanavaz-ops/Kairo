@@ -102,7 +102,7 @@
       busyStatus: 'busy',
       visibility: 'default',
       reminders: [settingsStore.defaultReminderOffset],
-      creatorEmail: settingsStore.email || '',
+      creatorEmail: settingsStore.primaryAccount?.email || '',
       syncStatus: 'pending_insert',
       updatedAt: new Date().toISOString()
     };
