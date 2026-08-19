@@ -2,12 +2,14 @@
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { 
     eventStore, 
-    getValidTokenAndCalendar, 
     convertRRuleToRFC5545, 
-    sanitizeTimezone, 
-    type NormalizedGoogleEvent 
+    sanitizeTimezone 
   } from '../../stores/eventStore.svelte';
-  import { getDb } from '../../db/database';
+  import { 
+    getDb, 
+    deleteSeriesFromDb, 
+    deleteFutureInstancesFromDb 
+  } from '../../db/database';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { 
     parseISO, 
@@ -21,13 +23,7 @@
     isValid 
   } from 'date-fns';
   import { List, X } from 'lucide-svelte';
-  import { invoke } from '@tauri-apps/api/core';
   import type { CalendarEvent } from '../../../types/event';
-
-  interface CalendarAuth {
-    accessToken: string;
-    googleCalendarId: string;
-  }
 
   let selectedScope = $state<'this' | 'following' | 'all'>('this');
   let pending = $derived(contextMenuStore.pendingRecurringAction);
@@ -48,58 +44,8 @@
   });
 
   /* ==========================================================================
-     DATABASE & SERIES MANAGEMENT HELPERS
-     ========================================================================= */
-
-  async function deleteSeriesFromDb(rootMasterGoogleId: string): Promise<void> {
-    try {
-      const db = await getDb();
-      await db.execute(
-        `DELETE FROM events WHERE id = ?1 OR google_event_id = ?1 OR recurring_event_id = ?1;`,
-        [rootMasterGoogleId]
-      );
-    } catch (err) {
-      console.error('Failed to delete series from SQLite DB:', err);
-    }
-  }
-
-  async function deleteFutureInstancesFromDb(rootMasterGoogleId: string, fromIsoDate: string): Promise<void> {
-    try {
-      const db = await getDb();
-      await db.execute(
-        `DELETE FROM events WHERE (id = ?1 OR google_event_id = ?1 OR recurring_event_id = ?1) AND start_time >= ?2;`,
-        [rootMasterGoogleId, fromIsoDate]
-      );
-    } catch (err) {
-      console.error('Failed to delete future instances from SQLite DB:', err);
-    }
-  }
-
-  async function deleteRecurringSeries(rootMasterGoogleId: string, calendarId?: string) {
-    eventStore.events = eventStore.events.filter(e => 
-      !(e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === rootMasterGoogleId)
-    );
-    await deleteSeriesFromDb(rootMasterGoogleId);
-
-    if (calendarId) {
-      getValidTokenAndCalendar(calendarId).then(async (auth: CalendarAuth | null) => {
-        if (!auth) return;
-        try {
-          await invoke('delete_google_event', {
-            accessToken: auth.accessToken,
-            calendarId: auth.googleCalendarId,
-            eventId: rootMasterGoogleId
-          });
-        } catch (e) {
-          console.error('Failed to delete series on Google:', e);
-        }
-      });
-    }
-  }
-
-  /* ==========================================================================
      SAVE HANDLER
-     ========================================================================= */
+     ========================================================================== */
 
   async function handleSave() {
     if (!pending) return;
@@ -108,118 +54,88 @@
     const updated = pending.updatedEvent;
     const occurrenceDate = pending.occurrenceDate || format(parseISO(instance.startTime), 'yyyy-MM-dd');
     
-    // Resolve master series ID
+    // Resolve the master recurring series ID
     const rootMasterGoogleId = instance.recurringEventId || instance.googleEventId || instance.id;
 
-    // Find all sibling occurrences of this series sorted chronologically
+    // Find all occurrences belonging to this series
     const siblingInstances = eventStore.events.filter(e => 
       e.recurringEventId === rootMasterGoogleId || 
       e.googleEventId === rootMasterGoogleId ||
-      e.id === instance.id
+      e.id === instance.id ||
+      e.id === rootMasterGoogleId
     ).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
 
-    // Master start timestamp
-    const masterStart = siblingInstances.length > 0 ? parseISO(siblingInstances[0].startTime) : parseISO(instance.startTime);
+    // Resolve master start time
+    const masterEvent = eventStore.events.find(e => e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId) || instance;
+    const masterStart = parseISO(masterEvent.startTime);
     const occDate = parseISO(occurrenceDate);
     const masterStartKey = format(masterStart, 'yyyy-MM-dd');
 
+    /* ------------------------------------------------------------------------
+       1. DELETE ACTION
+       ------------------------------------------------------------------------ */
     if (pending.action === 'delete') {
       if (selectedScope === 'this' && occurrenceDate) {
-        // Exclude this occurrence date from the master series
-        const currentExdates = instance.exdates || [];
+        // Exclude this single date from the master recurrence rule
+        const currentExdates = masterEvent.exdates || [];
         if (!currentExdates.includes(occurrenceDate)) {
           eventStore.updateEvent({
-            ...instance,
+            ...masterEvent,
             exdates: [...currentExdates, occurrenceDate]
           });
         }
-        eventStore.deleteEvent(instance.id);
-
-        if (instance.googleEventId) {
-          getValidTokenAndCalendar(instance.calendarId).then(async (auth: CalendarAuth | null) => {
-            if (!auth) return;
-            try {
-              await invoke('delete_google_event', {
-                accessToken: auth.accessToken,
-                calendarId: auth.googleCalendarId,
-                eventId: instance.googleEventId!
-              });
-            } catch (e) {
-              console.error('Failed to delete instance on Google:', e);
-            }
-          });
+        // If it was already a detached row in SQLite, remove it
+        if (instance.id !== masterEvent.id) {
+          eventStore.deleteEvent(instance.id);
         }
       } else if (selectedScope === 'following' && occurrenceDate) {
         if (isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey) {
-          await deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
+          // Deleting from the beginning deletes the whole series
+          await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
         } else {
-          // Truncate series before the occurrence date
+          // Truncate the original series on the day before the split
           const cutoffDate = subDays(occDate, 1);
           const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
           const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
-          const cleanRRule = instance.rrule ? instance.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
+          const cleanRRule = masterEvent.rrule ? masterEvent.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
 
-          const masterEvent = eventStore.events.find(e => e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId);
-          if (masterEvent) {
-            eventStore.updateEvent({
-              ...masterEvent,
-              untilDate: cutoffDateKey,
-              rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
-            });
-          }
+          eventStore.updateEvent({
+            ...masterEvent,
+            untilDate: cutoffDateKey,
+            rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
+          });
 
+          // Delete detached instances from the split date forward
           eventStore.events = eventStore.events.filter(e => {
             const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id);
-            return !(isMatch && e.startTime >= occDate.toISOString());
+            return !(isMatch && e.startTime >= occDate.toISOString() && e.id !== masterEvent.id);
           });
           await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
-
-          if (rootMasterGoogleId) {
-            getValidTokenAndCalendar(instance.calendarId).then(async (auth: CalendarAuth | null) => {
-              if (!auth) return;
-              try {
-                await invoke<NormalizedGoogleEvent>('update_google_event', {
-                  accessToken: auth.accessToken,
-                  calendarId: auth.googleCalendarId,
-                  eventId: rootMasterGoogleId,
-                  event: {
-                    title: instance.title,
-                    description: instance.description || null,
-                    location: instance.location || null,
-                    start_time: masterStart.toISOString(),
-                    end_time: addMinutes(masterStart, Math.max(15, differenceInMinutes(parseISO(instance.endTime), parseISO(instance.startTime)))).toISOString(),
-                    is_all_day: instance.isAllDay,
-                    time_zone: sanitizeTimezone(instance.timeZone),
-                    rrule: convertRRuleToRFC5545(cleanRRule, masterStart.toISOString()) + `;UNTIL=${untilUtcStr}`
-                  }
-                });
-              } catch (e) {
-                console.error('Failed to update cutoff on Google:', e);
-              }
-            });
-          }
         }
       } else {
-        await deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
+        // Delete all events in the series
+        await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
       }
-    } else if (pending.action === 'update' && updated) {
+    } 
+    /* ------------------------------------------------------------------------
+       2. UPDATE ACTION
+       ------------------------------------------------------------------------ */
+    else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // Detach single occurrence as a standalone instance
-        const currentExdates = instance.exdates || [];
+        // 1. Add this date to the master series exdates
+        const currentExdates = masterEvent.exdates || [];
         if (!currentExdates.includes(occurrenceDate)) {
-          const masterEvent = eventStore.events.find(e => e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId);
-          if (masterEvent) {
-            eventStore.updateEvent({
-              ...masterEvent,
-              exdates: [...(masterEvent.exdates || []), occurrenceDate]
-            });
-          }
+          eventStore.updateEvent({
+            ...masterEvent,
+            exdates: [...currentExdates, occurrenceDate]
+          });
         }
 
-        const patchedInstance: CalendarEvent = {
+        // 2. Insert a detached single event instance
+        const detachedInstance: CalendarEvent = {
           ...updated,
           id: 'evt_' + Date.now(),
-          googleEventId: instance.googleEventId,
+          googleEventId: undefined, // Let eventStore.addEvent create a clean exception
           recurringEventId: rootMasterGoogleId,
           occurrenceDate,
           isRecurringInstance: false,
@@ -228,82 +144,28 @@
           untilDate: undefined,
           updatedAt: new Date().toISOString()
         };
-        eventStore.addEvent(patchedInstance);
-
-        if (instance.googleEventId) {
-          getValidTokenAndCalendar(instance.calendarId).then(async (auth: CalendarAuth | null) => {
-            if (!auth) return;
-            try {
-              await invoke<NormalizedGoogleEvent>('update_google_event', {
-                accessToken: auth.accessToken,
-                calendarId: auth.googleCalendarId,
-                eventId: instance.googleEventId!,
-                event: {
-                  title: updated.title,
-                  description: updated.description || null,
-                  location: updated.location || null,
-                  start_time: updated.startTime,
-                  end_time: updated.endTime,
-                  is_all_day: updated.isAllDay,
-                  time_zone: sanitizeTimezone(updated.timeZone),
-                  rrule: null
-                }
-              });
-            } catch (e) {
-              console.error('Failed to patch Google recurring instance exception:', e);
-            }
-          });
-        }
+        eventStore.addEvent(detachedInstance);
       } else if (selectedScope === 'following' && occurrenceDate) {
         const cutoffDate = subDays(occDate, 1);
         const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
         const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
-        const cleanRRule = instance.rrule ? instance.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
+        const cleanRRule = masterEvent.rrule ? masterEvent.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
 
-        // 1. Truncate local master series with embedded UNTIL
-        const masterEvent = eventStore.events.find(e => e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId);
-        if (masterEvent) {
-          eventStore.updateEvent({
-            ...masterEvent,
-            untilDate: cutoffDateKey,
-            rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
-          });
-        }
+        // 1. Truncate the original series before the occurrence date
+        eventStore.updateEvent({
+          ...masterEvent,
+          untilDate: cutoffDateKey,
+          rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
+        });
 
-        // 2. Set UNTIL cutoff on Google Calendar API
-        if (rootMasterGoogleId) {
-          getValidTokenAndCalendar(instance.calendarId).then(async (auth: CalendarAuth | null) => {
-            if (!auth) return;
-            try {
-              await invoke<NormalizedGoogleEvent>('update_google_event', {
-                accessToken: auth.accessToken,
-                calendarId: auth.googleCalendarId,
-                eventId: rootMasterGoogleId,
-                event: {
-                  title: instance.title,
-                  description: instance.description || null,
-                  location: instance.location || null,
-                  start_time: masterStart.toISOString(),
-                  end_time: addMinutes(masterStart, Math.max(15, differenceInMinutes(parseISO(instance.endTime), parseISO(instance.startTime)))).toISOString(),
-                  is_all_day: instance.isAllDay,
-                  time_zone: sanitizeTimezone(instance.timeZone),
-                  rrule: convertRRuleToRFC5545(cleanRRule, masterStart.toISOString()) + `;UNTIL=${untilUtcStr}`
-                }
-              });
-            } catch (e) {
-              console.error('Failed to set UNTIL cutoff on Google:', e);
-            }
-          });
-        }
-
-        // 3. Clear existing detached sibling instances from cutoff onward
+        // 2. Remove old detached future instances from the split date forward
         eventStore.events = eventStore.events.filter(e => {
           const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id);
-          return !(isMatch && e.startTime >= occDate.toISOString());
+          return !(isMatch && e.startTime >= occDate.toISOString() && e.id !== masterEvent.id);
         });
         await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
 
-        // 4. Create and persist new spawned recurring series
+        // 3. Spawn the new recurring series starting from the selected occurrence date
         const newSeriesId = 'evt_' + Date.now();
         const newSeries: CalendarEvent = {
           ...updated,
@@ -316,38 +178,11 @@
           isRecurringInstance: false,
           updatedAt: new Date().toISOString()
         };
+        
+        // Dispatches single Google creation cleanly without duplicates
         eventStore.addEvent(newSeries);
-
-        // 5. Create new spawned series on Google Calendar
-        getValidTokenAndCalendar(instance.calendarId).then(async (auth: CalendarAuth | null) => {
-          if (!auth) return;
-          try {
-            const created = await invoke<NormalizedGoogleEvent>('create_google_event', {
-              accessToken: auth.accessToken,
-              calendarId: auth.googleCalendarId,
-              event: {
-                title: updated.title,
-                description: updated.description || null,
-                location: updated.location || null,
-                start_time: updated.startTime,
-                end_time: updated.endTime,
-                is_all_day: updated.isAllDay,
-                time_zone: sanitizeTimezone(updated.timeZone),
-                rrule: convertRRuleToRFC5545(cleanRRule, updated.startTime)
-              }
-            });
-
-            if (created && created.google_event_id) {
-              eventStore.updateEvent({
-                ...newSeries,
-                googleEventId: created.google_event_id
-              });
-            }
-          } catch (e) {
-            console.error('Failed to spawn new recurring series on Google:', e);
-          }
-        });
       } else {
+        // Update all events in the master series
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
         const duration = Math.max(15, differenceInMinutes(newEnd, newStart));
@@ -355,45 +190,21 @@
         const adjustedMasterStart = setMinutes(setHours(masterStart, newStart.getHours()), newStart.getMinutes());
         const adjustedMasterEnd = addMinutes(adjustedMasterStart, duration);
 
-        eventStore.events = eventStore.events.map(e => {
-          if (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id) {
-            return {
-              ...e,
-              title: updated.title,
-              description: updated.description,
-              location: updated.location,
-              conferencingUrl: updated.conferencingUrl,
-              colorOverride: updated.colorOverride,
-              updatedAt: new Date().toISOString()
-            };
-          }
-          return e;
+        eventStore.updateEvent({
+          ...masterEvent,
+          title: updated.title,
+          description: updated.description,
+          location: updated.location,
+          conferencingUrl: updated.conferencingUrl,
+          conferencingProvider: updated.conferencingProvider,
+          colorOverride: updated.colorOverride,
+          startTime: adjustedMasterStart.toISOString(),
+          endTime: adjustedMasterEnd.toISOString(),
+          isAllDay: updated.isAllDay,
+          timeZone: sanitizeTimezone(updated.timeZone),
+          rrule: updated.rrule || masterEvent.rrule,
+          updatedAt: new Date().toISOString()
         });
-
-        if (rootMasterGoogleId) {
-          getValidTokenAndCalendar(instance.calendarId).then(async (auth: CalendarAuth | null) => {
-            if (!auth) return;
-            try {
-              await invoke<NormalizedGoogleEvent>('update_google_event', {
-                accessToken: auth.accessToken,
-                calendarId: auth.googleCalendarId,
-                eventId: rootMasterGoogleId,
-                event: {
-                  title: updated.title,
-                  description: updated.description || null,
-                  location: updated.location || null,
-                  start_time: adjustedMasterStart.toISOString(),
-                  end_time: adjustedMasterEnd.toISOString(),
-                  is_all_day: updated.isAllDay,
-                  time_zone: sanitizeTimezone(updated.timeZone),
-                  rrule: convertRRuleToRFC5545(updated.rrule || instance.rrule, adjustedMasterStart.toISOString())
-                }
-              });
-            } catch (e) {
-              console.error('Failed to update master series on Google:', e);
-            }
-          });
-        }
       }
     }
 
@@ -414,8 +225,15 @@
 </script>
 
 {#if contextMenuStore.isRecurrenceModalOpen && pending}
-  <div class="fixed inset-0 z-[120] bg-black/60 backdrop-blur-[2px] flex items-center justify-center select-none">
-    <div class="w-[430px] bg-[#1e1e1e] border border-[#303030] rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.95)] p-6 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150">
+  <div 
+    class="fixed inset-0 z-[120] bg-black/60 backdrop-blur-[2px] flex items-center justify-center select-none"
+    role="presentation"
+  >
+    <div 
+      class="w-[430px] bg-[#1e1e1e] border border-[#303030] rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.95)] p-6 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150"
+      role="dialog"
+      aria-modal="true"
+    >
       <h3 class="text-base font-bold text-zinc-100 tracking-tight">
         Edit repeat event “{pending.originalEvent.title || '(No Title)'}”
       </h3>

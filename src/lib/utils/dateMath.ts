@@ -187,15 +187,15 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
   const endUtcMidnight = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
   const targetDateKey = format(targetDay, 'yyyy-MM-dd');
 
-  // Event cannot occur before its start date
+  // Event cannot occur before its scheduled start date
   if (targetUtcMidnight < startUtcMidnight) return false;
 
-  // Check RFC 5545 EXDATE
+  // Check RFC 5545 EXDATE exclusions
   if (event.exdates && event.exdates.includes(targetDateKey)) {
     return false;
   }
 
-  // 2. Strict UNTIL Boundary Evaluation
+  // 2. Strict UNTIL Boundary Evaluation (Pre-Evaluation Step)
   if (event.untilDate) {
     const untilDateObj = parseRRuleUntilDate(event.untilDate);
     if (untilDateObj) {

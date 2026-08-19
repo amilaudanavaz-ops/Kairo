@@ -6,7 +6,6 @@ import {
   persistBatchEvents, 
   loadAllAccountsWithTokens, 
   updateAccountTokens, 
-  clearAllGoogleEvents, 
   persistCalendarCategory, 
   loadInitialCalendars, 
   getAccountAccessToken,
@@ -162,11 +161,11 @@ class EventStore {
       }
 
       const settings = await loadDbSettings();
-      const clientId = settings['google_client_id'] || settings['googleClientId'] || '';
-      const clientSecret = settings['google_client_secret'] || settings['googleClientSecret'] || '';
+      const clientId = (import.meta.env.VITE_GOOGLE_CLIENT_ID || settings['google_client_id'] || settings['googleClientId'] || '').trim();
+      const clientSecret = (import.meta.env.VITE_GOOGLE_CLIENT_SECRET || settings['google_client_secret'] || settings['googleClientSecret'] || '').trim();
 
       if (!clientId || !clientSecret) {
-        console.warn('Cannot refresh Google token: Client ID or Client Secret missing in settings.');
+        console.warn('Cannot refresh Google token: Client ID or Client Secret missing.');
         return null;
       }
 
@@ -316,7 +315,7 @@ class EventStore {
   }
 
   /* ==========================================================================
-     OUTBOUND GOOGLE CALENDAR DISPATCHERS (WITH TOKEN REFRESH)
+     OUTBOUND GOOGLE CALENDAR DISPATCHERS
      ========================================================================== */
 
   private async dispatchGoogleCreate(event: CalendarEvent): Promise<void> {
@@ -495,7 +494,12 @@ class EventStore {
 
   async clearAllEvents(): Promise<void> {
     this.events = [];
-    await clearAllGoogleEvents();
+    try {
+      const db = await getDb();
+      await db.execute(`DELETE FROM events;`);
+    } catch (e) {
+      console.error('Failed to clear events:', e);
+    }
   }
 
   /* ==========================================================================
@@ -561,7 +565,7 @@ class EventStore {
   }
 
   /* ==========================================================================
-     GOOGLE CALENDAR SYNC ENGINE (DEDUPLICATION & PRESERVATION)
+     GOOGLE CALENDAR SYNC ENGINE (NON-DESTRUCTIVE MERGE)
      ========================================================================== */
 
   private mapGoogleEvent(gEvt: any, targetCalId: string, accountEmail: string): CalendarEvent | null {
@@ -619,7 +623,7 @@ class EventStore {
       endTime,
       isAllDay,
       timeZone: gEvt.time_zone || gEvt.timeZone || gEvt.start?.timeZone || 'GMT+5:30 Colombo',
-      rrule: recurrenceRule,
+      rrule: gEvt.rrule || recurrenceRule,
       exdates: [],
       untilDate: extractedUntilDate,
       status: 'confirmed',
@@ -701,6 +705,7 @@ class EventStore {
                 );
 
                 if (eventsRes && Array.isArray(eventsRes.events)) {
+                  // Build lookup of current in-memory events to merge records and prevent ID churn
                   const existingGoogleEventMap = new Map<string, CalendarEvent>();
                   for (const e of this.events) {
                     if (e.googleEventId) {
