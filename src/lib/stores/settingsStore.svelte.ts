@@ -49,6 +49,20 @@ const ENV_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID || import.meta.env.
 const ENV_CLIENT_SECRET = (import.meta.env.VITE_GOOGLE_CLIENT_SECRET || import.meta.env.GOOGLE_CLIENT_SECRET || '').trim();
 
 class SettingsStore {
+  isCommandMenuOpen = $state(false);
+  pressTAction = $state<'today' | 'view'>('today');
+
+  toggleCommandMenu(): void {
+    this.isCommandMenuOpen = !this.isCommandMenuOpen;
+  }
+
+  openCommandMenu(): void {
+    this.isCommandMenuOpen = true;
+  }
+
+  closeCommandMenu(): void {
+    this.isCommandMenuOpen = false;
+  }
   // Modal & Navigation State
   isLoaded = $state(false);
   isLoggedIn = $state(false);

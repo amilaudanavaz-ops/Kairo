@@ -38,6 +38,14 @@
     return oldOccKey !== newOccKey;
   });
 
+  let isDetachedException = $derived.by(() => {
+    if (!pending?.originalEvent) return false;
+    return Boolean(
+      pending.originalEvent.recurringEventId && 
+      (!pending.originalEvent.rrule || pending.originalEvent.rrule === 'none')
+    );
+  });
+
   $effect(() => {
     if (isDateChange && selectedScope === 'all') {
       selectedScope = 'this';
@@ -69,22 +77,25 @@
        ------------------------------------------------------------------------ */
     if (pending.action === 'delete') {
       if (selectedScope === 'this' && occurrenceDate) {
-        // Exclude this single date from the master recurrence rule
-        const currentExdates = masterEvent.exdates || [];
-        if (!currentExdates.includes(occurrenceDate)) {
-          eventStore.updateEvent({
-            ...masterEvent,
-            exdates: [...currentExdates, occurrenceDate]
-          });
-        }
-        if (instance.id !== masterEvent.id) {
+        // 1. If deleting a detached child exception, delete its record directly
+        if (instance.id !== masterEvent.id || instance.recurringEventId) {
           eventStore.deleteEvent(instance.id);
+        }
+
+        // 2. Add exdate to master series to ensure it is not re-projected
+        if (masterEvent && masterEvent.id !== instance.id) {
+          const currentExdates = masterEvent.exdates || [];
+          if (!currentExdates.includes(occurrenceDate)) {
+            eventStore.updateEvent({
+              ...masterEvent,
+              exdates: [...currentExdates, occurrenceDate]
+            });
+          }
         }
       } else if (selectedScope === 'following' && occurrenceDate) {
         if (isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey) {
           await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
         } else {
-          // Truncate the original series on the day before the split
           const cutoffDate = subDays(occDate, 1);
           const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
           const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
@@ -98,7 +109,6 @@
             rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
           });
 
-          // Delete detached instances from the split date forward
           eventStore.events = eventStore.events.filter(e => {
             const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id);
             return !(isMatch && e.startTime >= occDate.toISOString() && e.id !== masterEvent.id);
@@ -106,15 +116,16 @@
           await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
         }
       } else {
+        // Delete all instances across master and all child exceptions
         await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
       }
-    } 
+    }
     /* ------------------------------------------------------------------------
        2. UPDATE ACTION
        ------------------------------------------------------------------------ */
     else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // Exclude date from master
+        // Exclude original occurrence date from master
         const currentExdates = masterEvent.exdates || [];
         if (!currentExdates.includes(occurrenceDate)) {
           eventStore.updateEvent({
@@ -132,60 +143,110 @@
           seconds: masterStartObj.getSeconds()
         }).toISOString();
 
-        const detachedInstance: CalendarEvent = {
-          ...updated,
-          id: 'evt_' + Date.now(),
-          googleEventId: undefined,
-          recurringEventId: rootMasterGoogleId,
-          originalStartTime: instance.originalStartTime || calculatedOriginalStart,
-          occurrenceDate,
-          isRecurringInstance: false,
-          rrule: 'none',
-          exdates: [],
-          untilDate: undefined,
-          updatedAt: new Date().toISOString()
-        };
-        eventStore.addEvent(detachedInstance);
+        const targetDateKey = format(parseISO(updated.startTime), 'yyyy-MM-dd');
+
+        if (instance.id !== masterEvent.id) {
+          // Editing an existing detached child exception: update in-place to prevent duplicates
+          eventStore.updateEvent({
+            ...instance,
+            ...updated,
+            recurringEventId: rootMasterGoogleId,
+            originalStartTime: instance.originalStartTime || calculatedOriginalStart,
+            occurrenceDate: targetDateKey,
+            isRecurringInstance: false,
+            rrule: 'none',
+            exdates: [],
+            untilDate: undefined,
+            updatedAt: new Date().toISOString()
+          });
+        } else {
+          // Creating a new detached exception from a virtual master instance
+          const detachedInstance: CalendarEvent = {
+            ...updated,
+            id: 'evt_' + Date.now(),
+            googleEventId: undefined,
+            recurringEventId: rootMasterGoogleId,
+            originalStartTime: instance.originalStartTime || calculatedOriginalStart,
+            occurrenceDate: targetDateKey,
+            isRecurringInstance: false,
+            rrule: 'none',
+            exdates: [],
+            untilDate: undefined,
+            updatedAt: new Date().toISOString()
+          };
+          eventStore.addEvent(detachedInstance);
+        }
       } else if (selectedScope === 'following' && occurrenceDate) {
-        const cutoffDate = subDays(occDate, 1);
-        const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
-        const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
-        
-        // 1. Truncate the original series before the occurrence date
-        const canonicalMasterRRule = convertRRuleToRFC5545(masterEvent.rrule || 'weekly', masterEvent.startTime)
-          .replace(/;?UNTIL=[^;]+/gi, '');
+        const isModifyingFromRoot = isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey;
 
-        eventStore.updateEvent({
-          ...masterEvent,
-          untilDate: cutoffDateKey,
-          rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
-        });
+        if (isModifyingFromRoot) {
+          // Modifying from the very first occurrence: update master series in-place
+          const newStart = parseISO(updated.startTime);
+          const newEnd = parseISO(updated.endTime);
+          const duration = Math.max(15, differenceInMinutes(newEnd, newStart));
 
-        // 2. Remove detached future instances from SQLite and local state
-        eventStore.events = eventStore.events.filter(e => {
-          const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id);
-          return !(isMatch && e.startTime >= occDate.toISOString() && e.id !== masterEvent.id);
-        });
-        await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
+          const rawRule = (updated.rrule && updated.rrule !== 'none') ? updated.rrule : masterEvent.rrule;
+          const canonicalRRule = convertRRuleToRFC5545(rawRule, newStart.toISOString())
+            .replace(/;?UNTIL=[^;]+/gi, '');
 
-        // 3. Spawn the new recurring series with cadence matching the new target start day
-        const newSeriesRRule = convertRRuleToRFC5545(updated.rrule || canonicalMasterRRule, updated.startTime)
-          .replace(/;?UNTIL=[^;]+/gi, '');
+          eventStore.updateEvent({
+            ...masterEvent,
+            title: updated.title,
+            description: updated.description,
+            location: updated.location,
+            conferencingUrl: updated.conferencingUrl,
+            conferencingProvider: updated.conferencingProvider,
+            colorOverride: updated.colorOverride,
+            startTime: newStart.toISOString(),
+            endTime: newEnd.toISOString(),
+            isAllDay: updated.isAllDay,
+            timeZone: sanitizeTimezone(updated.timeZone),
+            rrule: canonicalRRule,
+            untilDate: undefined,
+            updatedAt: new Date().toISOString()
+          });
+        } else {
+          // Modifying mid-series: truncate old master and spawn new series
+          const cutoffDate = subDays(occDate, 1);
+          const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
+          const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
+          
+          const canonicalMasterRRule = convertRRuleToRFC5545(masterEvent.rrule || 'weekly', masterEvent.startTime)
+            .replace(/;?UNTIL=[^;]+/gi, '');
 
-        const newSeriesId = 'evt_' + Date.now();
-        const newSeries: CalendarEvent = {
-          ...updated,
-          id: newSeriesId,
-          rrule: newSeriesRRule,
-          exdates: [],
-          untilDate: undefined,
-          googleEventId: undefined,
-          recurringEventId: undefined,
-          isRecurringInstance: false,
-          updatedAt: new Date().toISOString()
-        };
-        
-        eventStore.addEvent(newSeries);
+          eventStore.updateEvent({
+            ...masterEvent,
+            untilDate: cutoffDateKey,
+            rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
+          });
+
+          // Remove detached future instances from SQLite and local state
+          eventStore.events = eventStore.events.filter(e => {
+            const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id);
+            return !(isMatch && e.startTime >= occDate.toISOString() && e.id !== masterEvent.id);
+          });
+          await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
+
+          // Spawn the new recurring series with cadence matching the new target start day
+          const rawRule = (updated.rrule && updated.rrule !== 'none') ? updated.rrule : canonicalMasterRRule;
+          const newSeriesRRule = convertRRuleToRFC5545(rawRule, updated.startTime)
+            .replace(/;?UNTIL=[^;]+/gi, '');
+
+          const newSeriesId = 'evt_' + Date.now();
+          const newSeries: CalendarEvent = {
+            ...updated,
+            id: newSeriesId,
+            rrule: newSeriesRRule,
+            exdates: [],
+            untilDate: undefined,
+            googleEventId: undefined,
+            recurringEventId: undefined,
+            isRecurringInstance: false,
+            updatedAt: new Date().toISOString()
+          };
+          
+          eventStore.addEvent(newSeries);
+        }
       } else {
         // Update all events across the master series
         const newStart = parseISO(updated.startTime);
@@ -197,6 +258,7 @@
 
         const canonicalRRule = convertRRuleToRFC5545(updated.rrule || masterEvent.rrule, adjustedMasterStart.toISOString());
 
+        // 1. Update the master recurring series
         eventStore.updateEvent({
           ...masterEvent,
           title: updated.title,
@@ -212,6 +274,41 @@
           rrule: canonicalRRule,
           updatedAt: new Date().toISOString()
         });
+
+        // 2. Synchronize all detached child exceptions belonging to this series
+        const childExceptions = eventStore.events.filter(e => 
+          e.recurringEventId === rootMasterGoogleId || 
+          (masterEvent.googleEventId && e.recurringEventId === masterEvent.googleEventId)
+        );
+
+        for (const child of childExceptions) {
+          let childStart = parseISO(child.startTime);
+          let childEnd = child.endTime ? parseISO(child.endTime) : childStart;
+
+          // Adjust time slot if time was modified, while preserving the exception's calendar day
+          if (
+            newStart.getHours() !== parseISO(instance.startTime).getHours() || 
+            newStart.getMinutes() !== parseISO(instance.startTime).getMinutes()
+          ) {
+            childStart = setMinutes(setHours(childStart, newStart.getHours()), newStart.getMinutes());
+            childEnd = addMinutes(childStart, duration);
+          }
+
+          eventStore.updateEvent({
+            ...child,
+            title: updated.title,
+            description: updated.description,
+            location: updated.location,
+            conferencingUrl: updated.conferencingUrl,
+            conferencingProvider: updated.conferencingProvider,
+            colorOverride: updated.colorOverride,
+            startTime: childStart.toISOString(),
+            endTime: childEnd.toISOString(),
+            isAllDay: updated.isAllDay,
+            timeZone: sanitizeTimezone(updated.timeZone),
+            updatedAt: new Date().toISOString()
+          });
+        }
       }
     }
 
@@ -248,18 +345,20 @@
       <div class="flex flex-col gap-1.5 text-xs text-zinc-200">
         <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'this' ? 'bg-[#252525] font-semibold text-white' : ''}">
           <input type="radio" name="recurrenceScope" value="this" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
-          <span>This event</span>
+          <span>{isDetachedException ? 'Only this modified event' : 'This event'}</span>
         </label>
 
-        <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'following' ? 'bg-[#252525] font-semibold text-white' : ''}">
-          <input type="radio" name="recurrenceScope" value="following" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
-          <span>This and following events</span>
-        </label>
+        {#if !isDetachedException}
+          <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'following' ? 'bg-[#252525] font-semibold text-white' : ''}">
+            <input type="radio" name="recurrenceScope" value="following" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
+            <span>This and following events</span>
+          </label>
+        {/if}
 
-        {#if !isDateChange}
+        {#if !isDateChange || isDetachedException}
           <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'all' ? 'bg-[#252525] font-semibold text-white' : ''}">
             <input type="radio" name="recurrenceScope" value="all" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
-            <span>All events</span>
+            <span>{isDetachedException ? 'All events in this recurring series' : 'All events'}</span>
           </label>
         {/if}
       </div>

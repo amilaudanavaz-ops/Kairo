@@ -763,9 +763,21 @@
                 <button 
                   onpointerdown={(e) => {
                     e.stopPropagation();
-                    if (draft?.rrule && draft.rrule !== 'none') {
+                    const isRecurring = Boolean(
+                      (draft?.rrule && draft.rrule !== 'none') ||
+                      draft?.recurringEventId ||
+                      draft?.isRecurringInstance
+                    );
+
+                    if (isRecurring && draft) {
                       const originalOccurrence = initialEventSnapshot?.occurrenceDate || calendarState.selectedDateKey || (draft.startTime ? format(parseISO(draft.startTime), 'yyyy-MM-dd') : undefined);
-                      contextMenuStore.promptRecurringAction('delete', masterEvent || draft, undefined, originalOccurrence);
+                      contextMenuStore.promptRecurringAction(
+                        'delete', 
+                        masterEvent || draft, 
+                        undefined, 
+                        originalOccurrence, 
+                        initialEventSnapshot || masterEvent || draft
+                      );
                     } else if (draft) {
                       eventStore.deleteEvent(draft.id);
                       handleInspectorClose();

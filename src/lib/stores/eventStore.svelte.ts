@@ -95,23 +95,25 @@ export function convertRRuleToRFC5545(rule?: string, startTimeIso?: string): str
 
   let rfcBase = '';
 
-  if (baseRule.toUpperCase().startsWith('FREQ=')) {
-    rfcBase = `RRULE:${baseRule}`;
-  } else if (baseRule === 'daily') {
+  if (baseRule === 'daily' || baseRule === 'FREQ=DAILY') {
     rfcBase = 'RRULE:FREQ=DAILY';
   } else if (baseRule === 'weekday') {
     rfcBase = 'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR';
-  } else if (baseRule === 'weekly') {
+  } else if (baseRule === 'weekly' || (baseRule.includes('FREQ=WEEKLY') && !baseRule.includes('INTERVAL=2') && !baseRule.includes('MO,TU,WE,TH,FR'))) {
     rfcBase = `RRULE:FREQ=WEEKLY;BYDAY=${dayCode}`;
-  } else if (baseRule === 'biweekly') {
+  } else if (baseRule === 'biweekly' || (baseRule.includes('FREQ=WEEKLY') && baseRule.includes('INTERVAL=2'))) {
     rfcBase = `RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=${dayCode}`;
-  } else if (baseRule === 'monthly_date' || baseRule === 'monthly') {
+  } else if (baseRule === 'monthly_date' || baseRule === 'monthly' || baseRule.includes('FREQ=MONTHLY;BYMONTHDAY')) {
     rfcBase = `RRULE:FREQ=MONTHLY;BYMONTHDAY=${d.getDate()}`;
-  } else if (baseRule === 'monthly_day') {
+  } else if (baseRule === 'monthly_day' || (baseRule.includes('FREQ=MONTHLY') && baseRule.includes('BYDAY='))) {
     const weekNum = Math.ceil(d.getDate() / 7);
     rfcBase = `RRULE:FREQ=MONTHLY;BYDAY=${weekNum}${dayCode}`;
-  } else if (baseRule === 'yearly') {
+  } else if (baseRule === 'yearly' || baseRule.includes('FREQ=YEARLY')) {
     rfcBase = 'RRULE:FREQ=YEARLY';
+  } else if (baseRule.toUpperCase().startsWith('FREQ=')) {
+    // If it's a custom rule with a single BYDAY, replace with new day code
+    const updatedByDay = baseRule.replace(/BYDAY=[A-Z]{2}/i, `BYDAY=${dayCode}`);
+    rfcBase = `RRULE:${updatedByDay}`;
   } else if (!baseRule || baseRule === 'none') {
     return '';
   } else {
@@ -501,21 +503,37 @@ class EventStore {
   }
 
   async deleteRecurringSeries(rootMasterGoogleId: string, calendarId?: string): Promise<void> {
-    this.events = this.events.filter(e => 
-      !(e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === rootMasterGoogleId)
+    // 1. Locate the master event record to get its canonical Google Event ID
+    const master = this.events.find(e => 
+      e.id === rootMasterGoogleId || 
+      e.googleEventId === rootMasterGoogleId || 
+      e.recurringEventId === rootMasterGoogleId
     );
+
+    const masterGid = master?.googleEventId || (!rootMasterGoogleId.startsWith('evt_') ? rootMasterGoogleId : undefined);
+    const targetCalId = calendarId || master?.calendarId;
+
+    // 2. Filter out master and all related child instances from memory
+    this.events = this.events.filter(e => {
+      const matchesMaster = e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.recurringEventId === rootMasterGoogleId;
+      const matchesGid = masterGid && (e.googleEventId === masterGid || e.recurringEventId === masterGid);
+      return !(matchesMaster || matchesGid);
+    });
+
+    // 3. Purge master and child rows from SQLite
     try {
       const db = await getDb();
       await db.execute(
-        `DELETE FROM events WHERE id = ?1 OR google_event_id = ?1 OR recurring_event_id = ?1;`,
-        [rootMasterGoogleId]
+        `DELETE FROM events WHERE id = ?1 OR google_event_id = ?1 OR recurring_event_id = ?1 ${masterGid ? 'OR google_event_id = ?2 OR recurring_event_id = ?2' : ''};`,
+        masterGid ? [rootMasterGoogleId, masterGid] : [rootMasterGoogleId]
       );
     } catch (err) {
       console.error('Failed to delete recurring series in DB:', err);
     }
 
-    if (calendarId) {
-      this.dispatchGoogleDelete(rootMasterGoogleId, calendarId).catch(() => {});
+    // 4. Dispatch Google Cloud deletion
+    if (masterGid && targetCalId) {
+      this.dispatchGoogleDelete(masterGid, targetCalId).catch(() => {});
     }
   }
 

@@ -18,16 +18,25 @@ class DragStore {
   originalOccurrenceDate = $state<string | null>(null);
   dropTargetDateKey = $state<string | null>(null);
   hoveredDateKey = $state<string | null>(null);
+  currentX = $state(0);
+  currentY = $state(0);
 
   /* ==========================================================================
      DRAG LIFECYCLE HANDLERS
      ========================================================================== */
 
-  startDrag(event: CalendarEvent, sourceDateKey?: string): void {
+  startDrag(event: CalendarEvent, sourceDateKey?: string, x?: number, y?: number): void {
     this.draggedEvent = { ...event };
     this.isDragging = true;
     this.dragSourceDateKey = sourceDateKey || event.occurrenceDate || format(parseISO(event.startTime), 'yyyy-MM-dd');
     this.originalOccurrenceDate = event.occurrenceDate || this.dragSourceDateKey;
+    if (x !== undefined) this.currentX = x;
+    if (y !== undefined) this.currentY = y;
+  }
+
+  updatePosition(x: number, y: number): void {
+    this.currentX = x;
+    this.currentY = y;
   }
 
   setDropTarget(dateKey: string | null): void {

@@ -17,6 +17,35 @@
   import { KAIRO_COLORS } from '../../utils/colors';
   import type { CalendarCategory } from '../../../types/event';
 
+  import { eventStore } from '../../stores/eventStore.svelte';
+  import { format, parseISO } from 'date-fns';
+
+  function handleDeleteEvent() {
+    const event = contextMenuStore.targetEvent;
+    if (!event) return;
+
+    // Check both rrule and recurringEventId to identify detached child exceptions
+    const isRecurring = Boolean(
+      (event.rrule && event.rrule !== 'none') ||
+      event.recurringEventId ||
+      event.isRecurringInstance
+    );
+
+    if (isRecurring) {
+      const occurrenceDate = event.occurrenceDate || format(parseISO(event.startTime), 'yyyy-MM-dd');
+      contextMenuStore.promptRecurringAction(
+        'delete',
+        event,
+        undefined,
+        occurrenceDate,
+        event
+      );
+    } else {
+      eventStore.deleteEvent(event.id);
+    }
+    contextMenuStore.close();
+  }
+
   let isColorHovered = $state(false);
   let closeTimeout: number | undefined;
 
@@ -249,7 +278,7 @@
 
         <button
           type="button"
-          onclick={() => contextMenuStore.delete()}
+          onclick={handleDeleteEvent}
           class="flex items-center justify-between px-3 py-1.5 rounded-xl hover:bg-rose-950/40 text-rose-400 transition-colors cursor-pointer"
         >
           <div class="flex items-center gap-2"><Trash2 size={13} /><span>Delete</span></div>
