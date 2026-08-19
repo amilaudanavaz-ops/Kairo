@@ -57,15 +57,7 @@
     // Resolve the master recurring series ID
     const rootMasterGoogleId = instance.recurringEventId || instance.googleEventId || instance.id;
 
-    // Find all occurrences belonging to this series
-    const siblingInstances = eventStore.events.filter(e => 
-      e.recurringEventId === rootMasterGoogleId || 
-      e.googleEventId === rootMasterGoogleId ||
-      e.id === instance.id ||
-      e.id === rootMasterGoogleId
-    ).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
-
-    // Resolve master start time
+    // Find the master event record
     const masterEvent = eventStore.events.find(e => e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId) || instance;
     const masterStart = parseISO(masterEvent.startTime);
     const occDate = parseISO(occurrenceDate);
@@ -84,13 +76,11 @@
             exdates: [...currentExdates, occurrenceDate]
           });
         }
-        // If it was already a detached row in SQLite, remove it
         if (instance.id !== masterEvent.id) {
           eventStore.deleteEvent(instance.id);
         }
       } else if (selectedScope === 'following' && occurrenceDate) {
         if (isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey) {
-          // Deleting from the beginning deletes the whole series
           await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
         } else {
           // Truncate the original series on the day before the split
@@ -113,7 +103,6 @@
           await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
         }
       } else {
-        // Delete all events in the series
         await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
       }
     } 
@@ -122,7 +111,7 @@
        ------------------------------------------------------------------------ */
     else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // 1. Add this date to the master series exdates
+        // Exclude date from master and insert detached exception instance
         const currentExdates = masterEvent.exdates || [];
         if (!currentExdates.includes(occurrenceDate)) {
           eventStore.updateEvent({
@@ -131,11 +120,10 @@
           });
         }
 
-        // 2. Insert a detached single event instance
         const detachedInstance: CalendarEvent = {
           ...updated,
           id: 'evt_' + Date.now(),
-          googleEventId: undefined, // Let eventStore.addEvent create a clean exception
+          googleEventId: undefined,
           recurringEventId: rootMasterGoogleId,
           occurrenceDate,
           isRecurringInstance: false,
@@ -158,14 +146,14 @@
           rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
         });
 
-        // 2. Remove old detached future instances from the split date forward
+        // 2. Remove detached future instances from SQLite and local state
         eventStore.events = eventStore.events.filter(e => {
           const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id);
           return !(isMatch && e.startTime >= occDate.toISOString() && e.id !== masterEvent.id);
         });
         await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
 
-        // 3. Spawn the new recurring series starting from the selected occurrence date
+        // 3. Spawn the new recurring series starting on the selected occurrence date
         const newSeriesId = 'evt_' + Date.now();
         const newSeries: CalendarEvent = {
           ...updated,
@@ -179,10 +167,10 @@
           updatedAt: new Date().toISOString()
         };
         
-        // Dispatches single Google creation cleanly without duplicates
+        // Dispatches single cloud creation cleanly
         eventStore.addEvent(newSeries);
       } else {
-        // Update all events in the master series
+        // Update all events across the master series
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
         const duration = Math.max(15, differenceInMinutes(newEnd, newStart));

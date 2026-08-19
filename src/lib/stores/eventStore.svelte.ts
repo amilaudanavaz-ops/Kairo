@@ -67,26 +67,56 @@ export function sanitizeTimezone(tz?: string): string {
   return tz;
 }
 
+/**
+ * Converts shorthand or mixed recurrence strings into strict RFC 5545 format.
+ * Preserves embedded UNTIL cutoff parameters during series splits.
+ */
 export function convertRRuleToRFC5545(rule?: string, startTimeIso?: string): string {
   if (!rule || rule === 'none') return '';
-  if (rule.toUpperCase().startsWith('RRULE:')) return rule;
-  if (rule.toUpperCase().startsWith('FREQ=')) return `RRULE:${rule}`;
+
+  // 1. Extract and preserve any existing UNTIL parameter
+  let untilParam = '';
+  const untilMatch = rule.match(/;?UNTIL=([^;]+)/i);
+  if (untilMatch && untilMatch[1]) {
+    untilParam = `;UNTIL=${untilMatch[1].trim()}`;
+  }
+
+  // 2. Clean the base rule of any UNTIL suffix or RRULE prefix
+  const baseRule = rule
+    .replace(/;?UNTIL=[^;]+/gi, '')
+    .replace(/^RRULE:/i, '')
+    .trim();
 
   const d = startTimeIso && isValid(parseISO(startTimeIso)) ? parseISO(startTimeIso) : new Date();
   const dayCodes = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
   const dayCode = dayCodes[d.getDay()];
 
-  if (rule === 'daily') return 'RRULE:FREQ=DAILY';
-  if (rule === 'weekday') return 'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR';
-  if (rule === 'weekly') return `RRULE:FREQ=WEEKLY;BYDAY=${dayCode}`;
-  if (rule === 'biweekly') return `RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=${dayCode}`;
-  if (rule === 'monthly_date' || rule === 'monthly') return `RRULE:FREQ=MONTHLY;BYMONTHDAY=${d.getDate()}`;
-  if (rule === 'monthly_day') {
+  let rfcBase = '';
+
+  if (baseRule.toUpperCase().startsWith('FREQ=')) {
+    rfcBase = `RRULE:${baseRule}`;
+  } else if (baseRule === 'daily') {
+    rfcBase = 'RRULE:FREQ=DAILY';
+  } else if (baseRule === 'weekday') {
+    rfcBase = 'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR';
+  } else if (baseRule === 'weekly') {
+    rfcBase = `RRULE:FREQ=WEEKLY;BYDAY=${dayCode}`;
+  } else if (baseRule === 'biweekly') {
+    rfcBase = `RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=${dayCode}`;
+  } else if (baseRule === 'monthly_date' || baseRule === 'monthly') {
+    rfcBase = `RRULE:FREQ=MONTHLY;BYMONTHDAY=${d.getDate()}`;
+  } else if (baseRule === 'monthly_day') {
     const weekNum = Math.ceil(d.getDate() / 7);
-    return `RRULE:FREQ=MONTHLY;BYDAY=${weekNum}${dayCode}`;
+    rfcBase = `RRULE:FREQ=MONTHLY;BYDAY=${weekNum}${dayCode}`;
+  } else if (baseRule === 'yearly') {
+    rfcBase = 'RRULE:FREQ=YEARLY';
+  } else if (!baseRule || baseRule === 'none') {
+    return '';
+  } else {
+    rfcBase = `RRULE:${baseRule}`;
   }
-  if (rule === 'yearly') return `RRULE:FREQ=YEARLY`;
-  return `RRULE:FREQ=WEEKLY;BYDAY=${dayCode}`;
+
+  return `${rfcBase}${untilParam}`;
 }
 
 export async function getValidTokenAndCalendar(calendarId: string): Promise<{ accessToken: string; googleCalendarId: string; accountId: string } | null> {
@@ -149,7 +179,7 @@ class EventStore {
   });
 
   /* ==========================================================================
-     OAUTH TOKEN REFRESH & INTERCEPTOR
+     OAUTH TOKEN REFRESH INTERCEPTOR
      ========================================================================== */
 
   private async refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
