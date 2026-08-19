@@ -405,27 +405,41 @@
 
   function selectNewDate(targetDay: Date) {
     if (!draft || isReadOnly) return;
-    const baseStart = parseISO(draft.startTime);
-    const baseEnd = parseISO(draft.endTime);
-    const duration = Math.max(15, differenceInMinutes(baseEnd, baseStart));
+    const dateStr = format(targetDay, 'yyyy-MM-dd');
 
-    const newStart = new Date(
-      targetDay.getFullYear(),
-      targetDay.getMonth(),
-      targetDay.getDate(),
-      baseStart.getHours(),
-      baseStart.getMinutes()
-    );
-    const newEnd = addMinutes(newStart, duration);
+    if (draft.isAllDay) {
+      draft = {
+        ...draft,
+        startTime: `${dateStr}T00:00:00`,
+        endTime: `${dateStr}T00:00:00`,
+        occurrenceDate: dateStr,
+        updatedAt: new Date().toISOString()
+      };
+    } else {
+      const baseStart = parseISO(draft.startTime);
+      const baseEnd = parseISO(draft.endTime);
+      const duration = Math.max(15, differenceInMinutes(baseEnd, baseStart));
 
-    draft = {
-      ...draft,
-      startTime: newStart.toISOString(),
-      endTime: newEnd.toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    dateInput = format(newStart, 'EEE MMM d');
-    pickerMonth = newStart;
+      const newStart = new Date(
+        targetDay.getFullYear(),
+        targetDay.getMonth(),
+        targetDay.getDate(),
+        baseStart.getHours(),
+        baseStart.getMinutes()
+      );
+      const newEnd = addMinutes(newStart, duration);
+
+      draft = {
+        ...draft,
+        startTime: newStart.toISOString(),
+        endTime: newEnd.toISOString(),
+        occurrenceDate: dateStr,
+        updatedAt: new Date().toISOString()
+      };
+    }
+
+    dateInput = format(targetDay, 'EEE MMM d');
+    pickerMonth = targetDay;
     activeSideMenu = 'none';
   }
 
@@ -517,13 +531,16 @@
     if (!draft || isReadOnly) return;
     const next = !draft.isAllDay;
     if (next) {
+      const dateStr = format(parseISO(draft.startTime), 'yyyy-MM-dd');
       updateDraft('isAllDay', true);
-      updateDraft('startTime', startOfDay(parseISO(draft.startTime)).toISOString());
-      updateDraft('endTime', endOfDay(parseISO(draft.startTime)).toISOString());
+      updateDraft('startTime', `${dateStr}T00:00:00`);
+      updateDraft('endTime', `${dateStr}T00:00:00`);
+      updateDraft('occurrenceDate', dateStr);
     } else {
       updateDraft('isAllDay', false);
-      const start = setMinutes(setHours(parseISO(draft.startTime), 9), 0);
-      const end = setMinutes(setHours(parseISO(draft.startTime), 10), 0);
+      const baseDate = parseISO(draft.startTime);
+      const start = setMinutes(setHours(baseDate, 9), 0);
+      const end = setMinutes(setHours(baseDate, 10), 0);
       updateDraft('startTime', start.toISOString());
       updateDraft('endTime', end.toISOString());
       startTimeInput = format(start, 'h:mm a');

@@ -244,57 +244,53 @@ class EventStore {
      ========================================================================== */
 
   getEventsForDateKey(dateKey: string): CalendarEvent[] {
-    if (!dateKey) return [];
-    let targetDate: Date;
-    try {
-      targetDate = parseISO(dateKey);
-      if (!isValid(targetDate)) return [];
-    } catch {
-      return [];
-    }
+    const result: CalendarEvent[] = [];
 
-    const hiddenCalendarIds = new Set(
-      calendarState.calendars
-        .filter(c => !c.isVisible)
-        .flatMap(c => [c.id, c.googleCalendarId].filter(Boolean) as string[])
+    // 1. Collect all standalone events and detached child exceptions
+    const standaloneAndExceptions = this.events.filter(e => 
+      !e.rrule || e.rrule === 'none' || e.recurringEventId
     );
 
-    const results: CalendarEvent[] = [];
+    // Track which (masterId + dateKey) occurrences have been overridden by child exceptions
+    const overriddenOccurrences = new Set<string>();
 
-    for (const evt of this.events) {
-      if (!evt.startTime) continue;
-      if (hiddenCalendarIds.has(evt.calendarId)) continue;
+    for (const e of standaloneAndExceptions) {
+      if (e.recurringEventId) {
+        const origDate = e.originalStartTime 
+          ? e.originalStartTime.split('T')[0] 
+          : (e.occurrenceDate || e.startTime.split('T')[0]);
+        overriddenOccurrences.add(`${e.recurringEventId}_${origDate}`);
+      }
 
-      if (eventOccursOnDay(evt, targetDate)) {
-        if (evt.recurringEventId || !evt.rrule || evt.rrule === 'none') {
-          results.push({
-            ...evt,
-            occurrenceDate: dateKey
-          });
-        } else {
-          const origStart = parseISO(evt.startTime);
-          const origEnd = evt.endTime ? parseISO(evt.endTime) : origStart;
-          const duration = Math.max(15, differenceInMinutes(origEnd, origStart));
-
-          const newStart = set(targetDate, {
-            hours: origStart.getHours(),
-            minutes: origStart.getMinutes(),
-            seconds: origStart.getSeconds()
-          });
-          const newEnd = addMinutes(newStart, duration);
-
-          results.push({
-            ...evt,
-            startTime: newStart.toISOString(),
-            endTime: newEnd.toISOString(),
-            occurrenceDate: dateKey,
-            isRecurringInstance: true
-          });
-        }
+      if (eventOccursOnDay(e, dateKey)) {
+        result.push(e);
       }
     }
 
-    return results;
+    // 2. Collect master recurring series and project occurrences
+    const masterEvents = this.events.filter(e => 
+      e.rrule && e.rrule !== 'none' && !e.recurringEventId
+    );
+
+    for (const master of masterEvents) {
+      const masterKey = master.id;
+      const googleKey = master.googleEventId;
+
+      // If a child exception exists for this date, suppress the master instance
+      const isOverridden = 
+        overriddenOccurrences.has(`${masterKey}_${dateKey}`) ||
+        (googleKey ? overriddenOccurrences.has(`${googleKey}_${dateKey}`) : false);
+
+      if (isOverridden) {
+        continue;
+      }
+
+      if (eventOccursOnDay(master, dateKey)) {
+        result.push(master);
+      }
+    }
+
+    return result;
   }
 
   getEventsForDate(date: Date): CalendarEvent[] {
@@ -328,15 +324,35 @@ class EventStore {
      INITIALIZATION & LIFECYCLE
      ========================================================================== */
 
+  private hasRegisteredListeners = false;
+  private pollIntervalTimer: number | undefined;
+
   async init(): Promise<void> {
     this.isLoading = true;
     try {
       const stored = await loadStoredEvents();
       this.events = stored;
 
+      // 1. Initial Google Calendar background sync
       this.syncGoogleEvents().catch((err) => {
         console.warn('Initial Google Calendar background sync failed:', err);
       });
+
+      // 2. Register window focus & short polling interval
+      if (!this.hasRegisteredListeners && typeof window !== 'undefined') {
+        this.hasRegisteredListeners = true;
+
+        // Auto-sync whenever user focuses back on the Kairo desktop app
+        window.addEventListener('focus', () => {
+          this.syncGoogleEvents().catch(console.warn);
+        });
+
+        // Fast delta-poll every 25 seconds using saved syncToken
+        if (this.pollIntervalTimer) clearInterval(this.pollIntervalTimer);
+        this.pollIntervalTimer = window.setInterval(() => {
+          this.syncGoogleEvents().catch(console.warn);
+        }, 25000);
+      }
     } catch (err) {
       console.error('Failed to load events from database:', err);
     } finally {
@@ -403,7 +419,7 @@ class EventStore {
     if (!auth) return;
 
     try {
-      await this.executeWithAuthRetry(
+      const res = await this.executeWithAuthRetry(
         auth.accountId,
         auth.accessToken,
         (token) => invoke<NormalizedGoogleEvent>('update_google_event', {
@@ -416,7 +432,7 @@ class EventStore {
             location: event.location || null,
             startTime: event.startTime,
             endTime: event.endTime,
-            isAllDay: event.isAllDay,
+            isAllDay: Boolean(event.isAllDay),
             timeZone: sanitizeTimezone(event.timeZone),
             rrule: convertRRuleToRFC5545(event.rrule, event.startTime),
             recurringEventId: event.recurringEventId || null,
@@ -424,8 +440,12 @@ class EventStore {
           }
         })
       );
+
+      if (res) {
+        await persistUpsertEvent(event);
+      }
     } catch (err) {
-      console.warn('Outbound Google event update failed:', err);
+      console.error('Outbound Google event update failed:', err);
     }
   }
 
@@ -634,14 +654,20 @@ class EventStore {
     const startDate = gEvt.start?.date;
     const endDate = gEvt.end?.date;
 
-    if (startDt) {
+    if (gEvt.is_all_day || gEvt.isAllDay || startDate) {
+      isAllDay = true;
+      const rawStart = gEvt.start_time || gEvt.startTime || startDate || '';
+      const rawEnd = gEvt.end_time || gEvt.endTime || endDate || rawStart;
+
+      const startDateStr = rawStart.split('T')[0];
+      const endDateStr = rawEnd.split('T')[0];
+
+      startTime = `${startDateStr}T00:00:00`;
+      endTime = `${endDateStr}T00:00:00`;
+    } else if (startDt) {
       startTime = parseISO(startDt).toISOString();
       endTime = endDt ? parseISO(endDt).toISOString() : addMinutes(parseISO(startTime), 60).toISOString();
-      isAllDay = Boolean(gEvt.is_all_day || gEvt.isAllDay);
-    } else if (startDate) {
-      startTime = new Date(startDate + 'T00:00:00').toISOString();
-      endTime = endDate ? new Date(endDate + 'T00:00:00').toISOString() : new Date(startDate + 'T23:59:59').toISOString();
-      isAllDay = true;
+      isAllDay = false;
     } else {
       return null;
     }

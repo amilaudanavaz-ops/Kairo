@@ -445,12 +445,12 @@ pub async fn fetch_google_events(
             if let Some(dt) = st.get("dateTime").and_then(|d| d.as_str()) {
                 (dt.to_string(), false, tz)
             } else if let Some(d) = st.get("date").and_then(|d| d.as_str()) {
-                (format!("{}T00:00:00Z", d), true, tz)
+                (format!("{}T00:00:00", d), true, tz)
             } else {
-                ("1970-01-01T00:00:00Z".to_string(), false, "UTC".to_string())
+                ("1970-01-01T00:00:00".to_string(), false, "UTC".to_string())
             }
         } else {
-            ("1970-01-01T00:00:00Z".to_string(), false, "UTC".to_string())
+            ("1970-01-01T00:00:00".to_string(), false, "UTC".to_string())
         };
 
         let end_obj = item.get("end");
@@ -458,7 +458,7 @@ pub async fn fetch_google_events(
             if let Some(dt) = et.get("dateTime").and_then(|d| d.as_str()) {
                 dt.to_string()
             } else if let Some(d) = et.get("date").and_then(|d| d.as_str()) {
-                format!("{}T23:59:59Z", d)
+                format!("{}T00:00:00", d)
             } else {
                 start_time.clone()
             }
@@ -513,6 +513,60 @@ pub async fn sync_google_calendar(
     Ok((calendars, all_events))
 }
 
+fn compute_all_day_end(start_date: &str, raw_end_date: &str) -> String {
+    if raw_end_date > start_date {
+        raw_end_date.to_string()
+    } else {
+        let parts: Vec<&str> = start_date.split('-').collect();
+        if parts.len() == 3 {
+            if let (Ok(y), Ok(m), Ok(d)) = (parts[0].parse::<i32>(), parts[1].parse::<u32>(), parts[2].parse::<u32>()) {
+                let days_in_month = match m {
+                    1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+                    4 | 6 | 9 | 11 => 30,
+                    2 => if (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) { 29 } else { 28 },
+                    _ => 30,
+                };
+                if d < days_in_month {
+                    format!("{:04}-{:02}-{:02}", y, m, d + 1)
+                } else if m < 12 {
+                    format!("{:04}-{:02}-01", y, m + 1)
+                } else {
+                    format!("{:04}-01-01", y + 1)
+                }
+            } else {
+                raw_end_date.to_string()
+            }
+        } else {
+            raw_end_date.to_string()
+        }
+    }
+}
+
+fn sanitize_iana_tz(tz: &str) -> String {
+    let lower = tz.to_lowercase();
+    if lower.contains("colombo") || lower.contains("kolkata") || lower.contains("india") {
+        "Asia/Colombo".to_string()
+    } else if lower.contains("karachi") || lower.contains("pakistan") {
+        "Asia/Karachi".to_string()
+    } else if lower.contains("london") {
+        "Europe/London".to_string()
+    } else if lower.contains("berlin") {
+        "Europe/Berlin".to_string()
+    } else if lower.contains("new_york") || lower.contains("new york") {
+        "America/New_York".to_string()
+    } else if lower.contains("los_angeles") || lower.contains("los angeles") {
+        "America/Los_Angeles".to_string()
+    } else if lower.contains("singapore") {
+        "Asia/Singapore".to_string()
+    } else if lower.contains("tokyo") {
+        "Asia/Tokyo".to_string()
+    } else if lower.contains('/') {
+        tz.to_string()
+    } else {
+        "UTC".to_string()
+    }
+}
+
 #[tauri::command]
 pub async fn create_google_event(
     access_token: String,
@@ -532,13 +586,15 @@ pub async fn create_google_event(
         "location": event.location.unwrap_or_default(),
     });
 
-    let tz = event.time_zone.unwrap_or_else(|| "UTC".to_string());
+    let tz = sanitize_iana_tz(&event.time_zone.unwrap_or_else(|| "UTC".to_string()));
 
     if event.is_all_day {
         let start_date = event.start_time.split('T').next().unwrap_or(&event.start_time);
-        let end_date = event.end_time.split('T').next().unwrap_or(&event.end_time);
+        let raw_end_date = event.end_time.split('T').next().unwrap_or(&event.end_time);
+        let exclusive_end_date = compute_all_day_end(start_date, raw_end_date);
+
         body["start"] = serde_json::json!({ "date": start_date });
-        body["end"] = serde_json::json!({ "date": end_date });
+        body["end"] = serde_json::json!({ "date": exclusive_end_date });
     } else {
         body["start"] = serde_json::json!({ "dateTime": event.start_time, "timeZone": tz });
         body["end"] = serde_json::json!({ "dateTime": event.end_time, "timeZone": tz });
@@ -638,16 +694,20 @@ pub async fn update_google_event(
         "location": event.location.unwrap_or_default(),
     });
 
-    let tz = event.time_zone.unwrap_or_else(|| "UTC".to_string());
+    let tz = sanitize_iana_tz(&event.time_zone.unwrap_or_else(|| "UTC".to_string()));
 
     if event.is_all_day {
         let start_date = event.start_time.split('T').next().unwrap_or(&event.start_time);
-        let end_date = event.end_time.split('T').next().unwrap_or(&event.end_time);
-        body["start"] = serde_json::json!({ "date": start_date });
-        body["end"] = serde_json::json!({ "date": end_date });
+        let raw_end_date = event.end_time.split('T').next().unwrap_or(&event.end_time);
+        let exclusive_end_date = compute_all_day_end(start_date, raw_end_date);
+
+        // Explicitly clear dateTime when converting from timed to all-day
+        body["start"] = serde_json::json!({ "date": start_date, "dateTime": serde_json::Value::Null });
+        body["end"] = serde_json::json!({ "date": exclusive_end_date, "dateTime": serde_json::Value::Null });
     } else {
-        body["start"] = serde_json::json!({ "dateTime": event.start_time, "timeZone": tz });
-        body["end"] = serde_json::json!({ "dateTime": event.end_time, "timeZone": tz });
+        // Explicitly clear date when converting from all-day to timed
+        body["start"] = serde_json::json!({ "dateTime": event.start_time, "timeZone": tz, "date": serde_json::Value::Null });
+        body["end"] = serde_json::json!({ "dateTime": event.end_time, "timeZone": tz, "date": serde_json::Value::Null });
     }
 
     if let Some(rrule_str) = event.rrule {

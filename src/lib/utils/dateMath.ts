@@ -20,7 +20,11 @@ import {
   addDays,
   subDays,
   subWeeks,
-  isValid
+  isValid,
+  isPast, 
+  getDay, 
+  getDate, 
+  parse
 } from 'date-fns';
 import type { CalendarEvent } from '../../types/event';
 
@@ -169,100 +173,59 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
 /**
  * Strict occurrence evaluator based on integer UTC timestamp comparisons.
  */
-export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean {
-  if (!event.startTime) return false;
-  let start: Date;
-  let end: Date;
-  try {
-    start = parseISO(event.startTime);
-    end = event.endTime ? parseISO(event.endTime) : start;
-    if (!isValid(start)) return false;
-  } catch {
-    return false;
-  }
+  export function eventOccursOnDay(event: CalendarEvent, targetDate: Date | string): boolean {
+  if (!event || !event.startTime) return false;
 
-  // 1. Integer UTC Midnight Timestamps
-  const targetUtcMidnight = Date.UTC(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate());
-  const startUtcMidnight = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
-  const endUtcMidnight = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+  const targetDay = typeof targetDate === 'string' ? parseISO(targetDate) : targetDate;
+  if (!isValid(targetDay)) return false;
+
   const targetDateKey = format(targetDay, 'yyyy-MM-dd');
+  const startDateKey = event.startTime.split('T')[0];
 
-  // Event cannot occur before its scheduled start date
-  if (targetUtcMidnight < startUtcMidnight) return false;
+  // 1. Exdates check (must run first before any recurrence calculations)
+  if (event.exdates) {
+    const exList = Array.isArray(event.exdates)
+      ? event.exdates
+      : (typeof event.exdates === 'string' ? JSON.parse(event.exdates || '[]') : []);
+    if (exList.includes(targetDateKey)) {
+      return false;
+    }
+  }
 
-  // Check RFC 5545 EXDATE exclusions
-  if (event.exdates && event.exdates.includes(targetDateKey)) {
+  // 2. Until date boundary check
+  if (event.untilDate && targetDateKey > event.untilDate) {
     return false;
   }
 
-  // 2. Strict UNTIL Boundary Evaluation (Pre-Evaluation Step)
-  if (event.untilDate) {
-    const untilDateObj = parseRRuleUntilDate(event.untilDate);
-    if (untilDateObj) {
-      const untilUtcMidnight = Date.UTC(
-        untilDateObj.getUTCFullYear(),
-        untilDateObj.getUTCMonth(),
-        untilDateObj.getUTCDate()
-      );
-      if (targetUtcMidnight > untilUtcMidnight) {
-        return false;
-      }
-    }
-  }
-
-  if (event.rrule && event.rrule !== 'none') {
-    const untilMatch = event.rrule.match(/UNTIL=([^;]+)/i);
-    if (untilMatch && untilMatch[1]) {
-      const untilDateObj = parseRRuleUntilDate(untilMatch[1]);
-      if (untilDateObj) {
-        const untilUtcMidnight = Date.UTC(
-          untilDateObj.getUTCFullYear(),
-          untilDateObj.getUTCMonth(),
-          untilDateObj.getUTCDate()
-        );
-        if (targetUtcMidnight > untilUtcMidnight) {
-          return false;
-        }
-      }
-    }
-  }
-
-  // 3. Non-recurring events or detached exception instances
+  // 3. Non-recurring events or detached child exceptions
   if (event.recurringEventId || !event.rrule || event.rrule === 'none') {
     if (event.isAllDay) {
-      return targetUtcMidnight >= startUtcMidnight && targetUtcMidnight <= endUtcMidnight;
+      const startKey = event.startTime.split('T')[0];
+      const endKey = (event.endTime || event.startTime).split('T')[0];
+
+      let inclusiveEndKey = endKey;
+      if (event.endTime && (event.endTime.includes('T00:00:00') || event.endTime.endsWith('T00:00:00Z')) && endKey > startKey) {
+        inclusiveEndKey = format(subDays(parseISO(endKey), 1), 'yyyy-MM-dd');
+      }
+
+      return targetDateKey >= startKey && targetDateKey <= inclusiveEndKey;
     }
-    return targetUtcMidnight === startUtcMidnight;
+    return targetDateKey === startDateKey;
   }
+
+  // 4. Cannot occur before initial series start date
+  if (targetDateKey < startDateKey) return false;
+
+  const start = parseISO(event.startTime);
+  if (!isValid(start)) return false;
+
+  // Normalized UTC midnights for interval calculation
+  const [sy, sm, sd] = startDateKey.split('-').map(Number);
+  const [ty, tm, td] = targetDateKey.split('-').map(Number);
+  const startUtcMidnight = Date.UTC(sy, sm - 1, sd);
+  const targetUtcMidnight = Date.UTC(ty, tm - 1, td);
 
   const rrule = event.rrule;
-
-  // 4. Shorthand Recurrence Formats
-  if (rrule === 'daily') {
-    return true;
-  }
-  if (rrule === 'weekday') {
-    const day = targetDay.getDay();
-    return day >= 1 && day <= 5;
-  }
-  if (rrule === 'weekly') {
-    return start.getDay() === targetDay.getDay();
-  }
-  if (rrule === 'biweekly') {
-    if (start.getDay() !== targetDay.getDay()) return false;
-    const diffDays = Math.round((targetUtcMidnight - startUtcMidnight) / 86400000);
-    const diffWeeks = Math.floor(diffDays / 7);
-    return diffWeeks % 2 === 0;
-  }
-  if (rrule === 'monthly_date' || rrule === 'monthly') {
-    return start.getDate() === targetDay.getDate();
-  }
-  if (rrule === 'monthly_day') {
-    return start.getDay() === targetDay.getDay() && getWeekOfMonth(start) === getWeekOfMonth(targetDay);
-  }
-  if (rrule === 'yearly') {
-    return start.getMonth() === targetDay.getMonth() && start.getDate() === targetDay.getDate();
-  }
 
   // 5. Canonical RFC 5545 Frequency Evaluation
   const clean = rrule.replace(/^RRULE:/i, '').trim();
@@ -280,14 +243,19 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
   const dayCodes = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
   const targetDayCode = dayCodes[targetDay.getDay()];
 
-  if (freq === 'DAILY') {
+  if (freq === 'DAILY' || clean === 'daily') {
     const diffDays = Math.round((targetUtcMidnight - startUtcMidnight) / 86400000);
     return diffDays % interval === 0;
   }
 
-  if (freq === 'WEEKLY') {
+  if (freq === 'WEEKLY' || clean === 'weekly' || clean === 'weekday' || clean === 'biweekly') {
     const diffDays = Math.round((targetUtcMidnight - startUtcMidnight) / 86400000);
     const diffWeeks = Math.floor(diffDays / 7);
+
+    if (clean === 'weekday') {
+      const day = targetDay.getDay();
+      return day >= 1 && day <= 5;
+    }
 
     if (byday) {
       const allowedDays = byday.split(',').map(s => s.trim().toUpperCase());
@@ -299,11 +267,12 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
     return diffWeeks % interval === 0;
   }
 
-  if (freq === 'MONTHLY') {
-    if (bymonthday) {
-      return targetDay.getDate() === parseInt(bymonthday, 10);
+  if (freq === 'MONTHLY' || clean === 'monthly' || clean === 'monthly_date' || clean === 'monthly_day') {
+    if (bymonthday || clean === 'monthly_date') {
+      const targetDayNum = bymonthday ? parseInt(bymonthday, 10) : start.getDate();
+      return targetDay.getDate() === targetDayNum;
     }
-    if (byday) {
+    if (byday || clean === 'monthly_day') {
       const match = byday.match(/^(-?\d+)?([A-Z]{2})$/);
       if (match) {
         const targetCode = match[2];
@@ -311,15 +280,17 @@ export function eventOccursOnDay(event: CalendarEvent, targetDay: Date): boolean
         if (targetDayCode !== targetCode) return false;
         return getWeekOfMonth(targetDay) === pos;
       }
+      const startWeekNum = getWeekOfMonth(start);
+      return targetDayCode === dayCodes[start.getDay()] && getWeekOfMonth(targetDay) === startWeekNum;
     }
     return start.getDate() === targetDay.getDate();
   }
 
-  if (freq === 'YEARLY') {
+  if (freq === 'YEARLY' || clean === 'yearly') {
     return start.getMonth() === targetDay.getMonth() && start.getDate() === targetDay.getDate();
   }
 
-  return targetUtcMidnight === startUtcMidnight;
+  return targetDateKey === startDateKey;
 }
 
 /**
