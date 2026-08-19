@@ -701,13 +701,11 @@ pub async fn update_google_event(
         let raw_end_date = event.end_time.split('T').next().unwrap_or(&event.end_time);
         let exclusive_end_date = compute_all_day_end(start_date, raw_end_date);
 
-        // Explicitly clear dateTime when converting from timed to all-day
-        body["start"] = serde_json::json!({ "date": start_date, "dateTime": serde_json::Value::Null });
-        body["end"] = serde_json::json!({ "date": exclusive_end_date, "dateTime": serde_json::Value::Null });
+        body["start"] = serde_json::json!({ "date": start_date });
+        body["end"] = serde_json::json!({ "date": exclusive_end_date });
     } else {
-        // Explicitly clear date when converting from all-day to timed
-        body["start"] = serde_json::json!({ "dateTime": event.start_time, "timeZone": tz, "date": serde_json::Value::Null });
-        body["end"] = serde_json::json!({ "dateTime": event.end_time, "timeZone": tz, "date": serde_json::Value::Null });
+        body["start"] = serde_json::json!({ "dateTime": event.start_time, "timeZone": tz });
+        body["end"] = serde_json::json!({ "dateTime": event.end_time, "timeZone": tz });
     }
 
     if let Some(rrule_str) = event.rrule {

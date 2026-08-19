@@ -11,7 +11,10 @@ import {
   getAccountAccessToken,
   getAccountTokens,
   loadDbSettings,
-  getDb
+  getDb,
+  deleteDbEventByGoogleId,
+  getCalendarSyncToken,
+  saveCalendarSyncToken
 } from '../db/database';
 import { calendarState } from './calendarState.svelte';
 import { 
@@ -251,15 +254,25 @@ class EventStore {
       !e.rrule || e.rrule === 'none' || e.recurringEventId
     );
 
-    // Track which (masterId + dateKey) occurrences have been overridden by child exceptions
+    // Track which (masterId + dateKey) occurrences have been overridden
     const overriddenOccurrences = new Set<string>();
 
     for (const e of standaloneAndExceptions) {
       if (e.recurringEventId) {
         const origDate = e.originalStartTime 
-          ? e.originalStartTime.split('T')[0] 
-          : (e.occurrenceDate || e.startTime.split('T')[0]);
+          ? format(parseISO(e.originalStartTime), 'yyyy-MM-dd')
+          : (e.occurrenceDate || format(parseISO(e.startTime), 'yyyy-MM-dd'));
+        
         overriddenOccurrences.add(`${e.recurringEventId}_${origDate}`);
+
+        // Also cross-reference master record's alternate IDs if available
+        const parentMaster = this.events.find(m => m.id === e.recurringEventId || m.googleEventId === e.recurringEventId);
+        if (parentMaster) {
+          overriddenOccurrences.add(`${parentMaster.id}_${origDate}`);
+          if (parentMaster.googleEventId) {
+            overriddenOccurrences.add(`${parentMaster.googleEventId}_${origDate}`);
+          }
+        }
       }
 
       if (eventOccursOnDay(e, dateKey)) {
@@ -276,7 +289,7 @@ class EventStore {
       const masterKey = master.id;
       const googleKey = master.googleEventId;
 
-      // If a child exception exists for this date, suppress the master instance
+      // If a child exception exists for this date, suppress the master occurrence
       const isOverridden = 
         overriddenOccurrences.has(`${masterKey}_${dateKey}`) ||
         (googleKey ? overriddenOccurrences.has(`${googleKey}_${dateKey}`) : false);
@@ -385,7 +398,7 @@ class EventStore {
             location: event.location || null,
             startTime: event.startTime,
             endTime: event.endTime,
-            isAllDay: event.isAllDay,
+            isAllDay: Boolean(event.isAllDay),
             timeZone: sanitizeTimezone(event.timeZone),
             rrule: convertRRuleToRFC5545(event.rrule, event.startTime),
             recurringEventId: event.recurringEventId || null,
@@ -394,18 +407,15 @@ class EventStore {
         })
       );
 
-      if (created && (created.google_event_id || created.id)) {
-        const gid = created.google_event_id || created.id;
-        const updatedWithGid: CalendarEvent = { 
-          ...event, 
-          googleEventId: gid, 
-          syncStatus: 'synced' as SyncStatus
-        };
-        this.events = this.events.map(e => e.id === event.id ? updatedWithGid : e);
-        await persistUpsertEvent(updatedWithGid);
+      if (created && created.google_event_id) {
+        event.googleEventId = created.google_event_id;
+        
+        // Update in-memory state so background sync recognizes this event and doesn't duplicate it
+        this.events = this.events.map(e => e.id === event.id ? { ...e, googleEventId: created.google_event_id } : e);
+        await persistUpsertEvent(event);
       }
     } catch (err) {
-      console.warn('Outbound Google event creation failed:', err);
+      console.error('Outbound Google event creation failed:', err);
     }
   }
 
@@ -473,11 +483,33 @@ class EventStore {
      ========================================================================== */
 
   addEvent(event: CalendarEvent): void {
+    let startIso: string;
+    let endIso: string;
+
+    if (event.isAllDay) {
+      const sKey = event.startTime ? event.startTime.split('T')[0] : format(new Date(), 'yyyy-MM-dd');
+      const eKey = event.endTime ? event.endTime.split('T')[0] : sKey;
+      startIso = `${sKey}T00:00:00`;
+      endIso = `${eKey}T00:00:00`;
+    } else {
+      startIso = event.startTime ? new Date(event.startTime).toISOString() : new Date().toISOString();
+      endIso = event.endTime ? new Date(event.endTime).toISOString() : addMinutes(parseISO(startIso), 60).toISOString();
+
+      if (new Date(endIso) <= new Date(startIso)) {
+        endIso = addMinutes(parseISO(startIso), 60).toISOString();
+      }
+    }
+
     const newEvent: CalendarEvent = {
       ...event,
+      startTime: startIso,
+      endTime: endIso,
+      timeZone: sanitizeTimezone(event.timeZone),
       updatedAt: new Date().toISOString()
     };
+
     this.events = [...this.events, newEvent];
+
     persistUpsertEvent(newEvent).catch((err) => {
       console.error('Failed to persist new event:', err);
     });
@@ -489,21 +521,25 @@ class EventStore {
     this.dispatchGoogleCreate(newEvent).catch(() => {});
   }
 
-  updateEvent(updated: CalendarEvent): void {
-    const freshEvent: CalendarEvent = {
-      ...updated,
+  updateEvent(event: CalendarEvent): void {
+    const updated: CalendarEvent = {
+      ...event,
+      timeZone: sanitizeTimezone(event.timeZone),
       updatedAt: new Date().toISOString()
     };
-    this.events = this.events.map((e) => (e.id === freshEvent.id ? freshEvent : e));
-    persistUpsertEvent(freshEvent).catch((err) => {
+
+    // Reassign array to trigger Svelte 5 reactivity immediately
+    this.events = this.events.map(e => e.id === event.id ? updated : e);
+
+    persistUpsertEvent(updated).catch((err) => {
       console.error('Failed to persist updated event:', err);
     });
 
-    if (freshEvent.reminders && freshEvent.reminders.length > 0) {
-      dispatchEventReminder(freshEvent);
+    if (updated.reminders && updated.reminders.length > 0) {
+      dispatchEventReminder(updated);
     }
 
-    this.dispatchGoogleUpdate(freshEvent).catch(() => {});
+    this.dispatchGoogleUpdate(updated).catch(() => {});
   }
 
   deleteEvent(id: string): void {
@@ -733,7 +769,6 @@ class EventStore {
         if (!acc.accessToken) continue;
 
         try {
-          // 1. Fetch calendars with automatic token refresh
           const cals = await this.executeWithAuthRetry(
             acc.id,
             acc.accessToken,
@@ -741,11 +776,8 @@ class EventStore {
           );
 
           if (Array.isArray(cals) && cals.length > 0) {
-            const calendarMap = new Map<string, string>();
-
             for (const cal of cals) {
               const calId = 'cal_' + cal.id.replace(/[^a-zA-Z0-9_]/g, '_');
-              calendarMap.set(cal.id, calId);
 
               const preservedVisibility = existingVisibilityMap.has(cal.id)
                 ? existingVisibilityMap.get(cal.id)!
@@ -770,39 +802,59 @@ class EventStore {
               };
               await persistCalendarCategory(newCal);
 
-              // 2. Fetch master events with automatic token refresh (singleEvents=false)
+              const savedSyncToken = await getCalendarSyncToken(cal.id);
+
               try {
                 const currentToken = (await getAccountAccessToken(acc.id)) || acc.accessToken;
                 const eventsRes = await this.executeWithAuthRetry(
                   acc.id,
                   currentToken,
-                  (token) => invoke<{ events: any[] }>('fetch_google_events', {
+                  (token) => invoke<{ events: any[]; next_sync_token?: string; nextSyncToken?: string }>('fetch_google_events', {
                     accessToken: token,
                     calendarId: cal.id,
                     timeMin: null,
                     timeMax: null,
-                    syncToken: null
+                    syncToken: savedSyncToken || null
                   })
                 );
 
                 if (eventsRes && Array.isArray(eventsRes.events)) {
-                  // Build lookup of current in-memory events to merge records and prevent ID churn
-                  const existingGoogleEventMap = new Map<string, CalendarEvent>();
+                  // Map existing local events by both googleEventId and id
+                  const existingByGoogleId = new Map<string, CalendarEvent>();
+                  const existingById = new Map<string, CalendarEvent>();
+
                   for (const e of this.events) {
-                    if (e.googleEventId) {
-                      existingGoogleEventMap.set(e.googleEventId, e);
-                    }
+                    if (e.googleEventId) existingByGoogleId.set(e.googleEventId, e);
+                    existingById.set(e.id, e);
                   }
 
                   for (const gEvt of eventsRes.events) {
+                    const rawGid = gEvt.google_event_id || gEvt.googleEventId || gEvt.id;
+
+                    if (gEvt.status === 'cancelled') {
+                      if (rawGid) {
+                        this.events = this.events.filter(e => e.googleEventId !== rawGid && e.id !== rawGid && e.recurringEventId !== rawGid);
+                        await deleteDbEventByGoogleId(rawGid);
+                      }
+                      continue;
+                    }
+
                     const mapped = this.mapGoogleEvent(gEvt, calId, acc.email);
                     if (mapped) {
-                      const matched = existingGoogleEventMap.get(mapped.googleEventId || '');
+                      const matched = existingByGoogleId.get(mapped.googleEventId || '') || existingById.get(mapped.googleEventId || '');
                       if (matched) {
                         mapped.id = matched.id;
+                        if ((!mapped.exdates || mapped.exdates.length === 0) && matched.exdates && matched.exdates.length > 0) {
+                          mapped.exdates = matched.exdates;
+                        }
                       }
                       await persistUpsertEvent(mapped);
                     }
+                  }
+
+                  const newSyncToken = eventsRes.next_sync_token || eventsRes.nextSyncToken;
+                  if (newSyncToken) {
+                    await saveCalendarSyncToken(cal.id, newSyncToken);
                   }
                 }
               } catch (evtErr) {

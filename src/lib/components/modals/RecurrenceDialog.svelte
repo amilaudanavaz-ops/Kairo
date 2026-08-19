@@ -208,7 +208,9 @@
         } else {
           // Modifying mid-series: truncate old master and spawn new series
           const cutoffDate = subDays(occDate, 1);
-          const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
+          const untilUtcStr = masterEvent.isAllDay 
+            ? format(cutoffDate, 'yyyyMMdd') 
+            : `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
           const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
           
           const canonicalMasterRRule = convertRRuleToRFC5545(masterEvent.rrule || 'weekly', masterEvent.startTime)
@@ -220,12 +222,22 @@
             rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
           });
 
-          // Remove detached future instances from SQLite and local state
+          // Remove detached future instances matching local or Google ID from memory and SQLite
+          const masterGid = masterEvent.googleEventId;
           eventStore.events = eventStore.events.filter(e => {
-            const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id);
+            const isMatch = (
+              e.recurringEventId === rootMasterGoogleId || 
+              e.id === instance.id ||
+              (masterGid && e.recurringEventId === masterGid) ||
+              e.recurringEventId === masterEvent.id
+            );
             return !(isMatch && e.startTime >= occDate.toISOString() && e.id !== masterEvent.id);
           });
+          
           await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
+          if (masterGid && masterGid !== rootMasterGoogleId) {
+            await deleteFutureInstancesFromDb(masterGid, occDate.toISOString());
+          }
 
           // Spawn the new recurring series with cadence matching the new target start day
           const rawRule = (updated.rrule && updated.rrule !== 'none') ? updated.rrule : canonicalMasterRRule;

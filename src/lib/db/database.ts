@@ -420,67 +420,81 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
 
 export async function persistUpsertEvent(event: CalendarEvent): Promise<void> {
   const db = await getDb();
+  
+  // 1. If google_event_id is present, check if a row with this google_event_id or id already exists
+  if (event.googleEventId) {
+    const existing = await db.select<{ id: string }[]>(
+      `SELECT id FROM events WHERE google_event_id = ?1 OR id = ?2 LIMIT 1;`,
+      [event.googleEventId, event.id]
+    );
+    if (existing.length > 0) {
+      event.id = existing[0].id;
+    }
+  }
+
   await db.execute(
     `INSERT INTO events (
-      id, calendar_id, google_event_id, recurring_event_id, title, description, location, 
-      conferencing_url, conferencing_provider, start_time, end_time, is_all_day, 
-      time_zone, rrule, exdates, until_date, status, busy_status, visibility, reminders, 
-      creator_email, participants, attachments, color_override, sync_status, updated_at
+      id, calendar_id, google_event_id, recurring_event_id, original_start_time,
+      rrule, exdates, until_date, title, description, location, conferencing_url,
+      conferencing_provider, start_time, end_time, is_all_day, time_zone, status,
+      busy_status, color_override, reminders, participants, attachments, sync_status,
+      creator_email, updated_at
     ) VALUES (
-      ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+      ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+      ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
     )
     ON CONFLICT(id) DO UPDATE SET
-      calendar_id = ?2,
-      google_event_id = ?3,
-      recurring_event_id = ?4,
-      title = ?5,
-      description = ?6,
-      location = ?7,
-      conferencing_url = ?8,
-      conferencing_provider = ?9,
-      start_time = ?10,
-      end_time = ?11,
-      is_all_day = ?12,
-      time_zone = ?13,
-      rrule = ?14,
-      exdates = ?15,
-      until_date = ?16,
-      status = ?17,
-      busy_status = ?18,
-      visibility = ?19,
-      reminders = ?20,
-      creator_email = ?21,
-      participants = ?22,
-      attachments = ?23,
-      color_override = ?24,
-      sync_status = ?25,
-      updated_at = ?26;`,
+      calendar_id = excluded.calendar_id,
+      google_event_id = COALESCE(excluded.google_event_id, events.google_event_id),
+      recurring_event_id = excluded.recurring_event_id,
+      original_start_time = excluded.original_start_time,
+      rrule = excluded.rrule,
+      exdates = excluded.exdates,
+      until_date = excluded.until_date,
+      title = excluded.title,
+      description = excluded.description,
+      location = excluded.location,
+      conferencing_url = excluded.conferencing_url,
+      conferencing_provider = excluded.conferencing_provider,
+      start_time = excluded.start_time,
+      end_time = excluded.end_time,
+      is_all_day = excluded.is_all_day,
+      time_zone = excluded.time_zone,
+      status = excluded.status,
+      busy_status = excluded.busy_status,
+      color_override = excluded.color_override,
+      reminders = excluded.reminders,
+      participants = excluded.participants,
+      attachments = excluded.attachments,
+      sync_status = excluded.sync_status,
+      creator_email = excluded.creator_email,
+      updated_at = excluded.updated_at;`,
     [
       event.id,
       event.calendarId,
       event.googleEventId || null,
       event.recurringEventId || null,
+      event.originalStartTime || null,
+      event.rrule || null,
+      JSON.stringify(event.exdates || []),
+      event.untilDate || null,
       event.title || '',
-      event.description || '',
-      event.location || '',
-      event.conferencingUrl || '',
-      event.conferencingProvider || 'google_meet',
+      event.description || null,
+      event.location || null,
+      event.conferencingUrl || null,
+      event.conferencingProvider || null,
       event.startTime,
       event.endTime,
       event.isAllDay ? 1 : 0,
       event.timeZone || 'GMT+5:30 Colombo',
-      event.rrule || 'none',
-      JSON.stringify(event.exdates || []),
-      event.untilDate || null,
       event.status || 'confirmed',
       event.busyStatus || 'busy',
-      event.visibility || 'default',
+      event.colorOverride || null,
       JSON.stringify(event.reminders || []),
-      event.creatorEmail || '',
       JSON.stringify(event.participants || []),
       JSON.stringify(event.attachments || []),
-      event.colorOverride || null,
       event.syncStatus || 'synced',
+      event.creatorEmail || null,
       event.updatedAt || new Date().toISOString()
     ]
   );
@@ -538,5 +552,39 @@ export async function persistContact(contact: ParticipantContact): Promise<void>
     `INSERT INTO contacts (email, name, avatar_url) VALUES (?1, ?2, ?3)
      ON CONFLICT(email) DO UPDATE SET name = ?2, avatar_url = ?3;`,
     [contact.email, contact.name, contact.avatarUrl || null]
+  );
+}
+/**
+ * Deletes an event and any associated child recurrence instances by Google Event ID.
+ */
+export async function deleteDbEventByGoogleId(googleEventId: string): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    `DELETE FROM events WHERE google_event_id = ?1 OR id = ?1 OR recurring_event_id = ?1;`,
+    [googleEventId]
+  );
+}
+
+/**
+ * Loads the latest Google sync token for a given calendar.
+ */
+export async function getCalendarSyncToken(calendarId: string): Promise<string | null> {
+  const db = await getDb();
+  const rows = await db.select<{ value: string }[]>(
+    `SELECT value FROM settings WHERE key = ?1 LIMIT 1;`,
+    [`sync_token_${calendarId}`]
+  );
+  return rows.length > 0 ? rows[0].value : null;
+}
+
+/**
+ * Persists the latest Google sync token for incremental delta sync.
+ */
+export async function saveCalendarSyncToken(calendarId: string, syncToken: string): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    `INSERT INTO settings (key, value) VALUES (?1, ?2)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+    [`sync_token_${calendarId}`, syncToken]
   );
 }

@@ -173,14 +173,30 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
 /**
  * Strict occurrence evaluator based on integer UTC timestamp comparisons.
  */
-  export function eventOccursOnDay(event: CalendarEvent, targetDate: Date | string): boolean {
+export function getEventDateKey(isoOrDateStr: string, isAllDay?: boolean): string {
+  if (!isoOrDateStr) return '';
+  if (isAllDay || !isoOrDateStr.includes('Z')) {
+    return isoOrDateStr.split('T')[0];
+  }
+  try {
+    const parsed = parseISO(isoOrDateStr);
+    return isValid(parsed) ? format(parsed, 'yyyy-MM-dd') : isoOrDateStr.split('T')[0];
+  } catch {
+    return isoOrDateStr.split('T')[0];
+  }
+}
+
+export function eventOccursOnDay(event: CalendarEvent, targetDate: Date | string): boolean {
   if (!event || !event.startTime) return false;
 
   const targetDay = typeof targetDate === 'string' ? parseISO(targetDate) : targetDate;
   if (!isValid(targetDay)) return false;
 
   const targetDateKey = format(targetDay, 'yyyy-MM-dd');
-  const startDateKey = event.startTime.split('T')[0];
+  
+  const startParsed = parseISO(event.startTime);
+  if (!isValid(startParsed)) return false;
+  const startDateKey = format(startParsed, 'yyyy-MM-dd');
 
   // 1. Exdates check (must run first before any recurrence calculations)
   if (event.exdates) {
@@ -192,12 +208,24 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
     }
   }
 
-  // 2. Until date boundary check
+  // 2. Direct untilDate field check
   if (event.untilDate && targetDateKey > event.untilDate) {
     return false;
   }
 
-  // 3. Non-recurring events or detached child exceptions
+  // 3. Check UNTIL parameter inside rrule string if present
+  if (event.rrule && event.rrule !== 'none') {
+    const untilMatch = event.rrule.match(/UNTIL=([0-9]{8})/i);
+    if (untilMatch && untilMatch[1]) {
+      const uStr = untilMatch[1]; // e.g. "20260817"
+      const untilDateKey = `${uStr.slice(0, 4)}-${uStr.slice(4, 6)}-${uStr.slice(6, 8)}`;
+      if (targetDateKey > untilDateKey) {
+        return false;
+      }
+    }
+  }
+
+  // 4. Non-recurring events or detached child exceptions
   if (event.recurringEventId || !event.rrule || event.rrule === 'none') {
     if (event.isAllDay) {
       const startKey = event.startTime.split('T')[0];
@@ -213,11 +241,8 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
     return targetDateKey === startDateKey;
   }
 
-  // 4. Cannot occur before initial series start date
+  // 5. Cannot occur before initial series start date
   if (targetDateKey < startDateKey) return false;
-
-  const start = parseISO(event.startTime);
-  if (!isValid(start)) return false;
 
   // Normalized UTC midnights for interval calculation
   const [sy, sm, sd] = startDateKey.split('-').map(Number);
@@ -227,7 +252,7 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
 
   const rrule = event.rrule;
 
-  // 5. Canonical RFC 5545 Frequency Evaluation
+  // 6. Canonical RFC 5545 Frequency Evaluation
   const clean = rrule.replace(/^RRULE:/i, '').trim();
   const parts: Record<string, string> = {};
   for (const p of clean.split(';')) {
@@ -263,13 +288,13 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
       return diffWeeks % interval === 0;
     }
 
-    if (start.getDay() !== targetDay.getDay()) return false;
+    if (startParsed.getDay() !== targetDay.getDay()) return false;
     return diffWeeks % interval === 0;
   }
 
   if (freq === 'MONTHLY' || clean === 'monthly' || clean === 'monthly_date' || clean === 'monthly_day') {
     if (bymonthday || clean === 'monthly_date') {
-      const targetDayNum = bymonthday ? parseInt(bymonthday, 10) : start.getDate();
+      const targetDayNum = bymonthday ? parseInt(bymonthday, 10) : startParsed.getDate();
       return targetDay.getDate() === targetDayNum;
     }
     if (byday || clean === 'monthly_day') {
@@ -280,14 +305,14 @@ export function formatRRuleLabel(rruleStr?: string, referenceDate?: Date): Recur
         if (targetDayCode !== targetCode) return false;
         return getWeekOfMonth(targetDay) === pos;
       }
-      const startWeekNum = getWeekOfMonth(start);
-      return targetDayCode === dayCodes[start.getDay()] && getWeekOfMonth(targetDay) === startWeekNum;
+      const startWeekNum = getWeekOfMonth(startParsed);
+      return targetDayCode === dayCodes[startParsed.getDay()] && getWeekOfMonth(targetDay) === startWeekNum;
     }
-    return start.getDate() === targetDay.getDate();
+    return startParsed.getDate() === targetDay.getDate();
   }
 
   if (freq === 'YEARLY' || clean === 'yearly') {
-    return start.getMonth() === targetDay.getMonth() && start.getDate() === targetDay.getDate();
+    return startParsed.getMonth() === targetDay.getMonth() && startParsed.getDate() === targetDay.getDate();
   }
 
   return targetDateKey === startDateKey;
