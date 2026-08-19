@@ -1,4 +1,4 @@
-import type { CalendarEvent, CalendarCategory, UserAccount } from '../../types/event';
+import type { CalendarEvent, CalendarCategory, UserAccount, SyncStatus } from '../../types/event';
 import { 
   loadStoredEvents, 
   persistUpsertEvent, 
@@ -10,6 +10,8 @@ import {
   persistCalendarCategory, 
   loadInitialCalendars, 
   getAccountAccessToken,
+  getAccountTokens,
+  loadDbSettings,
   getDb
 } from '../db/database';
 import { calendarState } from './calendarState.svelte';
@@ -36,12 +38,19 @@ import { invoke } from '@tauri-apps/api/core';
 
 export interface NormalizedGoogleEvent {
   id?: string;
+  google_event_id?: string;
   summary?: string;
+  title?: string;
   description?: string | null;
   location?: string | null;
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
+  start_time?: string;
+  end_time?: string;
+  is_all_day?: boolean;
+  time_zone?: string;
   recurrence?: string[];
+  rrule?: string;
   [key: string]: any;
 }
 
@@ -81,14 +90,23 @@ export function convertRRuleToRFC5545(rule?: string, startTimeIso?: string): str
   return `RRULE:FREQ=WEEKLY;BYDAY=${dayCode}`;
 }
 
-export async function getValidTokenAndCalendar(calendarId: string): Promise<{ accessToken: string; googleCalendarId: string } | null> {
-  const cal = calendarState.calendars.find(c => c.id === calendarId || c.googleCalendarId === calendarId);
+export async function getValidTokenAndCalendar(calendarId: string): Promise<{ accessToken: string; googleCalendarId: string; accountId: string } | null> {
+  let cal = calendarState.calendars.find(c => c.id === calendarId || c.googleCalendarId === calendarId);
+  if (!cal && calendarState.calendars.length > 0) {
+    cal = calendarState.calendars.find(c => c.isPrimary) || calendarState.calendars[0];
+  }
+  if (!cal) {
+    const dbCals = await loadInitialCalendars();
+    cal = dbCals.find(c => c.id === calendarId || c.googleCalendarId === calendarId) || dbCals.find(c => c.isPrimary) || dbCals[0];
+  }
   if (!cal) return null;
+
   const token = await getAccountAccessToken(cal.accountId);
   if (!token) return null;
   return {
     accessToken: token,
-    googleCalendarId: cal.googleCalendarId || 'primary'
+    googleCalendarId: cal.googleCalendarId || 'primary',
+    accountId: cal.accountId
   };
 }
 
@@ -132,13 +150,66 @@ class EventStore {
   });
 
   /* ==========================================================================
+     OAUTH TOKEN REFRESH & INTERCEPTOR
+     ========================================================================== */
+
+  private async refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
+    try {
+      const tokens = await getAccountTokens(accountId);
+      if (!tokens.refreshToken) {
+        console.warn(`Cannot refresh token for account ${accountId}: Missing refresh token.`);
+        return null;
+      }
+
+      const settings = await loadDbSettings();
+      const clientId = settings['google_client_id'] || settings['googleClientId'] || '';
+      const clientSecret = settings['google_client_secret'] || settings['googleClientSecret'] || '';
+
+      if (!clientId || !clientSecret) {
+        console.warn('Cannot refresh Google token: Client ID or Client Secret missing in settings.');
+        return null;
+      }
+
+      const res = await invoke<{ access_token: string; refresh_token?: string }>('refresh_google_token', {
+        clientId,
+        clientSecret,
+        refreshToken: tokens.refreshToken
+      });
+
+      if (res && res.access_token) {
+        await updateAccountTokens(accountId, res.access_token, res.refresh_token);
+        return res.access_token;
+      }
+    } catch (err) {
+      console.error(`Token refresh failed for account ${accountId}:`, err);
+    }
+    return null;
+  }
+
+  private async executeWithAuthRetry<T>(
+    accountId: string, 
+    currentAccessToken: string, 
+    action: (token: string) => Promise<T>
+  ): Promise<T> {
+    try {
+      return await action(currentAccessToken);
+    } catch (err: any) {
+      const errStr = typeof err === 'string' ? err : JSON.stringify(err);
+      if (errStr.includes('401') || errStr.includes('UNAUTHENTICATED') || errStr.includes('authError')) {
+        console.info(`Encountered 401 for account ${accountId}. Refreshing OAuth token...`);
+        const freshToken = await this.refreshAccessTokenForAccount(accountId);
+        if (freshToken) {
+          return await action(freshToken);
+        }
+      }
+      throw err;
+    }
+  }
+
+  /* ==========================================================================
      DATE LOOKUP & PROJECTION ENGINE
      ========================================================================== */
 
-  /**
-   * Retrieves all single-day and recurring event occurrences matching a date key (yyyy-MM-dd).
-   * Evaluates recurring formulas dynamically, honoring both untilDate and RRULE:UNTIL cutoffs.
-   */
   getEventsForDateKey(dateKey: string): CalendarEvent[] {
     if (!dateKey) return [];
     let targetDate: Date;
@@ -149,10 +220,17 @@ class EventStore {
       return [];
     }
 
+    const hiddenCalendarIds = new Set(
+      calendarState.calendars
+        .filter(c => !c.isVisible)
+        .flatMap(c => [c.id, c.googleCalendarId].filter(Boolean) as string[])
+    );
+
     const results: CalendarEvent[] = [];
 
     for (const evt of this.events) {
       if (!evt.startTime) continue;
+      if (hiddenCalendarIds.has(evt.calendarId)) continue;
 
       if (eventOccursOnDay(evt, targetDate)) {
         if (evt.recurringEventId || !evt.rrule || evt.rrule === 'none') {
@@ -161,7 +239,6 @@ class EventStore {
             occurrenceDate: dateKey
           });
         } else {
-          // Project occurrence timestamp onto the matching target day
           const origStart = parseISO(evt.startTime);
           const origEnd = evt.endTime ? parseISO(evt.endTime) : origStart;
           const duration = Math.max(15, differenceInMinutes(origEnd, origStart));
@@ -224,7 +301,6 @@ class EventStore {
       const stored = await loadStoredEvents();
       this.events = stored;
 
-      // Auto-sync Google Calendar events in background on startup
       this.syncGoogleEvents().catch((err) => {
         console.warn('Initial Google Calendar background sync failed:', err);
       });
@@ -237,6 +313,102 @@ class EventStore {
 
   async initDatabase(): Promise<void> {
     await this.init();
+  }
+
+  /* ==========================================================================
+     OUTBOUND GOOGLE CALENDAR DISPATCHERS (WITH TOKEN REFRESH)
+     ========================================================================== */
+
+  private async dispatchGoogleCreate(event: CalendarEvent): Promise<void> {
+    const auth = await getValidTokenAndCalendar(event.calendarId);
+    if (!auth) return;
+
+    try {
+      const created = await this.executeWithAuthRetry(
+        auth.accountId,
+        auth.accessToken,
+        (token) => invoke<NormalizedGoogleEvent>('create_google_event', {
+          accessToken: token,
+          calendarId: auth.googleCalendarId,
+          event: {
+            title: event.title || '(No Title)',
+            description: event.description || null,
+            location: event.location || null,
+            startTime: event.startTime,
+            endTime: event.endTime,
+            isAllDay: event.isAllDay,
+            timeZone: sanitizeTimezone(event.timeZone),
+            rrule: convertRRuleToRFC5545(event.rrule, event.startTime)
+          }
+        })
+      );
+
+      if (created && (created.google_event_id || created.id)) {
+        const gid = created.google_event_id || created.id;
+        const updatedWithGid: CalendarEvent = { 
+          ...event, 
+          googleEventId: gid, 
+          syncStatus: 'synced' as SyncStatus
+        };
+        this.events = this.events.map(e => e.id === event.id ? updatedWithGid : e);
+        await persistUpsertEvent(updatedWithGid);
+      }
+    } catch (err) {
+      console.warn('Outbound Google event creation failed:', err);
+    }
+  }
+
+  private async dispatchGoogleUpdate(event: CalendarEvent): Promise<void> {
+    if (!event.googleEventId) {
+      await this.dispatchGoogleCreate(event);
+      return;
+    }
+
+    const auth = await getValidTokenAndCalendar(event.calendarId);
+    if (!auth) return;
+
+    try {
+      await this.executeWithAuthRetry(
+        auth.accountId,
+        auth.accessToken,
+        (token) => invoke<NormalizedGoogleEvent>('update_google_event', {
+          accessToken: token,
+          calendarId: auth.googleCalendarId,
+          eventId: event.googleEventId,
+          event: {
+            title: event.title || '(No Title)',
+            description: event.description || null,
+            location: event.location || null,
+            startTime: event.startTime,
+            endTime: event.endTime,
+            isAllDay: event.isAllDay,
+            timeZone: sanitizeTimezone(event.timeZone),
+            rrule: convertRRuleToRFC5545(event.rrule, event.startTime)
+          }
+        })
+      );
+    } catch (err) {
+      console.warn('Outbound Google event update failed:', err);
+    }
+  }
+
+  private async dispatchGoogleDelete(googleEventId: string, calendarId: string): Promise<void> {
+    const auth = await getValidTokenAndCalendar(calendarId);
+    if (!auth) return;
+
+    try {
+      await this.executeWithAuthRetry(
+        auth.accountId,
+        auth.accessToken,
+        (token) => invoke('delete_google_event', {
+          accessToken: token,
+          calendarId: auth.googleCalendarId,
+          eventId: googleEventId
+        })
+      );
+    } catch (err) {
+      console.warn('Outbound Google event deletion failed:', err);
+    }
   }
 
   /* ==========================================================================
@@ -256,6 +428,8 @@ class EventStore {
     if (newEvent.reminders && newEvent.reminders.length > 0) {
       dispatchEventReminder(newEvent);
     }
+
+    this.dispatchGoogleCreate(newEvent).catch(() => {});
   }
 
   updateEvent(updated: CalendarEvent): void {
@@ -271,13 +445,20 @@ class EventStore {
     if (freshEvent.reminders && freshEvent.reminders.length > 0) {
       dispatchEventReminder(freshEvent);
     }
+
+    this.dispatchGoogleUpdate(freshEvent).catch(() => {});
   }
 
   deleteEvent(id: string): void {
+    const target = this.events.find(e => e.id === id);
     this.events = this.events.filter((e) => e.id !== id);
     persistDeleteEvent(id).catch((err) => {
       console.error('Failed to delete event from database:', err);
     });
+
+    if (target?.googleEventId) {
+      this.dispatchGoogleDelete(target.googleEventId, target.calendarId).catch(() => {});
+    }
   }
 
   deleteEventsByCalendarId(calendarId: string): void {
@@ -299,18 +480,7 @@ class EventStore {
     }
 
     if (calendarId) {
-      getValidTokenAndCalendar(calendarId).then(async (auth) => {
-        if (!auth) return;
-        try {
-          await invoke('delete_google_event', {
-            accessToken: auth.accessToken,
-            calendarId: auth.googleCalendarId,
-            eventId: rootMasterGoogleId
-          });
-        } catch (e) {
-          console.error('Failed to delete series on Google:', e);
-        }
-      });
+      this.dispatchGoogleDelete(rootMasterGoogleId, calendarId).catch(() => {});
     }
   }
 
@@ -381,6 +551,7 @@ class EventStore {
     const duplicated: CalendarEvent = {
       ...target,
       id: 'evt_' + Date.now(),
+      googleEventId: undefined,
       title: target.title ? `${target.title} (Copy)` : '(Copy)',
       updatedAt: new Date().toISOString()
     };
@@ -390,122 +561,7 @@ class EventStore {
   }
 
   /* ==========================================================================
-     RECURRING OCCURRENCE SPLITTING & MUTATIONS
-     ========================================================================== */
-
-  async deleteOccurrence(originalEventId: string, occurrenceDateKey: string): Promise<void> {
-    const target = this.events.find((e) => e.id === originalEventId);
-    if (!target) return;
-
-    const currentExdates = target.exdates || [];
-    if (!currentExdates.includes(occurrenceDateKey)) {
-      this.updateEvent({
-        ...target,
-        exdates: [...currentExdates, occurrenceDateKey]
-      });
-    }
-  }
-
-  async deleteFollowingOccurrences(originalEventId: string, fromDateKey: string): Promise<void> {
-    const target = this.events.find((e) => e.id === originalEventId);
-    if (!target) return;
-
-    const fromDate = parseISO(fromDateKey);
-    const masterStart = parseISO(target.startTime);
-
-    if (isSameDay(masterStart, fromDate)) {
-      this.deleteEvent(target.id);
-    } else {
-      const cutoffDateKey = format(subDays(fromDate, 1), 'yyyy-MM-dd');
-      const untilUtcStr = `${format(subDays(fromDate, 1), 'yyyyMMdd')}T235959Z`;
-      const cleanRRule = target.rrule ? target.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
-
-      this.updateEvent({
-        ...target,
-        untilDate: cutoffDateKey,
-        rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
-      });
-    }
-  }
-
-  async detachOccurrence(
-    originalEventId: string, 
-    occurrenceDateKey: string, 
-    updatedFields: Partial<CalendarEvent>
-  ): Promise<CalendarEvent | null> {
-    const target = this.events.find((e) => e.id === originalEventId);
-    if (!target) return null;
-
-    // 1. Exclude from master recurring series
-    await this.deleteOccurrence(originalEventId, occurrenceDateKey);
-
-    // 2. Insert detached standalone instance
-    const detachedEvent: CalendarEvent = {
-      ...target,
-      ...updatedFields,
-      id: 'evt_' + Date.now(),
-      recurringEventId: target.id,
-      rrule: 'none',
-      exdates: [],
-      untilDate: undefined,
-      updatedAt: new Date().toISOString()
-    };
-
-    this.addEvent(detachedEvent);
-    return detachedEvent;
-  }
-
-  async splitSeries(
-    originalEventId: string, 
-    splitDateKey: string, 
-    updatedFields: Partial<CalendarEvent>
-  ): Promise<CalendarEvent | null> {
-    const target = this.events.find((e) => e.id === originalEventId);
-    if (!target) return null;
-
-    const splitDate = parseISO(splitDateKey);
-    const masterStart = parseISO(target.startTime);
-
-    if (isSameDay(masterStart, splitDate)) {
-      const updated: CalendarEvent = {
-        ...target,
-        ...updatedFields,
-        id: target.id,
-        updatedAt: new Date().toISOString()
-      };
-      this.updateEvent(updated);
-      return updated;
-    }
-
-    // 1. Terminate original series before split date
-    const cutoffDateKey = format(subDays(splitDate, 1), 'yyyy-MM-dd');
-    const untilUtcStr = `${format(subDays(splitDate, 1), 'yyyyMMdd')}T235959Z`;
-    const cleanRRule = target.rrule ? target.rrule.replace(/;?UNTIL=[^;]+/gi, '') : 'weekly';
-
-    this.updateEvent({
-      ...target,
-      untilDate: cutoffDateKey,
-      rrule: `${cleanRRule};UNTIL=${untilUtcStr}`
-    });
-
-    // 2. Spawn new recurring series from split date forward
-    const followingSeries: CalendarEvent = {
-      ...target,
-      ...updatedFields,
-      id: 'evt_' + Date.now(),
-      recurringEventId: undefined,
-      exdates: [],
-      untilDate: undefined,
-      rrule: cleanRRule,
-      updatedAt: new Date().toISOString()
-    };
-
-    this.addEvent(followingSeries);
-    return followingSeries;
-  }
-
-  /* ==========================================================================
-     GOOGLE CALENDAR SYNC ENGINE
+     GOOGLE CALENDAR SYNC ENGINE (DEDUPLICATION & PRESERVATION)
      ========================================================================== */
 
   private mapGoogleEvent(gEvt: any, targetCalId: string, accountEmail: string): CalendarEvent | null {
@@ -515,15 +571,15 @@ class EventStore {
     let endTime = '';
     let isAllDay = false;
 
-    const startDt = gEvt.start?.dateTime || gEvt.start?.date_time;
-    const endDt = gEvt.end?.dateTime || gEvt.end?.date_time;
+    const startDt = gEvt.start_time || gEvt.startTime || gEvt.start?.dateTime || gEvt.start?.date_time;
+    const endDt = gEvt.end_time || gEvt.endTime || gEvt.end?.dateTime || gEvt.end?.date_time;
     const startDate = gEvt.start?.date;
     const endDate = gEvt.end?.date;
 
     if (startDt) {
       startTime = parseISO(startDt).toISOString();
       endTime = endDt ? parseISO(endDt).toISOString() : addMinutes(parseISO(startTime), 60).toISOString();
-      isAllDay = false;
+      isAllDay = Boolean(gEvt.is_all_day || gEvt.isAllDay);
     } else if (startDate) {
       startTime = new Date(startDate + 'T00:00:00').toISOString();
       endTime = endDate ? new Date(endDate + 'T00:00:00').toISOString() : new Date(startDate + 'T23:59:59').toISOString();
@@ -532,12 +588,10 @@ class EventStore {
       return null;
     }
 
-    // Preserve the raw recurrence rule (including any embedded UNTIL= parameter)
     const recurrenceRule = Array.isArray(gEvt.recurrence) && gEvt.recurrence.length > 0
       ? gEvt.recurrence[0].replace(/^RRULE:/i, '').trim()
-      : 'none';
+      : (gEvt.rrule || 'none');
 
-    // Extract UNTIL cutoff if present in the recurrence string
     let extractedUntilDate: string | undefined = undefined;
     if (recurrenceRule !== 'none') {
       const untilMatch = recurrenceRule.match(/UNTIL=([^;]+)/i);
@@ -549,31 +603,33 @@ class EventStore {
       }
     }
 
+    const rawGid = gEvt.google_event_id || gEvt.googleEventId || gEvt.id || String(Date.now());
+
     return {
-      id: 'evt_g_' + gEvt.id.replace(/[^a-zA-Z0-9_]/g, '_'),
+      id: 'evt_g_' + rawGid.replace(/[^a-zA-Z0-9_]/g, '_'),
       calendarId: targetCalId,
-      googleEventId: gEvt.id,
-      recurringEventId: gEvt.recurringEventId || gEvt.recurring_event_id,
-      title: gEvt.summary || '(No Title)',
+      googleEventId: rawGid,
+      recurringEventId: gEvt.recurring_event_id || gEvt.recurringEventId,
+      title: gEvt.title || gEvt.summary || '(No Title)',
       description: gEvt.description || '',
       location: gEvt.location || '',
-      conferencingUrl: gEvt.hangoutLink || gEvt.hangout_link || '',
-      conferencingProvider: 'google_meet',
+      conferencingUrl: gEvt.meeting_url || gEvt.meetingUrl || gEvt.hangoutLink || gEvt.hangout_link || '',
+      conferencingProvider: gEvt.conferencing_provider || gEvt.conferencingProvider || 'google_meet',
       startTime,
       endTime,
       isAllDay,
-      timeZone: gEvt.start?.timeZone || gEvt.start?.time_zone || 'GMT+5:30 Colombo',
+      timeZone: gEvt.time_zone || gEvt.timeZone || gEvt.start?.timeZone || 'GMT+5:30 Colombo',
       rrule: recurrenceRule,
       exdates: [],
       untilDate: extractedUntilDate,
       status: 'confirmed',
-      busyStatus: gEvt.transparency === 'transparent' ? 'free' : 'busy',
+      busyStatus: gEvt.busy_status || gEvt.busyStatus || (gEvt.transparency === 'transparent' ? 'free' : 'busy'),
       visibility: 'default',
       reminders: ['15m'],
       creatorEmail: accountEmail,
-      participants: gEvt.attendees ? gEvt.attendees.map((a: any) => a.email).filter(Boolean) : [],
+      participants: gEvt.participants || (gEvt.attendees ? gEvt.attendees.map((a: any) => a.email).filter(Boolean) : []),
       attachments: [],
-      syncStatus: 'synced',
+      syncStatus: 'synced' as SyncStatus,
       updatedAt: new Date().toISOString()
     };
   }
@@ -584,42 +640,87 @@ class EventStore {
 
     try {
       const accounts = await loadAllAccountsWithTokens();
+      const existingCalendars = await loadInitialCalendars();
+      const existingVisibilityMap = new Map(existingCalendars.map(c => [c.googleCalendarId || c.id, c.isVisible]));
+      const existingColorMap = new Map(existingCalendars.map(c => [c.googleCalendarId || c.id, c.colorHex]));
+
       for (const acc of accounts) {
         if (!acc.accessToken) continue;
 
         try {
-          const [cals, events] = await invoke<any>('sync_google_calendar', {
-            accessToken: acc.accessToken
-          });
+          // 1. Fetch calendars with automatic token refresh
+          const cals = await this.executeWithAuthRetry(
+            acc.id,
+            acc.accessToken,
+            (token) => invoke<any[]>('fetch_google_calendars', { accessToken: token })
+          );
 
-          if (Array.isArray(events)) {
-            await clearAllGoogleEvents();
+          if (Array.isArray(cals) && cals.length > 0) {
             const calendarMap = new Map<string, string>();
 
             for (const cal of cals) {
               const calId = 'cal_' + cal.id.replace(/[^a-zA-Z0-9_]/g, '_');
               calendarMap.set(cal.id, calId);
+
+              const preservedVisibility = existingVisibilityMap.has(cal.id)
+                ? existingVisibilityMap.get(cal.id)!
+                : (existingVisibilityMap.has(calId) ? existingVisibilityMap.get(calId)! : true);
+
+              const preservedColor = existingColorMap.get(cal.id) 
+                || existingColorMap.get(calId) 
+                || cal.background_color 
+                || cal.backgroundColor 
+                || '#3b82f6';
+
               const newCal: CalendarCategory = {
                 id: calId,
                 accountId: acc.id,
                 googleCalendarId: cal.id,
                 name: cal.summary || acc.email,
                 colorId: 'google_custom',
-                colorHex: cal.backgroundColor || cal.background_color || '#3b82f6',
+                colorHex: preservedColor,
                 isPrimary: Boolean(cal.primary),
-                isVisible: true,
-                accessRole: cal.accessRole || cal.access_role || 'owner'
+                isVisible: preservedVisibility,
+                accessRole: cal.access_role || cal.accessRole || 'owner'
               };
               await persistCalendarCategory(newCal);
-            }
 
-            const parsedEvents: CalendarEvent[] = [];
-            for (const gEvt of events) {
-              const targetCalId = calendarMap.get(gEvt.calendarId || gEvt.calendar_id || '') || calendarMap.values().next().value || 'cal_default';
-              const mapped = this.mapGoogleEvent(gEvt, targetCalId, acc.email);
-              if (mapped) {
-                parsedEvents.push(mapped);
-                await persistUpsertEvent(mapped);
+              // 2. Fetch master events with automatic token refresh (singleEvents=false)
+              try {
+                const currentToken = (await getAccountAccessToken(acc.id)) || acc.accessToken;
+                const eventsRes = await this.executeWithAuthRetry(
+                  acc.id,
+                  currentToken,
+                  (token) => invoke<{ events: any[] }>('fetch_google_events', {
+                    accessToken: token,
+                    calendarId: cal.id,
+                    timeMin: null,
+                    timeMax: null,
+                    syncToken: null
+                  })
+                );
+
+                if (eventsRes && Array.isArray(eventsRes.events)) {
+                  const existingGoogleEventMap = new Map<string, CalendarEvent>();
+                  for (const e of this.events) {
+                    if (e.googleEventId) {
+                      existingGoogleEventMap.set(e.googleEventId, e);
+                    }
+                  }
+
+                  for (const gEvt of eventsRes.events) {
+                    const mapped = this.mapGoogleEvent(gEvt, calId, acc.email);
+                    if (mapped) {
+                      const matched = existingGoogleEventMap.get(mapped.googleEventId || '');
+                      if (matched) {
+                        mapped.id = matched.id;
+                      }
+                      await persistUpsertEvent(mapped);
+                    }
+                  }
+                }
+              } catch (evtErr) {
+                console.warn(`Failed fetching events for calendar ${cal.id}:`, evtErr);
               }
             }
 

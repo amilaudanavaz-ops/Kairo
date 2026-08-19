@@ -27,6 +27,7 @@ pub fn run() {
             google::refresh_google_token,
             google::fetch_google_calendars,
             google::fetch_google_events,
+            google::sync_google_calendar,
             google::create_google_event,
             google::update_google_event,
             google::delete_google_event,

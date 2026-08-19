@@ -84,9 +84,13 @@ pub struct GoogleEventMutationPayload {
     pub title: String,
     pub description: Option<String>,
     pub location: Option<String>,
+    #[serde(alias = "startTime")]
     pub start_time: String,
+    #[serde(alias = "endTime")]
     pub end_time: String,
+    #[serde(alias = "isAllDay")]
     pub is_all_day: bool,
+    #[serde(alias = "timeZone")]
     pub time_zone: Option<String>,
     pub rrule: Option<String>,
 }
@@ -282,15 +286,16 @@ pub async fn fetch_google_events(
     let http_client = reqwest::Client::new();
     let encoded_cal_id = urlencoding::encode(&calendar_id);
 
-    let url_instances = if let Some(ref st) = sync_token {
+    // Query singleEvents=false to fetch master RFC 5545 recurrence definitions without server-side duplication
+    let url_events = if let Some(ref st) = sync_token {
         format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&maxResults=2500&syncToken={}",
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500&syncToken={}",
             encoded_cal_id,
             urlencoding::encode(st)
         )
     } else {
         let mut url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&orderBy=startTime&maxResults=2500",
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500",
             encoded_cal_id
         );
         if let Some(ref min) = time_min {
@@ -302,16 +307,17 @@ pub async fn fetch_google_events(
         url
     };
 
-    let mut res_instances = http_client
-        .get(&url_instances)
+    let mut res = http_client
+        .get(&url_events)
         .bearer_auth(&access_token)
         .send()
         .await
         .map_err(|e| format!("Events network error: {}", e))?;
 
-    if res_instances.status().as_u16() == 410 {
+    // Handle expired sync token by falling back to initial full fetch
+    if res.status().as_u16() == 410 {
         let mut fallback_url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&orderBy=startTime&maxResults=2500",
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500",
             encoded_cal_id
         );
         if let Some(ref min) = time_min {
@@ -320,7 +326,7 @@ pub async fn fetch_google_events(
         if let Some(ref max) = time_max {
             fallback_url.push_str(&format!("&timeMax={}", urlencoding::encode(max)));
         }
-        res_instances = http_client
+        res = http_client
             .get(&fallback_url)
             .bearer_auth(&access_token)
             .send()
@@ -328,12 +334,12 @@ pub async fn fetch_google_events(
             .map_err(|e| format!("Fallback events network error: {}", e))?;
     }
 
-    if !res_instances.status().is_success() {
-        let err_text = res_instances.text().await.unwrap_or_default();
+    if !res.status().is_success() {
+        let err_text = res.text().await.unwrap_or_default();
         return Err(format!("Google API error for calendar {}: {}", calendar_id, err_text));
     }
 
-    let json_val: serde_json::Value = res_instances
+    let json_val: serde_json::Value = res
         .json()
         .await
         .map_err(|e| format!("JSON parse error: {}", e))?;
@@ -348,39 +354,6 @@ pub async fn fetch_google_events(
         None => return Ok(GoogleEventsFetchResponse { events: vec![], next_sync_token }),
     };
 
-    let mut parent_metadata: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
-    if sync_token.is_none() {
-        let url_masters = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=1000",
-            encoded_cal_id
-        );
-        if let Ok(m_res) = http_client.get(&url_masters).bearer_auth(&access_token).send().await {
-            if m_res.status().is_success() {
-                if let Ok(m_json) = m_res.json::<serde_json::Value>().await {
-                    if let Some(m_items) = m_json.get("items").and_then(|i| i.as_array()) {
-                        for m_item in m_items {
-                            if let Some(m_id) = m_item.get("id").and_then(|id| id.as_str()) {
-                                let mut found_rrule: Option<String> = None;
-                                if let Some(rec_arr) = m_item.get("recurrence").and_then(|r| r.as_array()) {
-                                    for r in rec_arr {
-                                        if let Some(r_str) = r.as_str() {
-                                            if r_str.starts_with("RRULE:") || r_str.starts_with("FREQ=") {
-                                                found_rrule = Some(r_str.to_string());
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                                let p_desc = m_item.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
-                                parent_metadata.insert(m_id.to_string(), (found_rrule, p_desc));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     let mut events = Vec::new();
 
     for item in items_array {
@@ -392,7 +365,7 @@ pub async fn fetch_google_events(
         };
 
         let summary = item.get("summary").and_then(|s| s.as_str()).unwrap_or("(No Title)").to_string();
-        let mut description = item.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+        let description = item.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
         let location = item.get("location").and_then(|l| l.as_str()).map(|s| s.to_string());
 
         let mut meeting_url: Option<String> = None;
@@ -422,26 +395,14 @@ pub async fn fetch_google_events(
             orig.get("dateTime").or_else(|| orig.get("date")).and_then(|d| d.as_str()).map(|s| s.to_string())
         });
 
+        // Extract native master RRULE string
         let mut rrule: Option<String> = None;
-        if let Some(ref p_id) = recurring_event_id {
-            if let Some((parent_rrule, parent_desc)) = parent_metadata.get(p_id) {
-                if let Some(ref pr) = parent_rrule {
-                    rrule = Some(pr.clone());
-                }
-                if description.is_none() {
-                    description = parent_desc.clone();
-                }
-            }
-        }
-
-        if rrule.is_none() {
-            if let Some(rec_arr) = item.get("recurrence").and_then(|r| r.as_array()) {
-                for r in rec_arr {
-                    if let Some(r_str) = r.as_str() {
-                        if r_str.starts_with("RRULE:") || r_str.starts_with("FREQ=") {
-                            rrule = Some(r_str.to_string());
-                            break;
-                        }
+        if let Some(rec_arr) = item.get("recurrence").and_then(|r| r.as_array()) {
+            for r in rec_arr {
+                if let Some(r_str) = r.as_str() {
+                    if r_str.starts_with("RRULE:") || r_str.starts_with("FREQ=") {
+                        rrule = Some(r_str.to_string());
+                        break;
                     }
                 }
             }

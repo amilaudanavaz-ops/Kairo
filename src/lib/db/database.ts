@@ -3,24 +3,14 @@ import type {
   CalendarEvent, 
   CalendarCategory, 
   UserAccount, 
-  ParticipantContact 
+  ParticipantContact,
+  SyncStatus
 } from '../../types/event';
 
 let dbInstance: Database | null = null;
+let dbInitPromise: Promise<Database> | null = null;
 
-export async function getDb(): Promise<Database> {
-  if (!dbInstance) {
-    dbInstance = await Database.load('sqlite:kairo.db');
-  }
-  return dbInstance;
-}
-
-/**
- * Initializes database tables and runs non-destructive schema migrations.
- */
-export async function initDatabase(): Promise<Database> {
-  const db = await getDb();
-
+async function runInitMigrations(db: Database): Promise<void> {
   // 1. Settings Table
   await db.execute(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -100,20 +90,45 @@ export async function initDatabase(): Promise<Database> {
     );
   `);
 
-  // Non-destructive column migrations
-  try {
-    await db.execute(`ALTER TABLE events ADD COLUMN until_date TEXT;`);
-  } catch {
-    // Column already exists
-  }
+  // Non-destructive schema column migrations
+  const migrations = [
+    'ALTER TABLE events ADD COLUMN conferencing_url TEXT;',
+    'ALTER TABLE events ADD COLUMN conferencing_provider TEXT;',
+    'ALTER TABLE events ADD COLUMN until_date TEXT;',
+    'ALTER TABLE events ADD COLUMN color_override TEXT;',
+    'ALTER TABLE events ADD COLUMN participants TEXT;',
+    'ALTER TABLE events ADD COLUMN attachments TEXT;',
+    'ALTER TABLE events ADD COLUMN exdates TEXT;',
+    'ALTER TABLE events ADD COLUMN rrule TEXT;',
+    'ALTER TABLE events ADD COLUMN time_zone TEXT;',
+    'ALTER TABLE events ADD COLUMN sync_status TEXT;',
+    'ALTER TABLE events ADD COLUMN updated_at TEXT;'
+  ];
 
-  try {
-    await db.execute(`ALTER TABLE events ADD COLUMN color_override TEXT;`);
-  } catch {
-    // Column already exists
+  for (const migration of migrations) {
+    try {
+      await db.execute(migration);
+    } catch {
+      // Column already exists
+    }
   }
+}
 
-  return db;
+export async function getDb(): Promise<Database> {
+  if (dbInstance) return dbInstance;
+  if (!dbInitPromise) {
+    dbInitPromise = (async () => {
+      const db = await Database.load('sqlite:kairo.db');
+      await runInitMigrations(db);
+      dbInstance = db;
+      return db;
+    })();
+  }
+  return dbInitPromise;
+}
+
+export async function initDatabase(): Promise<Database> {
+  return getDb();
 }
 
 /* ==========================================================================
@@ -217,6 +232,18 @@ export async function getAccountAccessToken(accountId: string): Promise<string |
   return rows[0]?.access_token || null;
 }
 
+export async function getAccountTokens(accountId: string): Promise<{ accessToken: string | null; refreshToken: string | null }> {
+  const db = await getDb();
+  const rows = await db.select<{ access_token: string | null; refresh_token: string | null }[]>(
+    `SELECT access_token, refresh_token FROM accounts WHERE id = ?1 LIMIT 1;`,
+    [accountId]
+  );
+  return {
+    accessToken: rows[0]?.access_token || null,
+    refreshToken: rows[0]?.refresh_token || null
+  };
+}
+
 export async function loadAllAccountsWithTokens(): Promise<Array<UserAccount & { accessToken?: string; refreshToken?: string }>> {
   const db = await getDb();
   const rows = await db.select<any[]>(`
@@ -287,9 +314,9 @@ export async function persistCalendarCategory(cal: CalendarCategory): Promise<vo
        google_calendar_id = ?3,
        name = ?4,
        color_id = ?5,
-       color_hex = ?6,
+       color_hex = COALESCE(color_hex, ?6),
        is_primary = ?7,
-       is_visible = ?8,
+       is_visible = COALESCE(is_visible, ?8),
        access_role = ?9;`,
     [
       cal.id,
@@ -386,7 +413,7 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
     participants: safeJsonParse<string[]>(r.participants, []),
     attachments: safeJsonParse<string[]>(r.attachments, []),
     colorOverride: r.color_override || undefined,
-    syncStatus: r.sync_status || 'synced',
+    syncStatus: (r.sync_status as SyncStatus) || 'synced',
     updatedAt: r.updated_at || new Date().toISOString()
   }));
 }
@@ -473,6 +500,22 @@ export async function persistBatchEvents(events: CalendarEvent[]): Promise<void>
 export async function clearAllGoogleEvents(): Promise<void> {
   const db = await getDb();
   await db.execute(`DELETE FROM events WHERE google_event_id IS NOT NULL OR sync_status = 'synced';`);
+}
+
+export async function deleteSeriesFromDb(rootMasterGoogleId: string): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    `DELETE FROM events WHERE id = ?1 OR google_event_id = ?1 OR recurring_event_id = ?1;`,
+    [rootMasterGoogleId]
+  );
+}
+
+export async function deleteFutureInstancesFromDb(rootMasterGoogleId: string, fromIsoDate: string): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    `DELETE FROM events WHERE (id = ?1 OR google_event_id = ?1 OR recurring_event_id = ?1) AND start_time >= ?2;`,
+    [rootMasterGoogleId, fromIsoDate]
+  );
 }
 
 /* ==========================================================================

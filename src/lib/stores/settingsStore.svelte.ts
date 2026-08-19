@@ -1,129 +1,250 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { SettingsTab, UserAccount, CalendarCategory, CalendarEvent } from '../../types/event';
+import type { UserAccount, CalendarCategory } from '../../types/event';
 import { 
   loadDbSettings, 
   persistDbSetting, 
   loadDbAccounts, 
   persistDbAccount, 
   deleteDbAccount, 
-  clearAllDbAccounts,
-  persistCalendarCategory 
+  clearAllDbAccounts, 
+  loadInitialCalendars,
+  getDb
 } from '../db/database';
-import { calendarState } from './calendarState.svelte';
 import { eventStore } from './eventStore.svelte';
+import { calendarState } from './calendarState.svelte';
+
+export type SettingsTab = 
+  | 'general' 
+  | 'profile' 
+  | 'notifications' 
+  | 'menubar' 
+  | 'conferencing' 
+  | 'accounts' 
+  | 'calendars' 
+  | 'appearance' 
+  | 'integrations' 
+  | 'shortcuts';
+
+export interface GoogleAuthResultPayload {
+  profile: {
+    id: string;
+    email: string;
+    name?: string;
+    picture?: string;
+  };
+  access_token: string;
+  refresh_token?: string;
+  calendars: Array<{
+    id: string;
+    summary?: string;
+    backgroundColor?: string;
+    background_color?: string;
+    primary?: boolean;
+    accessRole?: string;
+    access_role?: string;
+  }>;
+}
+
+// Read bundled developer credentials from environment variables
+const ENV_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID || import.meta.env.GOOGLE_CLIENT_ID || '').trim();
+const ENV_CLIENT_SECRET = (import.meta.env.VITE_GOOGLE_CLIENT_SECRET || import.meta.env.GOOGLE_CLIENT_SECRET || '').trim();
 
 class SettingsStore {
+  // Modal & Navigation State
+  isLoaded = $state(false);
   isOpen = $state(false);
+  isSettingsModalOpen = $state(false);
   activeTab = $state<SettingsTab>('general');
-  isCommandMenuOpen = $state(false);
 
-  // Authentication State
-  isLoggedIn = $state(false);
-  preferredName = $state('');
-  email = $state('');
-  username = $state('');
-  avatarUrl = $state('');
-  isAuthenticating = $state(false);
+  // User Profile
+  preferredName = $state<string>('Amila Vaz');
+  username = $state<string>('amilavaz');
 
-  // Preferences
-  showWeekends = $state(true);
-  showDeclinedEvents = $state(true);
-  showWeekNumbers = $state(false);
-  startWeekOn = $state<'Sunday' | 'Monday'>('Sunday');
-  pressTAction = $state<'today' | 'selected'>('today');
-  upcomingMeetingContext = $state<'15m' | '30m' | '1h' | '2h' | '4h'>('4h');
-  language = $state('English');
+  // General & Time Preferences
   timeFormat = $state<'12h' | '24h'>('12h');
-  theme = $state<'auto' | 'light' | 'dark'>('dark');
+  weekStartsOn = $state<0 | 1>(0); // 0 = Sunday, 1 = Monday
+  startWeekOn = $state<'Sunday' | 'Monday'>('Sunday');
+  language = $state<string>('English');
+  showWeekends = $state<boolean>(true);
+  showDeclinedEvents = $state<boolean>(false);
+  showWeekNumbers = $state<boolean>(false);
+  dimPastEvents = $state<boolean>(true);
+  defaultEventDuration = $state<number>(30); // in minutes
+  defaultView = $state<'month' | 'week' | 'day'>('month');
+  defaultCalendarId = $state<string>('');
+  timeZone = $state<string>('GMT+5:30 Colombo');
 
-  // Notifications
-  notificationsEnabled = $state(true);
-  playNotificationSound = $state(true);
-  defaultReminderOffset = $state('15m');
-
-  // Menubar
-  menuBarEnabled = $state(true);
-  menuBarDaysSpan = $state<'1 day' | '2 days' | '3 days' | '7 days'>('3 days');
-  menuBarIncludeAllDay = $state(false);
-  menuBarIncludeNoParticipants = $state(true);
-
-  // Conferencing
+  // Conferencing Preferences
   defaultConferencing = $state<'google_meet' | 'zoom' | 'custom'>('google_meet');
-  zoomPmiLink = $state('');
-  zoomConnected = $state(false);
+  zoomPmiLink = $state<string>('');
 
-  // Accounts List
+  // Menu Bar Preferences
+  menuBarEnabled = $state<boolean>(true);
+  menuBarDaysSpan = $state<string>('1 day');
+  menuBarIncludeAllDay = $state<boolean>(true);
+  menuBarIncludeNoParticipants = $state<boolean>(false);
+
+  // Appearance Preferences
+  theme = $state<'auto' | 'dark' | 'light' | 'system'>('auto');
+  accentColor = $state<string>('#3b82f6');
+  compactMode = $state<boolean>(false);
+
+  // Notifications Preferences
+  notificationsEnabled = $state<boolean>(true);
+  playNotificationSound = $state<boolean>(true);
+  soundEnabled = $state<boolean>(true);
+  defaultReminderOffset = $state<string>('15m');
+  defaultNotificationOffset = $state<string>('15m');
+
+  // Integrations & Google OAuth Credentials
+  googleClientId = $state<string>(ENV_CLIENT_ID);
+  googleClientSecret = $state<string>(ENV_CLIENT_SECRET);
+  isGoogleAuthInProgress = $state<boolean>(false);
+  autoSyncIntervalMinutes = $state<number>(5);
+
+  // Connected User Accounts
   accounts = $state<UserAccount[]>([]);
+
+  /* ==========================================================================
+     REACTIVE DERIVATIONS
+     ========================================================================== */
+
+  hasConnectedAccounts = $derived.by(() => this.accounts.length > 0);
+  
+  primaryAccount = $derived.by(() => {
+    return this.accounts.find(a => a.isPrimary) || this.accounts[0] || null;
+  });
+
+  isGoogleConfigured = $derived.by(() => {
+    return Boolean(
+      (this.googleClientId.trim() || ENV_CLIENT_ID) && 
+      (this.googleClientSecret.trim() || ENV_CLIENT_SECRET)
+    );
+  });
+
+  /* ==========================================================================
+     INITIALIZATION & DATABASE HYDRATION
+     ========================================================================== */
 
   async init(): Promise<void> {
     try {
-      const saved = await loadDbSettings();
-      if (saved.showWeekends !== undefined) this.showWeekends = saved.showWeekends === 'true';
-      if (saved.showDeclinedEvents !== undefined) this.showDeclinedEvents = saved.showDeclinedEvents === 'true';
-      if (saved.showWeekNumbers !== undefined) this.showWeekNumbers = saved.showWeekNumbers === 'true';
-      if (saved.startWeekOn) this.startWeekOn = saved.startWeekOn as any;
-      if (saved.pressTAction) this.pressTAction = saved.pressTAction as any;
-      if (saved.language) this.language = saved.language;
-      if (saved.timeFormat) this.timeFormat = saved.timeFormat as any;
-      if (saved.theme) {
-        this.theme = saved.theme as any;
-      }
-      this.applyTheme(this.theme);
+      await getDb();
 
-      if (saved.notificationsEnabled !== undefined) this.notificationsEnabled = saved.notificationsEnabled === 'true';
-      if (saved.playNotificationSound !== undefined) this.playNotificationSound = saved.playNotificationSound === 'true';
-      if (saved.defaultReminderOffset) this.defaultReminderOffset = saved.defaultReminderOffset;
-      if (saved.defaultConferencing) this.defaultConferencing = saved.defaultConferencing as any;
-      if (saved.zoomPmiLink) {
-        this.zoomPmiLink = saved.zoomPmiLink;
-        this.zoomConnected = Boolean(saved.zoomPmiLink);
+      // 1. Load key-value settings from SQLite
+      const settings = await loadDbSettings();
+
+      if (settings['preferred_name'] || settings['preferredName']) {
+        this.preferredName = settings['preferred_name'] || settings['preferredName'];
+      }
+      if (settings['username']) {
+        this.username = settings['username'];
       }
 
-      const storedAccounts = await loadDbAccounts();
-      this.accounts = storedAccounts;
-
-      const sessionActive = saved.isLoggedIn === 'true';
-      if (sessionActive && storedAccounts.length > 0) {
-        const primary = storedAccounts.find((a: UserAccount) => a.isPrimary) || storedAccounts[0];
-        this.isLoggedIn = true;
-        this.preferredName = primary.name;
-        this.email = primary.email;
-        this.username = primary.email.split('@')[0].toLowerCase();
-        this.avatarUrl = primary.avatarUrl || '';
-      } else {
-        this.isLoggedIn = false;
-        this.preferredName = '';
-        this.email = '';
-        this.username = '';
-        this.avatarUrl = '';
+      if (settings['time_format'] || settings['timeFormat']) {
+        this.timeFormat = (settings['time_format'] || settings['timeFormat']) as '12h' | '24h';
+      }
+      if (settings['week_starts_on'] !== undefined || settings['weekStartsOn'] !== undefined) {
+        this.weekStartsOn = parseInt(settings['week_starts_on'] ?? settings['weekStartsOn'] ?? '0', 10) as 0 | 1;
+        this.startWeekOn = this.weekStartsOn === 1 ? 'Monday' : 'Sunday';
+      }
+      if (settings['start_week_on'] || settings['startWeekOn']) {
+        this.startWeekOn = (settings['start_week_on'] || settings['startWeekOn']) as 'Sunday' | 'Monday';
+        this.weekStartsOn = this.startWeekOn === 'Monday' ? 1 : 0;
+      }
+      if (settings['language']) {
+        this.language = settings['language'];
+      }
+      if (settings['show_weekends'] !== undefined || settings['showWeekends'] !== undefined) {
+        this.showWeekends = (settings['show_week_ends'] || settings['showWeekends']) !== 'false';
+      }
+      if (settings['show_declined_events'] !== undefined || settings['showDeclinedEvents'] !== undefined) {
+        this.showDeclinedEvents = (settings['show_declined_events'] || settings['showDeclinedEvents']) === 'true';
       }
 
-      // Automatic Sync Listeners (Window Focus & 60s Polling)
-      if (typeof window !== 'undefined') {
-        window.addEventListener('focus', () => {
-          if (this.accounts.length > 0) {
-            eventStore.syncGoogleEvents().catch(() => {});
-          }
-        });
-
-        setInterval(() => {
-          if (this.accounts.length > 0 && !eventStore.isSyncing) {
-            eventStore.syncGoogleEvents().catch(() => {});
-          }
-        }, 60000);
-
-        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-          if (this.theme === 'auto') {
-            this.applyTheme('auto');
-          }
-        });
+      if (settings['default_event_duration'] || settings['defaultEventDuration']) {
+        this.defaultEventDuration = parseInt(settings['default_event_duration'] || settings['defaultEventDuration'] || '30', 10);
       }
+      if (settings['default_view'] || settings['defaultView']) {
+        this.defaultView = (settings['default_view'] || settings['defaultView']) as 'month' | 'week' | 'day';
+      }
+      if (settings['default_calendar_id'] || settings['defaultCalendarId']) {
+        this.defaultCalendarId = settings['default_calendar_id'] || settings['defaultCalendarId'];
+      }
+      if (settings['time_zone'] || settings['timeZone']) {
+        this.timeZone = settings['time_zone'] || settings['timeZone'];
+      }
+
+      if (settings['default_conferencing'] || settings['defaultConferencing']) {
+        this.defaultConferencing = (settings['default_conferencing'] || settings['defaultConferencing']) as 'google_meet' | 'zoom' | 'custom';
+      }
+      if (settings['zoom_pmi_link'] || settings['zoomPmiLink']) {
+        this.zoomPmiLink = settings['zoom_pmi_link'] || settings['zoomPmiLink'];
+      }
+
+      if (settings['menubar_enabled'] !== undefined || settings['menuBarEnabled'] !== undefined) {
+        this.menuBarEnabled = (settings['menubar_enabled'] || settings['menuBarEnabled']) !== 'false';
+      }
+      if (settings['menubar_days_span'] || settings['menuBarDaysSpan']) {
+        this.menuBarDaysSpan = settings['menubar_days_span'] || settings['menuBarDaysSpan'];
+      }
+      if (settings['menubar_include_all_day'] !== undefined || settings['menuBarIncludeAllDay'] !== undefined) {
+        this.menuBarIncludeAllDay = (settings['menubar_include_all_day'] || settings['menuBarIncludeAllDay']) !== 'false';
+      }
+      if (settings['menubar_include_no_participants'] !== undefined || settings['menuBarIncludeNoParticipants'] !== undefined) {
+        this.menuBarIncludeNoParticipants = (settings['menubar_include_no_participants'] || settings['menuBarIncludeNoParticipants']) === 'true';
+      }
+
+      if (settings['theme']) {
+        this.theme = settings['theme'] as 'auto' | 'dark' | 'light' | 'system';
+        this.applyTheme(this.theme);
+      }
+      if (settings['accent_color'] || settings['accentColor']) {
+        this.accentColor = settings['accent_color'] || settings['accentColor'];
+      }
+      if (settings['compact_mode'] !== undefined || settings['compactMode'] !== undefined) {
+        this.compactMode = (settings['compact_mode'] || settings['compactMode']) === 'true';
+      }
+      if (settings['show_week_numbers'] !== undefined || settings['showWeekNumbers'] !== undefined) {
+        this.showWeekNumbers = (settings['show_week_numbers'] || settings['showWeekNumbers']) === 'true';
+      }
+      if (settings['dim_past_events'] !== undefined || settings['dimPastEvents'] !== undefined) {
+        this.dimPastEvents = (settings['dim_past_events'] || settings['dimPastEvents']) !== 'false';
+      }
+
+      if (settings['notifications_enabled'] !== undefined || settings['notificationsEnabled'] !== undefined) {
+        this.notificationsEnabled = (settings['notifications_enabled'] || settings['notificationsEnabled']) !== 'false';
+      }
+      if (settings['play_notification_sound'] !== undefined || settings['playNotificationSound'] !== undefined) {
+        this.playNotificationSound = (settings['play_notification_sound'] || settings['playNotificationSound']) !== 'false';
+        this.soundEnabled = this.playNotificationSound;
+      }
+      if (settings['default_reminder_offset'] || settings['defaultReminderOffset']) {
+        this.defaultReminderOffset = settings['default_reminder_offset'] || settings['defaultReminderOffset'];
+        this.defaultNotificationOffset = this.defaultReminderOffset;
+      }
+
+      this.googleClientId = ENV_CLIENT_ID || settings['google_client_id'] || settings['googleClientId'] || '';
+      this.googleClientSecret = ENV_CLIENT_SECRET || settings['google_client_secret'] || settings['googleClientSecret'] || '';
+      
+      if (settings['auto_sync_interval'] || settings['autoSyncInterval']) {
+        this.autoSyncIntervalMinutes = parseInt(settings['auto_sync_interval'] || settings['autoSyncInterval'] || '5', 10);
+      }
+
+      // 2. Load connected user accounts
+      this.accounts = await loadDbAccounts();
+
+      this.isLoaded = true;
     } catch (err) {
       console.error('Failed to load settings from DB:', err);
+      this.isLoaded = true;
     }
   }
 
-  async updateSetting(key: string, value: string): Promise<void> {
+  /* ==========================================================================
+     SETTINGS MUTATIONS & PERSISTENCE
+     ========================================================================== */
+
+  async setSetting(key: string, value: string): Promise<void> {
     try {
       await persistDbSetting(key, value);
     } catch (err) {
@@ -131,248 +252,250 @@ class SettingsStore {
     }
   }
 
-  applyTheme(selectedTheme: 'auto' | 'light' | 'dark') {
-    this.theme = selectedTheme;
-    this.updateSetting('theme', selectedTheme);
+  async updateSetting(key: string, value: string): Promise<void> {
+    await this.setSetting(key, value);
+  }
 
-    if (typeof document === 'undefined') return;
-    const root = document.documentElement;
+  setTimeFormat(format: '12h' | '24h'): void {
+    this.timeFormat = format;
+    this.setSetting('time_format', format);
+  }
 
-    if (selectedTheme === 'dark') {
-      root.classList.add('dark');
-      root.classList.remove('light');
-      root.setAttribute('data-theme', 'dark');
-      root.style.colorScheme = 'dark';
-    } else if (selectedTheme === 'light') {
-      root.classList.add('light');
-      root.classList.remove('dark');
-      root.setAttribute('data-theme', 'light');
-      root.style.colorScheme = 'light';
+  setWeekStartsOn(start: 0 | 1): void {
+    this.weekStartsOn = start;
+    this.startWeekOn = start === 1 ? 'Monday' : 'Sunday';
+    this.setSetting('week_starts_on', String(start));
+    this.setSetting('start_week_on', this.startWeekOn);
+  }
+
+  setDefaultEventDuration(minutes: number): void {
+    this.defaultEventDuration = minutes;
+    this.setSetting('default_event_duration', String(minutes));
+  }
+
+  setDefaultView(view: 'month' | 'week' | 'day'): void {
+    this.defaultView = view;
+    this.setSetting('default_view', view);
+  }
+
+  setTimeZone(tz: string): void {
+    this.timeZone = tz;
+    this.setSetting('time_zone', tz);
+  }
+
+  applyTheme(theme: 'auto' | 'dark' | 'light' | 'system'): void {
+    this.theme = theme;
+    this.setSetting('theme', theme);
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else if (theme === 'light') {
+      document.documentElement.classList.remove('dark');
     } else {
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      if (prefersDark) {
-        root.classList.add('dark');
-        root.classList.remove('light');
-        root.setAttribute('data-theme', 'dark');
-        root.style.colorScheme = 'dark';
-      } else {
-        root.classList.add('light');
-        root.classList.remove('dark');
-        root.setAttribute('data-theme', 'light');
-        root.style.colorScheme = 'light';
-      }
+      document.documentElement.classList.toggle('dark', prefersDark);
     }
   }
 
-  open(tab: SettingsTab = 'general') {
+  setTheme(theme: 'auto' | 'dark' | 'light' | 'system'): void {
+    this.applyTheme(theme);
+  }
+
+  setAccentColor(colorHex: string): void {
+    this.accentColor = colorHex;
+    this.setSetting('accent_color', colorHex);
+    document.documentElement.style.setProperty('--accent-color', colorHex);
+  }
+
+  setCompactMode(enabled: boolean): void {
+    this.compactMode = enabled;
+    this.setSetting('compact_mode', String(enabled));
+  }
+
+  setShowWeekNumbers(enabled: boolean): void {
+    this.showWeekNumbers = enabled;
+    this.setSetting('show_week_numbers', String(enabled));
+  }
+
+  setDimPastEvents(enabled: boolean): void {
+    this.dimPastEvents = enabled;
+    this.setSetting('dim_past_events', String(enabled));
+  }
+
+  setNotificationsEnabled(enabled: boolean): void {
+    this.notificationsEnabled = enabled;
+    this.setSetting('notifications_enabled', String(enabled));
+  }
+
+  setDefaultNotificationOffset(offset: string): void {
+    this.defaultReminderOffset = offset;
+    this.defaultNotificationOffset = offset;
+    this.setSetting('default_reminder_offset', offset);
+    this.setSetting('default_notification_offset', offset);
+  }
+
+  setSoundEnabled(enabled: boolean): void {
+    this.playNotificationSound = enabled;
+    this.soundEnabled = enabled;
+    this.setSetting('play_notification_sound', String(enabled));
+    this.setSetting('sound_enabled', String(enabled));
+  }
+
+  setGoogleCredentials(clientId: string, clientSecret: string): void {
+    this.googleClientId = clientId.trim();
+    this.googleClientSecret = clientSecret.trim();
+    this.setSetting('google_client_id', this.googleClientId);
+    this.setSetting('google_client_secret', this.googleClientSecret);
+  }
+
+  setAutoSyncInterval(minutes: number): void {
+    this.autoSyncIntervalMinutes = minutes;
+    this.setSetting('auto_sync_interval', String(minutes));
+  }
+
+  /* ==========================================================================
+     MODAL CONTROLS
+     ========================================================================== */
+
+  openSettingsModal(tab: SettingsTab = 'general'): void {
     this.activeTab = tab;
     this.isOpen = true;
+    this.isSettingsModalOpen = true;
   }
 
-  close() {
+  open(tab: SettingsTab = 'general'): void {
+    this.openSettingsModal(tab);
+  }
+
+  closeSettingsModal(): void {
     this.isOpen = false;
+    this.isSettingsModalOpen = false;
   }
 
-  openCommandMenu() {
-    this.isCommandMenuOpen = true;
+  close(): void {
+    this.closeSettingsModal();
   }
 
-  closeCommandMenu() {
-    this.isCommandMenuOpen = false;
+  /* ==========================================================================
+     GOOGLE OAUTH AUTHENTICATION & ACCOUNT MANAGEMENT
+     ========================================================================== */
+
+  async syncGoogleAccount(): Promise<void> {
+    await eventStore.syncGoogleEvents();
   }
 
-  toggleCommandMenu() {
-    this.isCommandMenuOpen = !this.isCommandMenuOpen;
-  }
+  async startGoogleAuth(customClientId?: string, customClientSecret?: string): Promise<boolean> {
+    const clientId = (customClientId || this.googleClientId || ENV_CLIENT_ID).trim();
+    const clientSecret = (customClientSecret || this.googleClientSecret || ENV_CLIENT_SECRET).trim();
 
-  async login(email: string, name: string = ''): Promise<void> {
-    const cleanEmail = email.trim();
-    const cleanName = name.trim() || cleanEmail.split('@')[0];
-    this.email = cleanEmail;
-    this.preferredName = cleanName;
-    this.username = cleanEmail.split('@')[0].toLowerCase();
-    this.isLoggedIn = true;
-    await this.updateSetting('isLoggedIn', 'true');
-    await this.addAccount(cleanEmail, cleanName);
-  }
-
-  async addAccount(email: string, name: string = 'Google User'): Promise<void> {
-    if (!email.trim()) return;
-    const exists = this.accounts.some((a: UserAccount) => a.email.toLowerCase() === email.toLowerCase());
-    if (!exists) {
-      const isPrimary = this.accounts.length === 0;
-      const candidate: UserAccount = {
-        id: 'acc_' + Date.now(),
-        email: email.trim(),
-        name: name.trim() || email.split('@')[0],
-        provider: 'google',
-        isPrimary,
-        syncEnabled: true
-      };
-      
-      const savedAccount = await persistDbAccount(candidate);
-      this.accounts = [...this.accounts, savedAccount];
-
-      const newCal: CalendarCategory = {
-        id: 'cal_' + Date.now(),
-        accountId: savedAccount.id,
-        name: savedAccount.email,
-        colorId: 'blue',
-        colorHex: '#3b82f6',
-        isPrimary,
-        isVisible: true,
-        accessRole: 'owner'
-      };
-      await persistCalendarCategory(newCal);
-      calendarState.calendars = [...calendarState.calendars, newCal];
-    }
-  }
-
-  async connectGoogleOAuth(): Promise<void> {
-    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
-    const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET || '';
-
-    if (!clientId) {
-      alert('VITE_GOOGLE_CLIENT_ID is missing from your .env file!');
-      return;
+    if (!clientId || !clientSecret) {
+      throw new Error('Google OAuth credentials are missing. Please add VITE_GOOGLE_CLIENT_ID and VITE_GOOGLE_CLIENT_SECRET to your .env file.');
     }
 
-    this.isAuthenticating = true;
+    this.setGoogleCredentials(clientId, clientSecret);
+    this.isGoogleAuthInProgress = true;
+
     try {
-      const authResult = await invoke<any>('start_google_auth', {
+      const authResult = await invoke<GoogleAuthResultPayload>('start_google_auth', {
         clientId,
         clientSecret
       });
 
-      const profile = authResult.profile;
-      const isPrimaryAccount = this.accounts.length === 0;
+      if (!authResult || !authResult.profile || !authResult.access_token) {
+        throw new Error('Google authorization returned an incomplete response.');
+      }
 
-      const candidate: UserAccount = {
-        id: 'acc_' + profile.id,
-        email: profile.email,
-        name: profile.name || profile.email.split('@')[0],
+      const isFirstAccount = this.accounts.length === 0;
+      const accountId = 'acc_' + authResult.profile.id.replace(/[^a-zA-Z0-9_]/g, '_');
+
+      const newAccount: UserAccount = {
+        id: accountId,
+        email: authResult.profile.email,
+        name: authResult.profile.name || authResult.profile.email.split('@')[0],
         provider: 'google',
-        avatarUrl: profile.picture,
-        isPrimary: isPrimaryAccount,
+        avatarUrl: authResult.profile.picture,
+        isPrimary: isFirstAccount,
         syncEnabled: true
       };
 
-      const tokenAccess = authResult.accessToken || authResult.access_token;
-      const tokenRefresh = authResult.refreshToken || authResult.refresh_token;
+      await persistDbAccount(newAccount, authResult.access_token, authResult.refresh_token);
 
-      const savedAccount = await persistDbAccount(candidate, tokenAccess, tokenRefresh);
-      this.accounts = [...this.accounts.filter((a: UserAccount) => a.email !== savedAccount.email), savedAccount];
-
-      this.isLoggedIn = true;
-      await this.updateSetting('isLoggedIn', 'true');
-      this.preferredName = savedAccount.name;
-      this.email = savedAccount.email;
-      this.username = savedAccount.email.split('@')[0].toLowerCase();
-      this.avatarUrl = savedAccount.avatarUrl || '';
-
-      const incomingCalendars = authResult.calendars || [];
-      if (Array.isArray(incomingCalendars) && incomingCalendars.length > 0) {
-        const hasExplicitPrimary = incomingCalendars.some((c: any) => c.primary === true);
-
-        if (isPrimaryAccount) {
-          calendarState.calendars = calendarState.calendars.map((c: CalendarCategory) => ({
-            ...c,
-            isPrimary: false
-          }));
-        }
-
-        for (let i = 0; i < incomingCalendars.length; i++) {
-          const cal = incomingCalendars[i];
-          const calId = 'cal_' + cal.id.replace(/[^a-zA-Z0-9_]/g, '_');
-          const colorHex = cal.backgroundColor || cal.background_color || '#3b82f6';
-          const accessRole = cal.accessRole || cal.access_role || 'owner';
-          
-          const isCalPrimary = hasExplicitPrimary 
-            ? Boolean(cal.primary) 
-            : (i === 0 && isPrimaryAccount);
-
-          const newCal: CalendarCategory = {
-            id: calId,
-            accountId: savedAccount.id,
-            googleCalendarId: cal.id,
-            name: cal.summary || savedAccount.email,
-            colorId: 'google_custom',
-            colorHex,
-            isPrimary: isCalPrimary,
-            isVisible: true,
-            accessRole
-          };
-
-          await persistCalendarCategory(newCal);
-        }
+      const existingIdx = this.accounts.findIndex(a => a.id === accountId || a.email === newAccount.email);
+      if (existingIdx >= 0) {
+        this.accounts[existingIdx] = newAccount;
+      } else {
+        this.accounts = [...this.accounts, newAccount];
       }
 
-      await eventStore.syncGoogleEvents();
-      this.close();
-    } catch (err) {
-      console.error('Google OAuth error:', err);
-      alert(`Google Sign-In failed: ${err}`);
+      eventStore.syncGoogleEvents().catch(err => {
+        console.warn('Initial Google sync following authentication failed:', err);
+      });
+
+      return true;
+    } catch (err: any) {
+      console.error('Google OAuth Authentication failed:', err);
+      throw err;
     } finally {
-      this.isAuthenticating = false;
+      this.isGoogleAuthInProgress = false;
     }
   }
 
-  async syncGoogleAccount(): Promise<void> {
-    if (this.accounts.length === 0) return;
-    this.isAuthenticating = true;
+  async removeAccount(accountId: string): Promise<void> {
     try {
-      await eventStore.syncGoogleEvents();
-    } catch (e) {
-      console.error('Failed to sync Google account:', e);
-    } finally {
-      setTimeout(() => {
-        this.isAuthenticating = false;
-      }, 500);
+      await deleteDbAccount(accountId);
+      this.accounts = this.accounts.filter(a => a.id !== accountId);
+
+      calendarState.calendars = await loadInitialCalendars();
+      await eventStore.init();
+    } catch (err) {
+      console.error(`Failed to delete account ${accountId}:`, err);
     }
   }
 
-  async logout(): Promise<void> {
-    this.isLoggedIn = false;
-    this.preferredName = '';
-    this.email = '';
-    this.username = '';
-    this.avatarUrl = '';
-    await this.updateSetting('isLoggedIn', 'false');
+  async toggleAccountSync(accountId: string, syncEnabled: boolean): Promise<void> {
+    const target = this.accounts.find(a => a.id === accountId);
+    if (!target) return;
+
+    const updated: UserAccount = { ...target, syncEnabled };
+    try {
+      await persistDbAccount(updated);
+      this.accounts = this.accounts.map(a => a.id === accountId ? updated : a);
+
+      if (syncEnabled) {
+        eventStore.syncGoogleEvents().catch(console.warn);
+      }
+    } catch (err) {
+      console.error(`Failed updating sync status for account ${accountId}:`, err);
+    }
   }
 
-  async removeAccount(id: string): Promise<void> {
-    const acc = this.accounts.find((a: UserAccount) => a.id === id);
-    if (!acc) return;
-    this.accounts = this.accounts.filter((a: UserAccount) => a.id !== id);
-    calendarState.calendars = calendarState.calendars.filter((c: CalendarCategory) => c.accountId !== id);
-    await deleteDbAccount(id);
-    if (this.accounts.length === 0) {
-      await this.logout();
+  async setPrimaryAccount(accountId: string): Promise<void> {
+    try {
+      for (const acc of this.accounts) {
+        const isPrimary = acc.id === accountId;
+        const updated = { ...acc, isPrimary };
+        await persistDbAccount(updated);
+      }
+      this.accounts = this.accounts.map(a => ({
+        ...a,
+        isPrimary: a.id === accountId
+      }));
+    } catch (err) {
+      console.error(`Failed setting primary account to ${accountId}:`, err);
     }
   }
 
   async deleteAccountAndData(): Promise<void> {
-    await clearAllDbAccounts();
-    await this.logout();
-    this.accounts = [];
-    calendarState.calendars = [];
-    eventStore.events = [];
+    await this.clearAllData();
   }
 
-  async setPrimaryAccount(id: string): Promise<void> {
-    this.accounts = this.accounts.map((a: UserAccount) => ({
-      ...a,
-      isPrimary: a.id === id
-    }));
-    for (const a of this.accounts) {
-      await persistDbAccount(a);
-    }
-    const primary = this.accounts.find((a: UserAccount) => a.id === id);
-    if (primary) {
-      this.preferredName = primary.name;
-      this.email = primary.email;
-      this.username = primary.email.split('@')[0].toLowerCase();
-      this.avatarUrl = primary.avatarUrl || '';
+  async clearAllData(): Promise<void> {
+    try {
+      await clearAllDbAccounts();
+      this.accounts = [];
+      calendarState.calendars = [];
+      eventStore.events = [];
+    } catch (err) {
+      console.error('Failed clearing application data:', err);
     }
   }
 }

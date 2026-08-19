@@ -95,16 +95,21 @@
   }
 </script>
 
-{#if settingsStore.isOpen}
+{#if settingsStore.isOpen || settingsStore.isSettingsModalOpen}
   <div 
     class="fixed inset-0 z-[150] bg-black/75 backdrop-blur-[2px] flex items-center justify-center select-none"
     onclick={() => settingsStore.close()}
+    onkeydown={(e) => e.key === 'Escape' && settingsStore.close()}
+    tabindex="-1"
     role="presentation"
   >
     <div 
       class="w-[780px] h-[540px] bg-[#191919] border border-[#2b2b2b] rounded-2xl shadow-[0_24px_70px_rgba(0,0,0,0.95)] flex overflow-hidden text-zinc-200 animate-in fade-in zoom-in-95 duration-150"
       onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}
       role="dialog"
+      aria-modal="true"
+      tabindex="0"
     >
       <!-- Left Navigation -->
       <aside class="w-56 bg-[#141414] border-r border-[#242424] p-3.5 flex flex-col justify-between shrink-0">
@@ -273,9 +278,10 @@
 
                 <div class="flex flex-col gap-1 bg-[#151515] p-2 rounded-xl border border-[#242424]">
                   {#each calendarState.calendars as cal (cal.id)}
-                    <div 
-                      oncontextmenu={(e) => contextMenuStore.openForCalendar(e, cal)}
-                      class="flex items-center justify-between p-2 rounded-lg hover:bg-[#202020] transition-colors group"
+                    <button 
+                      type="button"
+                      oncontextmenu={(e) => { e.preventDefault(); contextMenuStore.openForCalendar(e, cal); }}
+                      class="w-full flex items-center justify-between p-2 rounded-lg hover:bg-[#202020] transition-colors group text-left cursor-pointer"
                     >
                       <div class="flex items-center gap-2.5 truncate">
                         <span class="w-3 h-3 rounded-full shrink-0 shadow-sm" style="background-color: {cal.colorHex};"></span>
@@ -287,14 +293,17 @@
                         {/if}
                       </div>
 
-                      <button 
-                        onclick={(e) => contextMenuStore.openForCalendar(e, cal)}
+                      <div 
+                        onclick={(e) => { e.stopPropagation(); contextMenuStore.openForCalendar(e, cal); }}
+                        onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); contextMenuStore.openForCalendar(e as any, cal); } }}
+                        role="button"
+                        tabindex="0"
                         class="p-1 rounded text-zinc-500 hover:text-white hover:bg-[#2b2b2b] transition-colors cursor-pointer"
                         title="Calendar options"
                       >
                         <MoreHorizontal size={14} />
-                      </button>
-                    </div>
+                      </div>
+                    </button>
                   {/each}
                 </div>
               </div>
@@ -361,7 +370,9 @@
                 <span class="text-zinc-400">Start week on:</span>
                 <select 
                   bind:value={settingsStore.startWeekOn}
-                  onchange={() => settingsStore.updateSetting('startWeekOn', settingsStore.startWeekOn)}
+                  onchange={() => {
+                    settingsStore.setWeekStartsOn(settingsStore.startWeekOn === 'Monday' ? 1 : 0);
+                  }}
                   class="w-48 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
                 >
                   <option value="Sunday">Sunday</option>
@@ -391,7 +402,7 @@
                   <span class="text-zinc-400">Time format:</span>
                   <select 
                     bind:value={settingsStore.timeFormat}
-                    onchange={() => settingsStore.updateSetting('timeFormat', settingsStore.timeFormat)}
+                    onchange={() => settingsStore.setTimeFormat(settingsStore.timeFormat)}
                     class="w-48 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
                   >
                     <option value="12h">12-hour (5:16 PM)</option>
@@ -515,7 +526,7 @@
                   <input 
                     type="checkbox" 
                     bind:checked={settingsStore.playNotificationSound} 
-                    onchange={() => settingsStore.updateSetting('playNotificationSound', String(settingsStore.playNotificationSound))}
+                    onchange={() => settingsStore.setSoundEnabled(settingsStore.playNotificationSound)}
                     class="toggle-checkbox" 
                   />
                 </label>
@@ -526,7 +537,7 @@
                   <span class="text-zinc-400">Default Reminder Offset:</span>
                   <select 
                     bind:value={settingsStore.defaultReminderOffset}
-                    onchange={() => settingsStore.updateSetting('defaultReminderOffset', settingsStore.defaultReminderOffset)}
+                    onchange={() => settingsStore.setDefaultNotificationOffset(settingsStore.defaultReminderOffset)}
                     class="w-44 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
                   >
                     <option value="5m">5 minutes before</option>
