@@ -14,7 +14,8 @@ import {
   getDb,
   deleteDbEventByGoogleId,
   getCalendarSyncToken,
-  saveCalendarSyncToken
+  saveCalendarSyncToken,
+  clearCalendarSyncToken
 } from '../db/database';
 import { calendarState } from './calendarState.svelte';
 import { 
@@ -887,7 +888,7 @@ class EventStore {
                 );
 
                 if (eventsRes && Array.isArray(eventsRes.events)) {
-                  // Map existing local events by both googleEventId and id
+                  // Map existing local events by googleEventId and by local id
                   const existingByGoogleId = new Map<string, CalendarEvent>();
                   const existingById = new Map<string, CalendarEvent>();
 
@@ -899,19 +900,64 @@ class EventStore {
                   for (const gEvt of eventsRes.events) {
                     const rawGid = gEvt.google_event_id || gEvt.googleEventId || gEvt.id;
 
+                    /* --------------------------------------------------------
+                       1. HANDLE DELETED / CANCELLED REMOTE EVENTS
+                       -------------------------------------------------------- */
                     if (gEvt.status === 'cancelled') {
-                      if (rawGid) {
-                        this.events = this.events.filter(e => e.googleEventId !== rawGid && e.id !== rawGid && e.recurringEventId !== rawGid);
+                      if (!rawGid) continue;
+
+                      const isRecurrenceException = Boolean(
+                        gEvt.recurring_event_id || 
+                        gEvt.recurringEventId || 
+                        gEvt.original_start_time || 
+                        gEvt.originalStartTime
+                      );
+
+                      if (isRecurrenceException) {
+                        // Single occurrence deletion: add occurrence date to master's exdates
+                        const parentMasterId = gEvt.recurring_event_id || gEvt.recurringEventId;
+                        const origRaw = gEvt.original_start_time || gEvt.originalStartTime;
+                        const occDateKey = origRaw ? origRaw.split('T')[0] : '';
+
+                        if (parentMasterId && occDateKey) {
+                          const master = this.events.find(e => 
+                            e.id === parentMasterId || 
+                            e.googleEventId === parentMasterId
+                          );
+
+                          if (master) {
+                            const currentExdates = master.exdates || [];
+                            if (!currentExdates.includes(occDateKey)) {
+                              master.exdates = [...currentExdates, occDateKey];
+                              await persistUpsertEvent(master);
+                            }
+                          }
+                        }
+
+                        // Remove detached child exception row from local memory and SQLite
+                        this.events = this.events.filter(e => e.googleEventId !== rawGid && e.id !== rawGid);
+                        await deleteDbEventByGoogleId(rawGid);
+                      } else {
+                        // Standard event or master recurring series deletion
+                        this.events = this.events.filter(e => 
+                          e.googleEventId !== rawGid && 
+                          e.id !== rawGid && 
+                          e.recurringEventId !== rawGid
+                        );
                         await deleteDbEventByGoogleId(rawGid);
                       }
                       continue;
                     }
 
+                    /* --------------------------------------------------------
+                       2. HANDLE CREATED / UPDATED REMOTE EVENTS
+                       -------------------------------------------------------- */
                     const mapped = this.mapGoogleEvent(gEvt, calId, acc.email);
                     if (mapped) {
                       const matched = existingByGoogleId.get(mapped.googleEventId || '') || existingById.get(mapped.googleEventId || '');
                       if (matched) {
                         mapped.id = matched.id;
+                        // Preserve locally calculated exdates if Google did not explicitly provide them
                         if ((!mapped.exdates || mapped.exdates.length === 0) && matched.exdates && matched.exdates.length > 0) {
                           mapped.exdates = matched.exdates;
                         }

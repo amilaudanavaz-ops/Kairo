@@ -555,7 +555,7 @@ export async function persistContact(contact: ParticipantContact): Promise<void>
   );
 }
 /**
- * Deletes an event and any associated child recurrence instances by Google Event ID.
+ * Deletes an event by Google ID or local ID, and removes any child exception records.
  */
 export async function deleteDbEventByGoogleId(googleEventId: string): Promise<void> {
   const db = await getDb();
@@ -566,7 +566,7 @@ export async function deleteDbEventByGoogleId(googleEventId: string): Promise<vo
 }
 
 /**
- * Loads the latest Google sync token for a given calendar.
+ * Loads the latest Google sync token for a given calendar category.
  */
 export async function getCalendarSyncToken(calendarId: string): Promise<string | null> {
   const db = await getDb();
@@ -578,7 +578,7 @@ export async function getCalendarSyncToken(calendarId: string): Promise<string |
 }
 
 /**
- * Persists the latest Google sync token for incremental delta sync.
+ * Saves the latest Google sync token for incremental delta sync.
  */
 export async function saveCalendarSyncToken(calendarId: string, syncToken: string): Promise<void> {
   const db = await getDb();
@@ -587,4 +587,12 @@ export async function saveCalendarSyncToken(calendarId: string, syncToken: strin
      ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
     [`sync_token_${calendarId}`, syncToken]
   );
+}
+
+/**
+ * Clears the stored sync token if a full refresh is required.
+ */
+export async function clearCalendarSyncToken(calendarId: string): Promise<void> {
+  const db = await getDb();
+  await db.execute(`DELETE FROM settings WHERE key = ?1;`, [`sync_token_${calendarId}`]);
 }

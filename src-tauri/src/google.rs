@@ -290,16 +290,16 @@ pub async fn fetch_google_events(
     let http_client = reqwest::Client::new();
     let encoded_cal_id = urlencoding::encode(&calendar_id);
 
-    // Fetch master events with singleEvents=false to let local dateMath project series
+    // Fetch master events with singleEvents=false and showDeleted=true for incremental delta purging
     let url_events = if let Some(ref st) = sync_token {
         format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500&syncToken={}",
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&showDeleted=true&maxResults=2500&syncToken={}",
             encoded_cal_id,
             urlencoding::encode(st)
         )
     } else {
         let mut url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500",
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&showDeleted=true&maxResults=2500",
             encoded_cal_id
         );
         if let Some(ref min) = time_min {
@@ -318,9 +318,10 @@ pub async fn fetch_google_events(
         .await
         .map_err(|e| format!("Events network error: {}", e))?;
 
+    // Handle 410 Gone (expired or invalid sync token) by doing a full sync
     if res.status().as_u16() == 410 {
         let mut fallback_url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&maxResults=2500",
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=false&showDeleted=true&maxResults=2500",
             encoded_cal_id
         );
         if let Some(ref min) = time_min {
@@ -367,6 +368,37 @@ pub async fn fetch_google_events(
             None => continue,
         };
 
+        let recurring_event_id = item.get("recurringEventId").and_then(|r| r.as_str()).map(|s| s.to_string());
+        let original_start_time = item.get("originalStartTime").and_then(|orig| {
+            orig.get("dateTime").or_else(|| orig.get("date")).and_then(|d| d.as_str()).map(|s| s.to_string())
+        });
+
+        // Fast path for cancelled events (Google omits summary and timestamps for deleted entries)
+        if status == "cancelled" {
+            events.push(NormalizedGoogleEvent {
+                google_event_id,
+                recurring_event_id,
+                original_start_time,
+                rrule: None,
+                title: String::new(),
+                description: None,
+                location: None,
+                meeting_url: None,
+                conferencing_provider: None,
+                start_time: "1970-01-01T00:00:00".to_string(),
+                end_time: "1970-01-01T00:00:00".to_string(),
+                is_all_day: false,
+                time_zone: "UTC".to_string(),
+                status: "cancelled".to_string(),
+                busy_status: "free".to_string(),
+                color_override: None,
+                etag: item.get("etag").and_then(|e| e.as_str()).map(|s| s.to_string()),
+                participants: vec![],
+                reminders: vec![],
+            });
+            continue;
+        }
+
         let summary = item.get("summary").and_then(|s| s.as_str()).unwrap_or("(No Title)").to_string();
         let description = item.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
         let location = item.get("location").and_then(|l| l.as_str()).map(|s| s.to_string());
@@ -392,11 +424,6 @@ pub async fn fetch_google_events(
                 }
             }
         }
-
-        let recurring_event_id = item.get("recurringEventId").and_then(|r| r.as_str()).map(|s| s.to_string());
-        let original_start_time = item.get("originalStartTime").and_then(|orig| {
-            orig.get("dateTime").or_else(|| orig.get("date")).and_then(|d| d.as_str()).map(|s| s.to_string())
-        });
 
         let mut rrule: Option<String> = None;
         if let Some(rec_arr) = item.get("recurrence").and_then(|r| r.as_array()) {
