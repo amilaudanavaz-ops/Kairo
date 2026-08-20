@@ -128,32 +128,49 @@
     <CommandMenu />
     <AddAccountModal />
 
-    <!-- Floating Badge for Month View Dragging Only -->
-    {#if dragStore.isDragging && dragStore.draggedEvent && !dragStore.projectedStartTime && dragStore.currentX > 0 && dragStore.currentY > 0}
+    <!-- Sleek 1:1 In-Grid Match Floating Chip for Month View -->
+    {#if dragStore.isDragging && dragStore.draggedEvent && !dragStore.isTimelineDrag && dragStore.currentX > 0 && dragStore.currentY > 0}
       {@const event = dragStore.draggedEvent}
       {@const cal = calendarState.calendars.find(c => c.id === event.calendarId || c.googleCalendarId === event.calendarId)}
       {@const token = resolveEventColorToken(event.colorOverride || cal?.colorHex)}
-      <div
-        class="fixed pointer-events-none z-[99999] px-3 py-2 rounded-xl shadow-[0_16px_36px_rgba(0,0,0,0.85)] border border-white/20 backdrop-blur-md flex items-center gap-2.5 -translate-x-1/2 -translate-y-1/2 select-none rotate-2 scale-105"
-        style="
-          left: {dragStore.currentX}px; 
-          top: {dragStore.currentY}px; 
-          background-color: #1e1e1e;
-          border-left: 4px solid {token.hex};
-        "
-      >
-        <div class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style="background-color: {token.hex};"></div>
-        <div class="flex flex-col">
-          <span class="text-xs font-bold text-white leading-tight">
+
+      {#if event.isAllDay}
+        <div
+          class="fixed pointer-events-none z-[99999] px-2 py-0.5 rounded text-[11px] font-semibold truncate shadow-[0_12px_28px_rgba(0,0,0,0.7)] border border-white/20 -translate-x-1/2 -translate-y-1/2 select-none max-w-[190px]"
+          style="
+            left: {dragStore.currentX}px; 
+            top: {dragStore.currentY}px; 
+            background-color: {token.hex}; 
+            color: #ffffff;
+          "
+        >
+          <span class="truncate">{event.title || '(No Title)'}</span>
+        </div>
+      {:else}
+        <div
+          class="fixed pointer-events-none z-[99999] px-2 py-1 rounded-md text-[11px] flex items-center gap-1.5 shadow-[0_14px_30px_rgba(0,0,0,0.75)] border border-white/15 bg-[#181818] -translate-x-1/2 -translate-y-1/2 select-none max-w-[210px]"
+          style="
+            left: {dragStore.currentX}px; 
+            top: {dragStore.currentY}px;
+          "
+        >
+          <span 
+            class="w-[3px] h-3.5 rounded-full shrink-0" 
+            style="background-color: {token.hex};"
+          ></span>
+          <span 
+            class="text-[10px] font-bold shrink-0"
+            style="color: {token.timeText};"
+          >
+            {settingsStore.timeFormat === '24h' 
+              ? format(parseISO(event.startTime), 'HH:mm') 
+              : format(parseISO(event.startTime), 'haaa').toLowerCase()}
+          </span>
+          <span class="truncate font-bold text-white">
             {event.title || '(No Title)'}
           </span>
-          {#if !event.isAllDay}
-            <span class="text-[10px] font-medium text-zinc-400">
-              {format(parseISO(event.startTime), 'h:mm a')}
-            </span>
-          {/if}
         </div>
-      </div>
+      {/if}
     {/if}
   </main>
 {/if}

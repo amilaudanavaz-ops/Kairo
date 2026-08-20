@@ -209,7 +209,13 @@
       "
     >
       {#each gridCells as cell, i (cell.dateKey)}
-        {@const allDayEvents = eventStore.getEventsForDateKey(cell.dateKey).filter((e: CalendarEvent) => isCalendarVisible(e.calendarId))}
+        {@const allDayEvents = eventStore.getEventsForDateKey(cell.dateKey)
+          .filter((e: CalendarEvent) => isCalendarVisible(e.calendarId))
+          .sort((a, b) => {
+            if (a.isAllDay && !b.isAllDay) return -1;
+            if (!a.isAllDay && b.isAllDay) return 1;
+            return new Date(a.startTime).getTime() - new Date(b.startTime).getTime();
+          })}
         {@const visibleEvents = allDayEvents.slice(0, MAX_VISIBLE_EVENTS)}
         {@const overflowCount = allDayEvents.length - MAX_VISIBLE_EVENTS}
         {@const isHighlighted = dragStore.dropTargetDateKey === cell.dateKey}

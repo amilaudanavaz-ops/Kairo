@@ -280,10 +280,10 @@
               tabindex="0"
               onkeydown={(e) => e.key === 'Enter' && calendarState.openInspector(event, (e.currentTarget as HTMLElement).getBoundingClientRect(), false, dayKey)}
             >
-              <!-- Top Resize Handle -->
+              <!-- Top Resize Handle (Shrink/Expand Start Time) -->
               {#if !isReadOnly}
                 <div
-                  class="absolute top-0 left-0 right-0 h-1.5 cursor-ns-resize hover:bg-white/30 z-30"
+                  class="absolute top-0 left-0 right-0 h-2.5 cursor-ns-resize hover:bg-white/30 z-30"
                   onpointerdown={(e) => {
                     e.stopPropagation();
                     dragStore.initDrag(event, dayKey, e, 'resize-top');
@@ -311,10 +311,10 @@
                 </div>
               {/if}
 
-              <!-- Bottom Resize Handle -->
+              <!-- Bottom Resize Handle (Shrink/Expand End Time) -->
               {#if !isReadOnly}
                 <div
-                  class="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-white/30 z-30"
+                  class="absolute bottom-0 left-0 right-0 h-2.5 cursor-ns-resize hover:bg-white/30 z-30"
                   onpointerdown={(e) => {
                     e.stopPropagation();
                     dragStore.initDrag(event, dayKey, e, 'resize-bottom');

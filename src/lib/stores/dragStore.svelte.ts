@@ -8,13 +8,14 @@ export type DragMode = 'move' | 'resize-top' | 'resize-bottom';
 class DragStore {
   draggedEvent = $state<CalendarEvent | null>(null);
   isDragging = $state(false);
+  isTimelineDrag = $state(false);
   mode = $state<DragMode>('move');
   
   dragSourceDateKey = $state<string | null>(null);
   originalOccurrenceDate = $state<string | null>(null);
   dropTargetDateKey = $state<string | null>(null);
 
-  // Live snapped projections for in-grid phantom rendering
+  // Live snapped projections for Week/Day grid in-grid phantom box
   projectedDateKey = $state<string | null>(null);
   projectedStartTime = $state<string | null>(null);
   projectedEndTime = $state<string | null>(null);
@@ -65,8 +66,18 @@ class DragStore {
           this.dragSourceDateKey = this.pendingSourceDateKey;
           this.dropTargetDateKey = this.pendingSourceDateKey;
           this.projectedDateKey = this.pendingSourceDateKey;
-          this.projectedStartTime = this.pendingEvent?.startTime || null;
-          this.projectedEndTime = this.pendingEvent?.endTime || null;
+          
+          if (this.mode === 'resize-top' || this.mode === 'resize-bottom') {
+            document.body.style.cursor = 'ns-resize';
+            this.isTimelineDrag = true;
+            this.projectedStartTime = this.pendingEvent?.startTime || null;
+            this.projectedEndTime = this.pendingEvent?.endTime || null;
+          } else {
+            document.body.style.cursor = 'grabbing';
+            this.isTimelineDrag = false;
+            this.projectedStartTime = null;
+            this.projectedEndTime = null;
+          }
           document.body.style.userSelect = 'none';
         }
       }
@@ -74,9 +85,10 @@ class DragStore {
       if (this.isDragging && this.draggedEvent) {
         const elem = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
         
-        // Check timeline column (Week/Day grid)
+        // 1. Check if hovering a 24-hour timeline column (Week/Day view)
         const timelineCol = elem?.closest('[data-timeline-column]') as HTMLElement | null;
         if (timelineCol) {
+          this.isTimelineDrag = true;
           const colDateKey = timelineCol.getAttribute('data-timeline-column') || this.dragSourceDateKey;
           this.dropTargetDateKey = colDateKey;
           this.projectedDateKey = colDateKey;
@@ -97,24 +109,44 @@ class DragStore {
             this.projectedStartTime = newStart.toISOString();
             this.projectedEndTime = newEnd.toISOString();
           } else if (this.mode === 'resize-bottom') {
+            // Pin start time, scale end time down/up (min 15 mins duration)
+            const startHour = Math.floor(this.initialStartMinutes / 60);
+            const startMin = this.initialStartMinutes % 60;
+            const pinnedStart = new Date(y, m - 1, d, startHour, startMin, 0);
+
             const newEndMin = Math.min(1440, Math.max(this.initialStartMinutes + 15, currentHoverMinutes));
             const newEnd = new Date(y, m - 1, d, Math.floor(newEndMin / 60), newEndMin % 60, 0);
+
+            this.projectedStartTime = pinnedStart.toISOString();
             this.projectedEndTime = newEnd.toISOString();
           } else if (this.mode === 'resize-top') {
+            // Pin end time, scale start time up/down (min 15 mins duration)
+            const endHour = Math.floor(this.initialEndMinutes / 60);
+            const endMin = this.initialEndMinutes % 60;
+            const pinnedEnd = new Date(y, m - 1, d, endHour, endMin, 0);
+
             const newStartMin = Math.max(0, Math.min(this.initialEndMinutes - 15, currentHoverMinutes));
             const newStart = new Date(y, m - 1, d, Math.floor(newStartMin / 60), newStartMin % 60, 0);
+
             this.projectedStartTime = newStart.toISOString();
+            this.projectedEndTime = pinnedEnd.toISOString();
           }
           return;
         }
 
-        // Check month day cell
-        const dayCell = elem?.closest('[data-day-cell]') as HTMLElement | null;
-        if (dayCell) {
-          const cellDateKey = dayCell.getAttribute('data-day-cell');
-          if (cellDateKey) {
-            this.dropTargetDateKey = cellDateKey;
-            this.projectedDateKey = cellDateKey;
+        // 2. Month view day cells
+        if (this.mode === 'move') {
+          this.isTimelineDrag = false;
+          this.projectedStartTime = null;
+          this.projectedEndTime = null;
+
+          const dayCell = elem?.closest('[data-day-cell]') as HTMLElement | null;
+          if (dayCell) {
+            const cellDateKey = dayCell.getAttribute('data-day-cell');
+            if (cellDateKey) {
+              this.dropTargetDateKey = cellDateKey;
+              this.projectedDateKey = cellDateKey;
+            }
           }
         }
       }
@@ -123,24 +155,22 @@ class DragStore {
     const onPointerUp = (upEvent: PointerEvent) => {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
+      document.body.style.cursor = '';
       document.body.style.userSelect = '';
 
       if (this.isDragging && this.draggedEvent) {
-        if (this.mode === 'move') {
-          if (this.projectedDateKey && this.projectedStartTime && this.projectedEndTime) {
-            this.commitReschedule(this.projectedDateKey, this.projectedStartTime, this.projectedEndTime);
-          } else if (this.dropTargetDateKey) {
-            this.handleDrop(this.dropTargetDateKey);
-          } else {
-            this.endDrag();
-          }
+        if (this.isTimelineDrag && this.projectedDateKey && this.projectedStartTime && this.projectedEndTime) {
+          this.commitReschedule(this.projectedDateKey, this.projectedStartTime, this.projectedEndTime);
+        } else if (this.dropTargetDateKey) {
+          this.handleDrop(this.dropTargetDateKey);
         } else {
-          if (this.projectedDateKey && this.projectedStartTime && this.projectedEndTime) {
-            this.commitReschedule(this.projectedDateKey, this.projectedStartTime, this.projectedEndTime);
-          } else {
-            this.endDrag();
-          }
+          this.endDrag();
         }
+
+        // Keep isDragging active briefly to prevent the subsequent click event from opening the inspector
+        setTimeout(() => {
+          this.endDrag();
+        }, 100);
       } else {
         this.endDrag();
       }
@@ -170,6 +200,7 @@ class DragStore {
   endDrag(): void {
     this.draggedEvent = null;
     this.isDragging = false;
+    this.isTimelineDrag = false;
     this.mode = 'move';
     this.dragSourceDateKey = null;
     this.originalOccurrenceDate = null;
@@ -256,8 +287,6 @@ class DragStore {
     } else {
       eventStore.updateEvent(updatedEvent);
     }
-
-    this.endDrag();
   }
 }
 
