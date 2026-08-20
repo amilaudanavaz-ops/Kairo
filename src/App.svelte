@@ -1,5 +1,4 @@
 <script lang="ts">
-
   import { onMount } from 'svelte';
   import TitleBar from './lib/components/layout/TitleBar.svelte';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
@@ -20,6 +19,8 @@
   import { dragStore } from './lib/stores/dragStore.svelte';
   import { contextMenuStore } from './lib/stores/contextMenuStore.svelte';
   import { loadInitialCalendars } from './lib/db/database';
+  import { format, parseISO } from 'date-fns';
+  import { resolveEventColorToken } from './lib/utils/colors';
 
   onMount(async () => {
     try {
@@ -90,20 +91,7 @@
     };
   });
 </script>
-<svelte:window
-  ondragover={(e) => {
-    e.preventDefault();
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = 'move';
-    }
-    if (e.clientX > 0 || e.clientY > 0) {
-      dragStore.updatePosition(e.clientX, e.clientY);
-    }
-  }}
-  ondragend={() => {
-    dragStore.endDrag();
-  }}
-/>
+
 {#if !settingsStore.isLoggedIn}
   <AuthScreen />
 {:else}
@@ -140,7 +128,8 @@
     <CommandMenu />
     <AddAccountModal />
 
-    {#if dragStore.isDragging && dragStore.draggedEvent && dragStore.currentX > 0 && dragStore.currentY > 0}
+    <!-- Floating Badge for Month View Dragging Only -->
+    {#if dragStore.isDragging && dragStore.draggedEvent && !dragStore.projectedStartTime && dragStore.currentX > 0 && dragStore.currentY > 0}
       {@const event = dragStore.draggedEvent}
       {@const cal = calendarState.calendars.find(c => c.id === event.calendarId || c.googleCalendarId === event.calendarId)}
       {@const token = resolveEventColorToken(event.colorOverride || cal?.colorHex)}

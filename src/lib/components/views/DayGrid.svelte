@@ -40,6 +40,15 @@
     return ((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR_HEIGHT;
   });
 
+  let isPhantomTarget = $derived.by(() => {
+    return Boolean(
+      dragStore.isDragging && 
+      dragStore.projectedDateKey === dayKey && 
+      dragStore.projectedStartTime && 
+      dragStore.projectedEndTime
+    );
+  });
+
   function findCalendar(calendarId: string): CalendarCategory | undefined {
     return calendarState.calendars.find(
       (c: CalendarCategory) => c.id === calendarId || c.googleCalendarId === calendarId
@@ -70,9 +79,19 @@
     return h > 12 ? `${h - 12} PM` : `${h} AM`;
   }
 
-  function calculateEventLayout(event: CalendarEvent) {
-    const start = parseISO(event.startTime);
-    const end = parseISO(event.endTime);
+  function formatDisplayTime(isoString: string): string {
+    try {
+      const d = parseISO(isoString);
+      if (!isValid(d)) return '';
+      return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mmaaa').toLowerCase();
+    } catch {
+      return '';
+    }
+  }
+
+  function calculateEventLayout(startIso: string, endIso: string) {
+    const start = parseISO(startIso);
+    const end = parseISO(endIso);
     const topMinutes = start.getHours() * 60 + start.getMinutes();
     const duration = Math.max(15, differenceInMinutes(end, start));
 
@@ -169,22 +188,8 @@
 
     <!-- Day Canvas -->
     <div 
-      class="flex-1 relative h-[1344px] {dragStore.isDragging ? 'bg-white/[0.01]' : ''}"
-      ondragover={(e) => {
-        e.preventDefault();
-        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-        dragStore.updatePosition(e.clientX, e.clientY);
-      }}
-      ondrop={(e) => {
-        e.preventDefault();
-        const rect = e.currentTarget.getBoundingClientRect();
-        const y = Math.max(0, e.clientY - rect.top);
-        const totalMinutes = (y / HOUR_HEIGHT) * 60;
-        const snappedMinutes = Math.floor(totalMinutes / 15) * 15;
-        const hour = Math.min(23, Math.max(0, Math.floor(snappedMinutes / 60)));
-        const minute = Math.min(45, Math.max(0, snappedMinutes % 60));
-        dragStore.handleDropOnTime(dayKey, hour, minute);
-      }}
+      data-timeline-column={dayKey}
+      class="flex-1 relative h-[1344px]"
       ondblclick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         const y = e.clientY - rect.top;
@@ -214,31 +219,53 @@
         </div>
       {/if}
 
+      <!-- In-Grid Phantom Drop Preview -->
+      {#if isPhantomTarget && dragStore.projectedStartTime && dragStore.projectedEndTime && dragStore.draggedEvent}
+        {@const pLayout = calculateEventLayout(dragStore.projectedStartTime, dragStore.projectedEndTime)}
+        {@const pToken = getEventToken(dragStore.draggedEvent)}
+        <div
+          class="absolute left-3 right-3 rounded-lg px-3 py-2 overflow-hidden border border-dashed z-40 pointer-events-none shadow-2xl animate-in fade-in duration-75"
+          style="
+            top: {pLayout.top}px;
+            height: {pLayout.height}px;
+            background-color: {pToken.hex}44;
+            border-color: {pToken.hex};
+          "
+        >
+          <div class="text-xs font-bold text-white truncate">
+            {dragStore.draggedEvent.title || '(No Title)'}
+          </div>
+          <div class="text-[11px] font-bold text-white/90">
+            {formatDisplayTime(dragStore.projectedStartTime)} – {formatDisplayTime(dragStore.projectedEndTime)}
+          </div>
+        </div>
+      {/if}
+
       <!-- Timed Events -->
       {#each timedEvents as event (event.id + '_' + dayKey)}
         {@const token = getEventToken(event)}
-        {@const layout = calculateEventLayout(event)}
+        {@const layout = calculateEventLayout(event.startTime, event.endTime)}
         {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === dayKey}
         {@const isReadOnly = isEventReadOnly(event)}
+        {@const isBeingDragged = dragStore.draggedEvent?.id === event.id && dragStore.isDragging}
 
         <div
           data-calendar-event="true"
-          draggable={!isReadOnly}
-          ondragstart={(e) => dragStore.startDrag(event, dayKey, e)}
-          ondrag={(e) => dragStore.updatePosition(e.clientX, e.clientY)}
-          ondragend={() => dragStore.endDrag()}
+          onpointerdown={(e) => !isReadOnly && dragStore.initDrag(event, dayKey, e, 'move')}
           onclick={(e) => {
+            if (dragStore.isDragging) return;
             e.stopPropagation();
             const rect = e.currentTarget.getBoundingClientRect();
             calendarState.openInspector(event, rect, false, dayKey);
           }}
           oncontextmenu={(e) => contextMenuStore.openForEvent(e, event)}
-          class="absolute left-3 right-3 rounded-lg p-2.5 overflow-hidden transition-all border group
+          class="absolute left-3 right-3 rounded-lg p-2.5 overflow-hidden transition-all border group select-none
             {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
             {isPastDay && !isSelected ? 'opacity-55 hover:opacity-100' : 'opacity-95 hover:opacity-100'}
             {isSelected 
               ? 'ring-1 ring-white shadow-2xl z-20 bg-[#252525] !opacity-100' 
-              : 'bg-[#181818] hover:bg-[#222222] hover:shadow-xl z-10'}"
+              : 'bg-[#181818] hover:bg-[#222222] hover:shadow-xl z-10'}
+            {isBeingDragged ? '!opacity-20' : ''}"
           style="
             top: {layout.top}px; 
             height: {layout.height}px; 
@@ -254,7 +281,19 @@
           tabindex="0"
           onkeydown={(e) => e.key === 'Enter' && calendarState.openInspector(event, (e.currentTarget as HTMLElement).getBoundingClientRect(), false, dayKey)}
         >
-          <div class="flex items-center gap-2 truncate">
+          <!-- Top Resize Handle -->
+          {#if !isReadOnly}
+            <div
+              class="absolute top-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-white/30 z-30"
+              onpointerdown={(e) => {
+                e.stopPropagation();
+                dragStore.initDrag(event, dayKey, e, 'resize-top');
+              }}
+              role="presentation"
+            ></div>
+          {/if}
+
+          <div class="flex items-center gap-2 truncate pointer-events-none">
             <span class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm transition-transform group-hover:scale-125" style="background-color: {token.hex};"></span>
             <span 
               class="text-xs font-bold truncate font-sans transition-colors group-hover:!text-white"
@@ -264,7 +303,19 @@
             </span>
           </div>
           {#if event.description}
-            <p class="text-[11px] text-[var(--text-muted)] mt-1 truncate group-hover:text-zinc-300">{event.description}</p>
+            <p class="text-[11px] text-[var(--text-muted)] mt-1 truncate group-hover:text-zinc-300 pointer-events-none">{event.description}</p>
+          {/if}
+
+          <!-- Bottom Resize Handle -->
+          {#if !isReadOnly}
+            <div
+              class="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize hover:bg-white/30 z-30"
+              onpointerdown={(e) => {
+                e.stopPropagation();
+                dragStore.initDrag(event, dayKey, e, 'resize-bottom');
+              }}
+              role="presentation"
+            ></div>
           {/if}
         </div>
       {/each}

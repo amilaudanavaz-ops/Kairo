@@ -220,19 +220,8 @@
           data-day-cell={cell.dateKey}
           ondblclick={(e) => handleDayDoubleClick(e, cell.date)}
           oncontextmenu={(e) => handleCellContextMenu(e, cell.date)}
-          ondragover={(e) => {
-            e.preventDefault();
-            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-            dragStore.updatePosition(e.clientX, e.clientY);
-            dragStore.setDropTarget(cell.dateKey);
-          }}
-          ondragleave={() => { if (dragStore.dropTargetDateKey === cell.dateKey) dragStore.setDropTarget(null); }}
-          ondrop={(e) => {
-            e.preventDefault();
-            dragStore.handleDrop(cell.dateKey);
-          }}
           class="bg-[var(--bg-card)] p-1.5 flex flex-col gap-0.5 relative overflow-hidden transition-colors h-full text-[var(--text-primary)]
-            {isHighlighted ? '!bg-blue-950/40 ring-1 ring-blue-500 z-10' : ''}"
+            {isHighlighted && dragStore.isDragging ? '!bg-blue-950/40 ring-1 ring-blue-500 z-10' : ''}"
           role="gridcell"
           tabindex="0"
         >
@@ -260,16 +249,13 @@
             {#each visibleEvents as event (event.id + '_' + cell.dateKey)}
               {@const token = getEventToken(event)}
               {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === cell.dateKey}
-              {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
+              {@const isBeingDragged = dragStore.draggedEvent?.id === event.id && dragStore.isDragging}
 
               <!-- 1. All-Day Event Banner -->
               {#if event.isAllDay}
                 <div
                   data-calendar-event="true"
-                  draggable="true"
-                  ondragstart={(e) => dragStore.startDrag(event, cell.dateKey, e)}
-                  ondrag={(e) => dragStore.updatePosition(e.clientX, e.clientY)}
-                  ondragend={() => dragStore.endDrag()}
+                  onpointerdown={(e) => dragStore.initDrag(event, cell.dateKey, e)}
                   onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                   oncontextmenu={(e) => handleEventContextMenu(e, event)}
                   class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-all
@@ -288,10 +274,7 @@
               {:else}
                 <div
                   data-calendar-event="true"
-                  draggable="true"
-                  ondragstart={(e) => dragStore.startDrag(event, cell.dateKey, e)}
-                  ondrag={(e) => dragStore.updatePosition(e.clientX, e.clientY)}
-                  ondragend={() => dragStore.endDrag()}
+                  onpointerdown={(e) => dragStore.initDrag(event, cell.dateKey, e)}
                   onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                   oncontextmenu={(e) => handleEventContextMenu(e, event)}
                   class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all group
@@ -343,4 +326,4 @@
       {/each}
     </div>
   </div>
-</div>  
+</div>

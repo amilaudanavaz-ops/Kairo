@@ -89,9 +89,9 @@
     return `top: ${top}px; left: ${left}px;`;
   }
 
-  function handlePointerDown(e: PointerEvent, event: CalendarEvent) {
+  function handlePointerDown(e: PointerEvent, event: CalendarEvent, dateKey: string) {
     if (isEventReadOnly(event)) return;
-    dragStore.startDrag(e, event);
+    dragStore.initDrag(event, dateKey, e);
   }
 
   function handleEventClick(e: MouseEvent, event: CalendarEvent, dateKey: string) {
@@ -141,13 +141,13 @@
       {#each dayEvents as event (event.id + '_' + dateKey)}
         {@const token = getEventToken(event)}
         {@const isSelected = calendarState.selectedEventId === event.id && calendarState.selectedDateKey === dateKey}
-        {@const isBeingDragged = dragStore.draggedEvent?.id === event.id}
+        {@const isBeingDragged = dragStore.draggedEvent?.id === event.id && dragStore.isDragging}
         {@const isReadOnly = isEventReadOnly(event)}
 
         {#if event.isAllDay}
           <div
             data-calendar-event="true"
-            onpointerdown={(e) => handlePointerDown(e, event)}
+            onpointerdown={(e) => handlePointerDown(e, event, dateKey)}
             onclick={(e) => handleEventClick(e, event, dateKey)}
             class="w-full flex items-center gap-2 py-1 px-1.5 rounded-lg hover:bg-[#2a2a2a] transition-all text-left select-none
               {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
@@ -170,7 +170,7 @@
         {:else}
           <div
             data-calendar-event="true"
-            onpointerdown={(e) => handlePointerDown(e, event)}
+            onpointerdown={(e) => handlePointerDown(e, event, dateKey)}
             onclick={(e) => handleEventClick(e, event, dateKey)}
             class="w-full flex items-center gap-2 py-1 px-1.5 rounded-lg hover:bg-[#2a2a2a] transition-all text-left select-none
               {isReadOnly ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
