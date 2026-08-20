@@ -61,7 +61,8 @@
 
     const instance = pending.originalEvent;
     const updated = pending.updatedEvent;
-    const occurrenceDate = pending.occurrenceDate || format(parseISO(instance.startTime), 'yyyy-MM-dd');
+    // Derive the true occurrence date prior to any edits
+    const occurrenceDate = pending.initialSnapshot?.occurrenceDate || pending.occurrenceDate || format(parseISO(instance.startTime), 'yyyy-MM-dd');
     
     // Resolve the master recurring series ID
     const rootMasterGoogleId = instance.recurringEventId || instance.googleEventId || instance.id;
@@ -97,7 +98,15 @@
           await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
         } else {
           const cutoffDate = subDays(occDate, 1);
-          const untilUtcStr = `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
+          const localEndOfCutoff = new Date(
+            cutoffDate.getFullYear(), 
+            cutoffDate.getMonth(), 
+            cutoffDate.getDate(), 
+            23, 59, 59
+          );
+          const untilUtcStr = masterEvent.isAllDay 
+            ? format(cutoffDate, 'yyyyMMdd') 
+            : (localEndOfCutoff.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z');
           const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
           
           const canonicalMasterRRule = convertRRuleToRFC5545(masterEvent.rrule || 'weekly', masterEvent.startTime)
@@ -208,9 +217,15 @@
         } else {
           // Modifying mid-series: truncate old master and spawn new series
           const cutoffDate = subDays(occDate, 1);
+          const localEndOfCutoff = new Date(
+            cutoffDate.getFullYear(), 
+            cutoffDate.getMonth(), 
+            cutoffDate.getDate(), 
+            23, 59, 59
+          );
           const untilUtcStr = masterEvent.isAllDay 
             ? format(cutoffDate, 'yyyyMMdd') 
-            : `${format(cutoffDate, 'yyyyMMdd')}T235959Z`;
+            : (localEndOfCutoff.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z');
           const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
           
           const canonicalMasterRRule = convertRRuleToRFC5545(masterEvent.rrule || 'weekly', masterEvent.startTime)

@@ -567,6 +567,16 @@ fn sanitize_iana_tz(tz: &str) -> String {
     }
 }
 
+fn format_rfc3339_datetime(dt_str: &str) -> String {
+    if dt_str.ends_with('Z') || dt_str.contains('+') || (dt_str.len() > 19 && dt_str[19..].contains('-')) {
+        dt_str.to_string()
+    } else if dt_str.contains('T') {
+        format!("{}Z", dt_str)
+    } else {
+        format!("{}T00:00:00Z", dt_str)
+    }
+}
+
 #[tauri::command]
 pub async fn create_google_event(
     access_token: String,
@@ -596,8 +606,10 @@ pub async fn create_google_event(
         body["start"] = serde_json::json!({ "date": start_date });
         body["end"] = serde_json::json!({ "date": exclusive_end_date });
     } else {
-        body["start"] = serde_json::json!({ "dateTime": event.start_time, "timeZone": tz });
-        body["end"] = serde_json::json!({ "dateTime": event.end_time, "timeZone": tz });
+        let start_iso = format_rfc3339_datetime(&event.start_time);
+        let end_iso = format_rfc3339_datetime(&event.end_time);
+        body["start"] = serde_json::json!({ "dateTime": start_iso, "timeZone": tz });
+        body["end"] = serde_json::json!({ "dateTime": end_iso, "timeZone": tz });
     }
 
     if let Some(rrule_str) = event.rrule {
@@ -611,17 +623,21 @@ pub async fn create_google_event(
         }
     }
 
-    // Pass recurrence exception override identifiers to Google API
+    // Only attach originalStartTime if recurringEventId is valid
     if let Some(ref rec_id) = event.recurring_event_id {
-        body["recurringEventId"] = serde_json::json!(rec_id);
-    }
-
-    if let Some(ref orig_time) = event.original_start_time {
-        if event.is_all_day {
-            let orig_date = orig_time.split('T').next().unwrap_or(orig_time);
-            body["originalStartTime"] = serde_json::json!({ "date": orig_date });
-        } else {
-            body["originalStartTime"] = serde_json::json!({ "dateTime": orig_time, "timeZone": tz });
+        if !rec_id.is_empty() {
+            body["recurringEventId"] = serde_json::json!(rec_id);
+            if let Some(ref orig_time) = event.original_start_time {
+                if !orig_time.is_empty() {
+                    if event.is_all_day {
+                        let orig_date = orig_time.split('T').next().unwrap_or(orig_time);
+                        body["originalStartTime"] = serde_json::json!({ "date": orig_date });
+                    } else {
+                        let formatted_orig = format_rfc3339_datetime(orig_time);
+                        body["originalStartTime"] = serde_json::json!({ "dateTime": formatted_orig, "timeZone": tz });
+                    }
+                }
+            }
         }
     }
 
@@ -704,8 +720,10 @@ pub async fn update_google_event(
         body["start"] = serde_json::json!({ "date": start_date });
         body["end"] = serde_json::json!({ "date": exclusive_end_date });
     } else {
-        body["start"] = serde_json::json!({ "dateTime": event.start_time, "timeZone": tz });
-        body["end"] = serde_json::json!({ "dateTime": event.end_time, "timeZone": tz });
+        let start_iso = format_rfc3339_datetime(&event.start_time);
+        let end_iso = format_rfc3339_datetime(&event.end_time);
+        body["start"] = serde_json::json!({ "dateTime": start_iso, "timeZone": tz });
+        body["end"] = serde_json::json!({ "dateTime": end_iso, "timeZone": tz });
     }
 
     if let Some(rrule_str) = event.rrule {
@@ -719,21 +737,27 @@ pub async fn update_google_event(
         }
     }
 
+    // Only attach originalStartTime if recurringEventId is valid
     if let Some(ref rec_id) = event.recurring_event_id {
-        body["recurringEventId"] = serde_json::json!(rec_id);
-    }
-
-    if let Some(ref orig_time) = event.original_start_time {
-        if event.is_all_day {
-            let orig_date = orig_time.split('T').next().unwrap_or(orig_time);
-            body["originalStartTime"] = serde_json::json!({ "date": orig_date });
-        } else {
-            body["originalStartTime"] = serde_json::json!({ "dateTime": orig_time, "timeZone": tz });
+        if !rec_id.is_empty() {
+            body["recurringEventId"] = serde_json::json!(rec_id);
+            if let Some(ref orig_time) = event.original_start_time {
+                if !orig_time.is_empty() {
+                    if event.is_all_day {
+                        let orig_date = orig_time.split('T').next().unwrap_or(orig_time);
+                        body["originalStartTime"] = serde_json::json!({ "date": orig_date });
+                    } else {
+                        let formatted_orig = format_rfc3339_datetime(orig_time);
+                        body["originalStartTime"] = serde_json::json!({ "dateTime": formatted_orig, "timeZone": tz });
+                    }
+                }
+            }
         }
     }
 
+    // Use PUT to completely replace start/end boundaries without field merging conflicts
     let res = http_client
-        .patch(&url)
+        .put(&url)
         .bearer_auth(&access_token)
         .json(&body)
         .send()

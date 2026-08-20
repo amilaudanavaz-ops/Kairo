@@ -222,23 +222,76 @@ class EventStore {
     return null;
   }
 
+
   private async executeWithAuthRetry<T>(
-    accountId: string, 
-    currentAccessToken: string, 
-    action: (token: string) => Promise<T>
+    accountId: string,
+    currentToken: string,
+    fn: (token: string) => Promise<T>,
+    retryCount: number = 0
   ): Promise<T> {
     try {
-      return await action(currentAccessToken);
+      return await fn(currentToken);
     } catch (err: any) {
       const errStr = typeof err === 'string' ? err : JSON.stringify(err);
-      if (errStr.includes('401') || errStr.includes('UNAUTHENTICATED') || errStr.includes('authError')) {
-        console.info(`Encountered 401 for account ${accountId}. Refreshing OAuth token...`);
-        const freshToken = await this.refreshAccessTokenForAccount(accountId);
-        if (freshToken) {
-          return await action(freshToken);
+
+      // Handle Rate Limit Exceeded with exponential backoff (up to 3 retries)
+      if (errStr.includes('rateLimitExceeded') || errStr.includes('userRateLimitExceeded') || errStr.includes('403')) {
+        if (retryCount < 3) {
+          const delayMs = (retryCount + 1) * 800;
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          return this.executeWithAuthRetry(accountId, currentToken, fn, retryCount + 1);
         }
       }
+
+      // Handle 401 Unauthorized / Expired Token
+      if (errStr.includes('401') || errStr.includes('Invalid Credentials') || errStr.includes('UNAUTHENTICATED')) {
+        const refreshedToken = await this.refreshAccountToken(accountId);
+        if (refreshedToken) {
+          return await fn(refreshedToken);
+        }
+      }
+
       throw err;
+    }
+  }
+
+  private async refreshAccountToken(accountId: string): Promise<string | null> {
+    try {
+      const tokens = await getAccountTokens(accountId);
+      if (!tokens || !tokens.refreshToken) return null;
+
+      const dbSettings = await loadDbSettings();
+      const clientId = dbSettings['google_client_id'] || '';
+      const clientSecret = dbSettings['google_client_secret'] || '';
+
+      if (!clientId || !clientSecret) {
+        console.warn('Cannot refresh Google token: Missing Google OAuth Client ID or Client Secret.');
+        return null;
+      }
+
+      const refreshed = await invoke<{ access_token?: string; accessToken?: string; refresh_token?: string; refreshToken?: string; expires_in?: number; expiresIn?: number }>('refresh_google_token', {
+        clientId,
+        clientSecret,
+        refreshToken: tokens.refreshToken
+      });
+
+      const newAccessToken = refreshed?.access_token || refreshed?.accessToken;
+      const newRefreshToken = refreshed?.refresh_token || refreshed?.refreshToken || tokens.refreshToken;
+      const newExpiresIn = refreshed?.expires_in || refreshed?.expiresIn || 3600;
+
+      if (newAccessToken) {
+        await updateAccountTokens(
+          accountId,
+          newAccessToken,
+          newRefreshToken
+        );
+        return newAccessToken;
+      }
+
+      return null;
+    } catch (err) {
+      console.error(`Failed to refresh token for account ${accountId}:`, err);
+      return null;
     }
   }
 
@@ -428,6 +481,21 @@ class EventStore {
     const auth = await getValidTokenAndCalendar(event.calendarId);
     if (!auth) return;
 
+    let cleanStart = event.startTime;
+    let cleanEnd = event.endTime;
+
+    if (!event.isAllDay) {
+      const pStart = parseISO(event.startTime);
+      const pEnd = parseISO(event.endTime);
+      if (isValid(pStart)) cleanStart = pStart.toISOString();
+      if (isValid(pEnd)) cleanEnd = pEnd.toISOString();
+    } else {
+      const sDate = event.startTime.split('T')[0];
+      const eDate = (event.endTime || event.startTime).split('T')[0];
+      cleanStart = `${sDate}T00:00:00`;
+      cleanEnd = `${eDate}T00:00:00`;
+    }
+
     try {
       const res = await this.executeWithAuthRetry(
         auth.accountId,
@@ -440,13 +508,13 @@ class EventStore {
             title: event.title || '(No Title)',
             description: event.description || null,
             location: event.location || null,
-            startTime: event.startTime,
-            endTime: event.endTime,
+            startTime: cleanStart,
+            endTime: cleanEnd,
             isAllDay: Boolean(event.isAllDay),
             timeZone: sanitizeTimezone(event.timeZone),
-            rrule: convertRRuleToRFC5545(event.rrule, event.startTime),
+            rrule: convertRRuleToRFC5545(event.rrule, cleanStart),
             recurringEventId: event.recurringEventId || null,
-            originalStartTime: event.originalStartTime || null
+            originalStartTime: event.recurringEventId ? (event.originalStartTime || null) : null
           }
         })
       );

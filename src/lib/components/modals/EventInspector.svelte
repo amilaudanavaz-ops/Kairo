@@ -20,7 +20,8 @@
     subYears,
     isSameDay,
     isToday,
-    parse
+    parse,
+    isValid
   } from 'date-fns';
   import { 
     X, 
@@ -407,12 +408,15 @@
     if (!draft || isReadOnly) return;
     const dateStr = format(targetDay, 'yyyy-MM-dd');
 
+    // Preserve the original occurrence anchor so series-split math uses the correct cutoff
+    const preservedOccurrenceDate = initialEventSnapshot?.occurrenceDate || draft.occurrenceDate || dateStr;
+
     if (draft.isAllDay) {
       draft = {
         ...draft,
         startTime: `${dateStr}T00:00:00`,
         endTime: `${dateStr}T00:00:00`,
-        occurrenceDate: dateStr,
+        occurrenceDate: preservedOccurrenceDate,
         updatedAt: new Date().toISOString()
       };
     } else {
@@ -433,7 +437,7 @@
         ...draft,
         startTime: newStart.toISOString(),
         endTime: newEnd.toISOString(),
-        occurrenceDate: dateStr,
+        occurrenceDate: preservedOccurrenceDate,
         updatedAt: new Date().toISOString()
       };
     }
@@ -530,8 +534,10 @@
   function toggleAllDay() {
     if (!draft || isReadOnly) return;
     const next = !draft.isAllDay;
+
     if (next) {
-      const dateStr = format(parseISO(draft.startTime), 'yyyy-MM-dd');
+      const baseDate = parseISO(draft.startTime);
+      const dateStr = isValid(baseDate) ? format(baseDate, 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd');
       updateDraft('isAllDay', true);
       updateDraft('startTime', `${dateStr}T00:00:00`);
       updateDraft('endTime', `${dateStr}T00:00:00`);
@@ -539,8 +545,21 @@
     } else {
       updateDraft('isAllDay', false);
       const baseDate = parseISO(draft.startTime);
-      const start = setMinutes(setHours(baseDate, 9), 0);
-      const end = setMinutes(setHours(baseDate, 10), 0);
+      const targetDay = isValid(baseDate) ? baseDate : new Date();
+      
+      const start = new Date(
+        targetDay.getFullYear(),
+        targetDay.getMonth(),
+        targetDay.getDate(),
+        9, 0, 0
+      );
+      const end = new Date(
+        targetDay.getFullYear(),
+        targetDay.getMonth(),
+        targetDay.getDate(),
+        10, 0, 0
+      );
+
       updateDraft('startTime', start.toISOString());
       updateDraft('endTime', end.toISOString());
       startTimeInput = format(start, 'h:mm a');
@@ -622,6 +641,20 @@
     if (!draft || isReadOnly) {
       if (closeWhenClean) calendarState.closeInspector();
       return;
+    }
+
+    // Normalize timed values to standard ISO timestamps before saving or prompting
+    if (!draft.isAllDay) {
+      const baseDate = parseISO(draft.startTime);
+      if (isValid(baseDate)) {
+        draft.startTime = baseDate.toISOString();
+      }
+      if (draft.endTime) {
+        const baseEnd = parseISO(draft.endTime);
+        if (isValid(baseEnd)) {
+          draft.endTime = baseEnd.toISOString();
+        }
+      }
     }
 
     if (calendarState.isCreatingNewEvent) {
