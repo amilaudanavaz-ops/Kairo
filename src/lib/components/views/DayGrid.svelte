@@ -5,16 +5,17 @@
     differenceInMinutes, 
     setHours, 
     setMinutes, 
-    isSameDay,
-    isBefore,
-    startOfDay,
-    isToday,
+    isSameDay, 
+    isBefore, 
+    startOfDay, 
+    isToday, 
     isValid 
   } from 'date-fns';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { eventStore } from '../../stores/eventStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
+  import { dragStore } from '../../stores/dragStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
   import type { CalendarEvent, CalendarCategory } from '../../../types/event';
 
@@ -150,7 +151,7 @@
 
   <!-- Timeline Body -->
   <div class="flex-1 overflow-y-auto custom-scrollbar flex relative bg-[var(--bg-canvas)]">
-    <!-- Uncompressed Exact 56px Hour Labels Column -->
+    <!-- Hour Labels Column -->
     <div class="w-16 shrink-0 flex flex-col border-r border-[var(--border-subtle)] bg-[var(--bg-canvas)]">
       {#each hours as h}
         <div 
@@ -168,7 +169,22 @@
 
     <!-- Day Canvas -->
     <div 
-      class="flex-1 relative h-[1344px]"
+      class="flex-1 relative h-[1344px] {dragStore.isDragging ? 'bg-white/[0.01]' : ''}"
+      ondragover={(e) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        dragStore.updatePosition(e.clientX, e.clientY);
+      }}
+      ondrop={(e) => {
+        e.preventDefault();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const y = Math.max(0, e.clientY - rect.top);
+        const totalMinutes = (y / HOUR_HEIGHT) * 60;
+        const snappedMinutes = Math.floor(totalMinutes / 15) * 15;
+        const hour = Math.min(23, Math.max(0, Math.floor(snappedMinutes / 60)));
+        const minute = Math.min(45, Math.max(0, snappedMinutes % 60));
+        dragStore.handleDropOnTime(dayKey, hour, minute);
+      }}
       ondblclick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         const y = e.clientY - rect.top;
@@ -182,7 +198,7 @@
       <!-- Hour Dividers -->
       {#each hours as h}
         <div 
-          class="border-b border-[var(--border-subtle)] opacity-50 w-full"
+          class="border-b border-[var(--border-subtle)] opacity-50 w-full pointer-events-none"
           style="height: {HOUR_HEIGHT}px;"
         ></div>
       {/each}
@@ -207,6 +223,10 @@
 
         <div
           data-calendar-event="true"
+          draggable={!isReadOnly}
+          ondragstart={(e) => dragStore.startDrag(event, dayKey, e)}
+          ondrag={(e) => dragStore.updatePosition(e.clientX, e.clientY)}
+          ondragend={() => dragStore.endDrag()}
           onclick={(e) => {
             e.stopPropagation();
             const rect = e.currentTarget.getBoundingClientRect();

@@ -37,7 +37,6 @@
 
   let weekStartsOnNumber = $derived<0 | 1>(settingsStore.startWeekOn === 'Monday' ? 1 : 0);
 
-  // Initialized to the 1st week of the current month by default
   let rollingAnchor = $state<Date>(
     startOfWeek(startOfMonth(calendarState.currentDate), { 
       weekStartsOn: settingsStore.startWeekOn === 'Monday' ? 1 : 0 
@@ -46,7 +45,6 @@
 
   let isWheelScrolling = false;
 
-  // Sync anchor when navigating via Today button, MiniCalendar, or TitleBar arrows
   $effect(() => {
     const activeDate = calendarState.currentDate;
     if (isWheelScrolling) return;
@@ -74,7 +72,6 @@
   });
 
   let colsCount = $derived(settingsStore.showWeekends ? 7 : 5);
-
   let translateYPercent = $state(0);
   let isRolling = $state(false);
 
@@ -95,10 +92,6 @@
     } catch {
       return '';
     }
-  }
-
-  function handlePointerDown(event: CalendarEvent, dateKey: string) {
-    dragStore.startDrag(event, dateKey);
   }
 
   function handleDayDoubleClick(e: MouseEvent, date: Date) {
@@ -227,9 +220,17 @@
           data-day-cell={cell.dateKey}
           ondblclick={(e) => handleDayDoubleClick(e, cell.date)}
           oncontextmenu={(e) => handleCellContextMenu(e, cell.date)}
-          ondragover={(e) => { e.preventDefault(); dragStore.setDropTarget(cell.dateKey); }}
+          ondragover={(e) => {
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+            dragStore.updatePosition(e.clientX, e.clientY);
+            dragStore.setDropTarget(cell.dateKey);
+          }}
           ondragleave={() => { if (dragStore.dropTargetDateKey === cell.dateKey) dragStore.setDropTarget(null); }}
-          ondrop={(e) => { e.preventDefault(); dragStore.handleDrop(cell.dateKey); }}
+          ondrop={(e) => {
+            e.preventDefault();
+            dragStore.handleDrop(cell.dateKey);
+          }}
           class="bg-[var(--bg-card)] p-1.5 flex flex-col gap-0.5 relative overflow-hidden transition-colors h-full text-[var(--text-primary)]
             {isHighlighted ? '!bg-blue-950/40 ring-1 ring-blue-500 z-10' : ''}"
           role="gridcell"
@@ -266,7 +267,8 @@
                 <div
                   data-calendar-event="true"
                   draggable="true"
-                  ondragstart={() => handlePointerDown(event, cell.dateKey)}
+                  ondragstart={(e) => dragStore.startDrag(event, cell.dateKey, e)}
+                  ondrag={(e) => dragStore.updatePosition(e.clientX, e.clientY)}
                   ondragend={() => dragStore.endDrag()}
                   onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                   oncontextmenu={(e) => handleEventContextMenu(e, event)}
@@ -287,7 +289,8 @@
                 <div
                   data-calendar-event="true"
                   draggable="true"
-                  ondragstart={() => handlePointerDown(event, cell.dateKey)}
+                  ondragstart={(e) => dragStore.startDrag(event, cell.dateKey, e)}
+                  ondrag={(e) => dragStore.updatePosition(e.clientX, e.clientY)}
                   ondragend={() => dragStore.endDrag()}
                   onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                   oncontextmenu={(e) => handleEventContextMenu(e, event)}
@@ -340,4 +343,4 @@
       {/each}
     </div>
   </div>
-</div>
+</div>  

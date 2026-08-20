@@ -1,4 +1,5 @@
 <script lang="ts">
+
   import { onMount } from 'svelte';
   import TitleBar from './lib/components/layout/TitleBar.svelte';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
@@ -89,7 +90,20 @@
     };
   });
 </script>
-
+<svelte:window
+  ondragover={(e) => {
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+    if (e.clientX > 0 || e.clientY > 0) {
+      dragStore.updatePosition(e.clientX, e.clientY);
+    }
+  }}
+  ondragend={() => {
+    dragStore.endDrag();
+  }}
+/>
 {#if !settingsStore.isLoggedIn}
   <AuthScreen />
 {:else}
@@ -126,13 +140,30 @@
     <CommandMenu />
     <AddAccountModal />
 
-    {#if dragStore.isDragging && dragStore.draggedEvent}
+    {#if dragStore.isDragging && dragStore.draggedEvent && dragStore.currentX > 0 && dragStore.currentY > 0}
+      {@const event = dragStore.draggedEvent}
+      {@const cal = calendarState.calendars.find(c => c.id === event.calendarId || c.googleCalendarId === event.calendarId)}
+      {@const token = resolveEventColorToken(event.colorOverride || cal?.colorHex)}
       <div
-        class="fixed pointer-events-none z-999 px-3 py-1.5 rounded-lg bg-[#242424] border border-blue-500/80 shadow-2xl text-xs font-semibold text-white flex items-center gap-2 transform -translate-x-1/2 -translate-y-1/2"
-        style="left: {dragStore.currentX}px; top: {dragStore.currentY}px;"
+        class="fixed pointer-events-none z-[99999] px-3 py-2 rounded-xl shadow-[0_16px_36px_rgba(0,0,0,0.85)] border border-white/20 backdrop-blur-md flex items-center gap-2.5 -translate-x-1/2 -translate-y-1/2 select-none rotate-2 scale-105"
+        style="
+          left: {dragStore.currentX}px; 
+          top: {dragStore.currentY}px; 
+          background-color: #1e1e1e;
+          border-left: 4px solid {token.hex};
+        "
       >
-        <span class="w-2 h-2 rounded-full bg-blue-500"></span>
-        <span>{dragStore.draggedEvent.title || '(No Title)'}</span>
+        <div class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style="background-color: {token.hex};"></div>
+        <div class="flex flex-col">
+          <span class="text-xs font-bold text-white leading-tight">
+            {event.title || '(No Title)'}
+          </span>
+          {#if !event.isAllDay}
+            <span class="text-[10px] font-medium text-zinc-400">
+              {format(parseISO(event.startTime), 'h:mm a')}
+            </span>
+          {/if}
+        </div>
       </div>
     {/if}
   </main>
