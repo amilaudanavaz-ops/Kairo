@@ -16,7 +16,6 @@
   import { calendarState } from '../../stores/calendarState.svelte';
   import { KAIRO_COLORS } from '../../utils/colors';
   import type { CalendarCategory } from '../../../types/event';
-
   import { eventStore } from '../../stores/eventStore.svelte';
   import { format, parseISO } from 'date-fns';
 

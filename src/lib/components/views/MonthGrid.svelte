@@ -20,6 +20,7 @@
   import { resolveEventColorToken } from '../../utils/colors';
   import { generateMonthGrid } from '../../utils/dateMath';
   import type { CalendarEvent, CalendarCategory } from '../../../types/event';
+  import { formatInTimeZone } from 'date-fns-tz';
 
   let activeWeekDays = $derived.by(() => {
     let days = settingsStore.startWeekOn === 'Monday'
@@ -87,8 +88,10 @@
 
   function formatDisplayTime(isoString: string): string {
     try {
-      const d = parseISO(isoString);
-      return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'haaa').toLowerCase();
+      const tz = settingsStore.timeZone;
+      return settingsStore.timeFormat === '24h' 
+        ? formatInTimeZone(isoString, tz, 'HH:mm') 
+        : formatInTimeZone(isoString, tz, 'haaa').toLowerCase();
     } catch {
       return '';
     }

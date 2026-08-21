@@ -15,6 +15,8 @@
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
+  import { getFormattedTimezones } from '../../utils/dateMath';
+  const formattedTimezones = getFormattedTimezones();
 
   let localPreferredName = $state('');
   let localUsername = $state('');
@@ -366,18 +368,33 @@
                 </label>
               </div>
 
-              <div class="flex flex-col gap-1.5">
-                <span class="text-zinc-400">Start week on:</span>
-                <select 
-                  bind:value={settingsStore.startWeekOn}
-                  onchange={() => {
-                    settingsStore.setWeekStartsOn(settingsStore.startWeekOn === 'Monday' ? 1 : 0);
-                  }}
-                  class="w-48 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
-                >
-                  <option value="Sunday">Sunday</option>
-                  <option value="Monday">Monday</option>
-                </select>
+              <div class="flex items-center gap-4">
+                <div class="flex flex-col gap-1.5">
+                  <span class="text-zinc-400">Start week on:</span>
+                  <select 
+                    bind:value={settingsStore.startWeekOn}
+                    onchange={() => {
+                      settingsStore.setWeekStartsOn(settingsStore.startWeekOn === 'Monday' ? 1 : 0);
+                    }}
+                    class="w-40 bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
+                  >
+                    <option value="Sunday">Sunday</option>
+                    <option value="Monday">Monday</option>
+                  </select>
+                </div>
+                
+                <div class="flex flex-col gap-1.5 flex-1">
+                  <span class="text-zinc-400">Primary Timezone:</span>
+                  <select 
+                    bind:value={settingsStore.timeZone}
+                    onchange={() => settingsStore.setTimeZone(settingsStore.timeZone)}
+                    class="w-full bg-[#222222] border border-[#2e2e2e] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none cursor-pointer"
+                  >
+                    {#each formattedTimezones as tz}
+                      <option value={tz.id}>{tz.label}</option>
+                    {/each}
+                  </select>
+                </div>
               </div>
 
               <div class="h-px bg-[#262626]"></div>

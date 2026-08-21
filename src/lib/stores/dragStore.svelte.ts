@@ -1,7 +1,9 @@
 import { format, parseISO, differenceInMinutes, addMinutes } from 'date-fns';
+import { createProjectedSnapshot, isEventRecurring, getSafeDuration, generateAllDayIso } from '../utils/dateMath';
 import { eventStore } from './eventStore.svelte';
 import { contextMenuStore } from './contextMenuStore.svelte';
 import type { CalendarEvent } from '../../types/event';
+import { HOUR_HEIGHT_PX } from '../utils/timeMath';
 
 export type DragMode = 'move' | 'resize-top' | 'resize-bottom';
 
@@ -43,7 +45,12 @@ class DragStore {
     this.currentX = e.clientX;
     this.currentY = e.clientY;
     this.pendingEvent = { ...event };
-    this.pendingSourceDateKey = sourceDateKey || event.occurrenceDate || format(parseISO(event.startTime), 'yyyy-MM-dd');
+    // Look at the physical HTML element to find the date as a foolproof fallback
+    const target = e.target as HTMLElement | null;
+    const domDateKey = target?.closest('[data-day-cell]')?.getAttribute('data-day-cell') || 
+                      target?.closest('[data-timeline-column]')?.getAttribute('data-timeline-column');
+
+    this.pendingSourceDateKey = sourceDateKey || domDateKey || event.occurrenceDate || format(parseISO(event.startTime), 'yyyy-MM-dd');
     this.originalOccurrenceDate = event.occurrenceDate || this.pendingSourceDateKey;
     this.pendingMode = mode;
 
@@ -51,7 +58,7 @@ class DragStore {
     const eObj = parseISO(event.endTime);
     this.initialStartMinutes = sObj.getHours() * 60 + sObj.getMinutes();
     this.initialEndMinutes = eObj.getHours() * 60 + eObj.getMinutes();
-    this.initialDurationMinutes = Math.max(15, differenceInMinutes(eObj, sObj));
+    this.initialDurationMinutes = getSafeDuration(sObj, eObj);
 
     const onPointerMove = (moveEvent: PointerEvent) => {
       this.currentX = moveEvent.clientX;
@@ -95,7 +102,8 @@ class DragStore {
 
           const rect = timelineCol.getBoundingClientRect();
           const offsetY = Math.max(0, moveEvent.clientY - rect.top);
-          const currentHoverMinutes = Math.floor(((offsetY / 56) * 60) / 15) * 15;
+          // Uses the dynamic HOUR_HEIGHT_PX instead of a hardcoded 56
+          const currentHoverMinutes = Math.floor(((offsetY / HOUR_HEIGHT_PX) * 60) / 15) * 15;
 
           const [y, m, d] = (colDateKey || '').split('-').map(Number);
 
@@ -227,16 +235,16 @@ class DragStore {
     const originalOcc = this.originalOccurrenceDate || this.dragSourceDateKey;
     const startObj = parseISO(event.startTime);
     const endObj = parseISO(event.endTime);
-    const duration = Math.max(15, differenceInMinutes(endObj, startObj));
-
+    const duration = getSafeDuration(startObj, endObj);
     const [targetY, targetM, targetD] = targetDateKey.split('-').map(Number);
 
     let updatedStartIso: string;
     let updatedEndIso: string;
 
     if (event.isAllDay) {
-      updatedStartIso = `${targetDateKey}T00:00:00`;
-      updatedEndIso = `${targetDateKey}T00:00:00`;
+      const allDayIso = generateAllDayIso(targetDateKey);
+      updatedStartIso = allDayIso.startIso;
+      updatedEndIso = allDayIso.endIso;
     } else {
       const newStart = new Date(targetY, targetM - 1, targetD, startObj.getHours(), startObj.getMinutes(), 0);
       const newEnd = addMinutes(newStart, duration);
@@ -264,25 +272,27 @@ class DragStore {
       updatedAt: new Date().toISOString()
     };
 
-    const isRecurring = Boolean(
-      (event.rrule && event.rrule !== 'none') ||
-      event.recurringEventId ||
-      event.isRecurringInstance
-    );
+    const isRecurring = isEventRecurring(event);
 
     if (isRecurring) {
-      const master = eventStore.events.find(e => 
+      // Check if this specific event is already broken off from the main series
+      const isDetachedException = Boolean(event.recurringEventId && (!event.rrule || event.rrule === 'none'));
+      
+      // If detached, use it directly. Otherwise, find the root master.
+      const master = isDetachedException ? event : (eventStore.events.find(e => 
         e.id === event.recurringEventId || 
         e.googleEventId === event.recurringEventId || 
         e.id === event.id
-      ) || event;
+      ) || event);
+      
+      const projectedSnapshot = createProjectedSnapshot(master, originalOcc);
 
       contextMenuStore.promptRecurringAction(
         'update',
         master,
         updatedEvent,
         originalOcc,
-        event
+        projectedSnapshot
       );
     } else {
       eventStore.updateEvent(updatedEvent);

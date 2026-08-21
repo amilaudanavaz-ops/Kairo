@@ -404,3 +404,110 @@ export function moveEventDate(event: CalendarEvent, targetDate: Date): CalendarE
     updatedAt: new Date().toISOString()
   };
 }
+
+/**
+ * Projects a master event's start and end times to a specific occurrence date.
+ */
+export function createProjectedSnapshot(currentEvent: CalendarEvent, dateKey: string | null): CalendarEvent {
+  const projected = { ...currentEvent };
+  
+  if (dateKey && currentEvent.rrule && currentEvent.rrule !== 'none') {
+    const [y, m, d] = dateKey.split('-').map(Number);
+    const origStart = parseISO(currentEvent.startTime);
+    const origEnd = currentEvent.endTime ? parseISO(currentEvent.endTime) : origStart;
+    const duration = Math.max(15, differenceInMinutes(origEnd, origStart));
+
+    const newStart = new Date(y, m - 1, d, origStart.getHours(), origStart.getMinutes());
+    const newEnd = new Date(newStart.getTime() + duration * 60 * 1000);
+    projected.startTime = newStart.toISOString();
+    projected.endTime = newEnd.toISOString();
+    projected.occurrenceDate = dateKey;
+  } else {
+    projected.occurrenceDate = dateKey || format(parseISO(currentEvent.startTime), 'yyyy-MM-dd');
+  }
+  
+  return projected;
+}
+
+/**
+ * Centralized check to determine if an event requires recurring logic.
+ */
+export function isEventRecurring(event: Partial<CalendarEvent> | null): boolean {
+  if (!event) return false;
+  return Boolean(
+    (event.rrule && event.rrule !== 'none') || 
+    event.recurringEventId || 
+    event.isRecurringInstance
+  );
+}
+
+/**
+ * Calculates duration in minutes between two dates, enforcing a strict minimum.
+ */
+export function getSafeDuration(start: Date | string, end: Date | string, minMinutes = 15): number {
+  const startObj = typeof start === 'string' ? parseISO(start) : start;
+  const endObj = typeof end === 'string' ? parseISO(end) : end;
+  if (!isValid(startObj) || !isValid(endObj)) return minMinutes;
+  return Math.max(minMinutes, differenceInMinutes(endObj, startObj));
+}
+
+/**
+ * Normalizes a date key into strict All-Day ISO midnight strings.
+ */
+export function generateAllDayIso(dateKey: string): { startIso: string, endIso: string } {
+  return {
+    startIso: `${dateKey}T00:00:00`,
+    endIso: `${dateKey}T00:00:00`
+  };
+}
+export interface TimezoneOption {
+  id: string;      // e.g., "Asia/Colombo"
+  offset: string;  // e.g., "GMT+05:30"
+  label: string;   // e.g., "GMT+05:30 India Standard Time – Colombo"
+  name: string;    // e.g., "India Standard Time – Colombo"
+}
+
+/**
+ * Generates a professionally formatted, sorted list of all global timezones.
+ */
+export function getFormattedTimezones(): TimezoneOption[] {
+  const ianaList = Intl.supportedValuesOf('timeZone');
+  const now = new Date();
+  
+  const options = ianaList.map(iana => {
+    try {
+      const offsetFormatter = new Intl.DateTimeFormat('en-US', { timeZone: iana, timeZoneName: 'longOffset' });
+      let offset = offsetFormatter.formatToParts(now).find(p => p.type === 'timeZoneName')?.value || '';
+      if (offset === 'GMT') offset = 'GMT+00:00'; // Standardize UTC
+      
+      const nameFormatter = new Intl.DateTimeFormat('en-US', { timeZone: iana, timeZoneName: 'long' });
+      const longName = nameFormatter.formatToParts(now).find(p => p.type === 'timeZoneName')?.value || '';
+      
+      const city = iana.split('/').pop()?.replace(/_/g, ' ') || '';
+
+      return {
+        id: iana,
+        offset,
+        name: `${longName} – ${city}`,
+        label: `${offset} ${longName} – ${city}`,
+        // Calculate minutes for perfect sorting
+        offsetValue: parseOffsetToMinutes(offset)
+      };
+    } catch {
+      return null;
+    }
+  }).filter(Boolean) as (TimezoneOption & { offsetValue: number })[];
+
+  return options.sort((a, b) => {
+    if (a.offsetValue !== b.offsetValue) return a.offsetValue - b.offsetValue;
+    return a.label.localeCompare(b.label);
+  });
+}
+
+function parseOffsetToMinutes(offset: string): number {
+  if (offset === 'GMT+00:00') return 0;
+  const match = offset.match(/([+-])(\d+):(\d+)/);
+  if (!match) return 0;
+  const sign = match[1] === '-' ? -1 : 1;
+  return sign * (parseInt(match[2], 10) * 60 + parseInt(match[3], 10));
+}

@@ -35,7 +35,7 @@ import {
   subDays, 
   addDays 
 } from 'date-fns';
-import { eventOccursOnDay, getEventsForDay, parseRRuleUntilDate } from '../utils/dateMath';
+import { eventOccursOnDay, getEventsForDay, parseRRuleUntilDate, getSafeDuration } from '../utils/dateMath';
 import { dispatchEventReminder } from '../utils/notifications';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -462,11 +462,14 @@ class EventStore {
       );
 
       if (created && created.google_event_id) {
-        event.googleEventId = created.google_event_id;
-        
         // Update in-memory state so background sync recognizes this event and doesn't duplicate it
         this.events = this.events.map(e => e.id === event.id ? { ...e, googleEventId: created.google_event_id } : e);
-        await persistUpsertEvent(event);
+        
+        // FIX: Grab the absolute latest state from memory to save to DB, avoiding stale closures
+        const latestState = this.events.find(e => e.id === event.id);
+        if (latestState) {
+          await persistUpsertEvent(latestState);
+        }
       }
     } catch (err) {
       console.error('Outbound Google event creation failed:', err);
@@ -521,7 +524,11 @@ class EventStore {
       );
 
       if (res) {
-        await persistUpsertEvent(event);
+        // FIX: Grab the absolute latest state from memory to save to DB, avoiding stale closures
+        const latestState = this.events.find(e => e.id === event.id);
+        if (latestState) {
+          await persistUpsertEvent(latestState);
+        }
       }
     } catch (err) {
       console.error('Outbound Google event update failed:', err);
@@ -691,8 +698,7 @@ class EventStore {
 
     const origStart = parseISO(target.startTime);
     const origEnd = target.endTime ? parseISO(target.endTime) : origStart;
-    const duration = differenceInMinutes(origEnd, origStart);
-
+    const duration = getSafeDuration(origStart, origEnd);
     const newStart = set(targetDate, {
       hours: origStart.getHours(),
       minutes: origStart.getMinutes(),

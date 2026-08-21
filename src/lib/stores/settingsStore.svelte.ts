@@ -86,7 +86,7 @@ class SettingsStore {
   defaultEventDuration = $state<number>(30);
   defaultView = $state<'month' | 'week' | 'day'>('month');
   defaultCalendarId = $state<string>('');
-  timeZone = $state<string>('GMT+5:30 Colombo');
+  timeZone = $state<string>(Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   // Conferencing Preferences
   defaultConferencing = $state<'google_meet' | 'zoom' | 'custom'>('google_meet');

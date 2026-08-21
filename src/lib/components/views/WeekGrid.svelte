@@ -20,6 +20,8 @@
   import { dragStore } from '../../stores/dragStore.svelte';
   import { resolveEventColorToken } from '../../utils/colors';
   import type { CalendarEvent, CalendarCategory } from '../../../types/event';
+  import { toZonedTime, formatInTimeZone } from 'date-fns-tz';
+  import { getSafeDuration } from '../../utils/dateMath';
 
   let weekDays = $derived.by(() => {
     const start = startOfWeek(calendarState.currentDate, { 
@@ -84,19 +86,23 @@
 
   function formatDisplayTime(isoString: string): string {
     try {
-      const d = parseISO(isoString);
-      if (!isValid(d)) return '';
-      return settingsStore.timeFormat === '24h' ? format(d, 'HH:mm') : format(d, 'h:mmaaa').toLowerCase();
+      const tz = settingsStore.timeZone;
+      return settingsStore.timeFormat === '24h' 
+        ? formatInTimeZone(isoString, tz, 'HH:mm') 
+        : formatInTimeZone(isoString, tz, 'h:mmaaa').toLowerCase();
     } catch {
       return '';
     }
   }
 
   function calculateEventLayout(startIso: string, endIso: string) {
-    const start = parseISO(startIso);
-    const end = parseISO(endIso);
+    const tz = settingsStore.timeZone;
+    
+    // Convert UTC to the calendar's display timezone so the box is drawn in the correct hour slot
+    const start = toZonedTime(startIso, tz);
+    
     const topMinutes = start.getHours() * 60 + start.getMinutes();
-    const duration = Math.max(15, differenceInMinutes(end, start));
+    const duration = getSafeDuration(startIso, endIso);
 
     const top = (topMinutes / 60) * HOUR_HEIGHT;
     const height = Math.max(26, (duration / 60) * HOUR_HEIGHT);

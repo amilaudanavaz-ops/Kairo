@@ -53,13 +53,15 @@
     Lock
   } from 'lucide-svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
-  import { eventStore } from '../../stores/eventStore.svelte';
+  import { eventStore, sanitizeTimezone } from '../../stores/eventStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken, KAIRO_COLORS } from '../../utils/colors';
-  import { generateMonthGrid, formatRRuleLabel } from '../../utils/dateMath';
+  import { generateMonthGrid, formatRRuleLabel, createProjectedSnapshot, isEventRecurring, getSafeDuration, generateAllDayIso, getFormattedTimezones } from '../../utils/dateMath';
   import { dispatchEventReminder } from '../../utils/notifications';
   import type { CalendarEvent, CalendarCategory, ParticipantContact, LocationSuggestion } from '../../../types/event';
+  import { toZonedTime, fromZonedTime, formatInTimeZone } from 'date-fns-tz';
+  
 
   let inspectorElement: HTMLElement | null = $state(null);
   let titleInputElement: HTMLInputElement | null = $state(null);
@@ -145,26 +147,13 @@
 
     untrack(() => {
       if (!draft || `${draft.id}_${draft.occurrenceDate || ''}` !== targetKey) {
-        const projected = { ...currentEvent };
-        if (dateKey && currentEvent.rrule && currentEvent.rrule !== 'none') {
-          const [y, m, d] = dateKey.split('-').map(Number);
-          const origStart = parseISO(currentEvent.startTime);
-          const origEnd = parseISO(currentEvent.endTime);
-          const duration = Math.max(15, differenceInMinutes(origEnd, origStart));
-
-          const newStart = new Date(y, m - 1, d, origStart.getHours(), origStart.getMinutes());
-          const newEnd = new Date(newStart.getTime() + duration * 60 * 1000);
-          projected.startTime = newStart.toISOString();
-          projected.endTime = newEnd.toISOString();
-          projected.occurrenceDate = dateKey;
-        } else {
-          projected.occurrenceDate = dateKey || format(parseISO(currentEvent.startTime), 'yyyy-MM-dd');
-        }
+        const projected = createProjectedSnapshot(currentEvent, dateKey);
         draft = JSON.parse(JSON.stringify(projected));
         initialEventSnapshot = JSON.parse(JSON.stringify(projected));
+        const tz = sanitizeTimezone(projected.timeZone || settingsStore.timeZone);
         pickerMonth = parseISO(projected.startTime);
-        startTimeInput = format(parseISO(projected.startTime), 'h:mm a');
-        endTimeInput = format(parseISO(projected.endTime), 'h:mm a');
+        startTimeInput = formatInTimeZone(projected.startTime, tz, 'h:mm a');
+        endTimeInput = formatInTimeZone(projected.endTime, tz, 'h:mm a');
         dateInput = format(parseISO(projected.startTime), 'EEE MMM d');
         locationQuery = projected.location || '';
         liveLocations = calendarState.locations;
@@ -227,27 +216,19 @@
     }
   }
 
-  const timezoneList = [
-    { offset: 'GMT+05:30', name: 'India Standard Time — Colombo', tz: 'GMT+5:30 Colombo' },
-    { offset: 'GMT+05:30', name: 'India Standard Time — Kolkata', tz: 'GMT+5:30 Kolkata' },
-    { offset: 'GMT+05:00', name: 'Pakistan Standard Time — Karachi', tz: 'GMT+5:00 Karachi' },
-    { offset: 'GMT+05:00', name: 'Maldives Time — Maldives', tz: 'GMT+5:00 Maldives' },
-    { offset: 'GMT+00:00', name: 'Coordinated Universal Time — UTC', tz: 'UTC' },
-    { offset: 'GMT+01:00', name: 'British Summer Time — London', tz: 'Europe/London' },
-    { offset: 'GMT+02:00', name: 'Central European Time — Berlin', tz: 'Europe/Berlin' },
-    { offset: 'GMT-04:00', name: 'Eastern Daylight Time — New York', tz: 'America/New_York' },
-    { offset: 'GMT-07:00', name: 'Pacific Daylight Time — Los Angeles', tz: 'America/Los_Angeles' },
-    { offset: 'GMT+08:00', name: 'Singapore Standard Time — Singapore', tz: 'Asia/Singapore' },
-    { offset: 'GMT+09:00', name: 'Japan Standard Time — Tokyo', tz: 'Asia/Tokyo' }
-  ];
+  const timezoneList = getFormattedTimezones();
 
   let filteredTimezones = $derived(
-    timezoneList.filter(t => 
-      t.name.toLowerCase().includes(timezoneQuery.toLowerCase()) || 
-      t.offset.toLowerCase().includes(timezoneQuery.toLowerCase())
-    )
+    timezoneList.filter(tz => tz.label.toLowerCase().includes(timezoneQuery.toLowerCase()))
   );
 
+  // Derive the display name here to avoid Svelte 5 {@const} placement errors
+  let selectedTzDisplay = $derived.by(() => {
+    if (!draft) return 'Select timezone';
+    const targetTz = sanitizeTimezone(draft.timeZone || settingsStore.timeZone);
+    const obj = timezoneList.find(t => t.id === targetTz);
+    return obj ? obj.name : targetTz;
+  });
   let repeatOptions = $derived.by(() => {
     if (!draft) return [];
     const d = draft.startTime ? parseISO(draft.startTime) : new Date();
@@ -339,32 +320,43 @@
     const parsed = parseTime12h(timeStr);
     if (!parsed) return;
 
-    const baseStart = parseISO(draft.startTime);
-    const baseEnd = parseISO(draft.endTime);
-    const currentDuration = Math.max(15, differenceInMinutes(baseEnd, baseStart));
+    const tz = sanitizeTimezone(draft.timeZone || settingsStore.timeZone);
+    const baseStartUtc = parseISO(draft.startTime);
+    const baseEndUtc = parseISO(draft.endTime);
+    const currentDuration = getSafeDuration(baseStartUtc, baseEndUtc);
+
+    // Convert absolute UTC to event's local time for safe modification
+    const baseStartZoned = toZonedTime(baseStartUtc, tz);
+    const baseEndZoned = toZonedTime(baseEndUtc, tz);
 
     if (isStart) {
-      const newStart = setMinutes(setHours(baseStart, parsed.hours), parsed.minutes);
-      const newEnd = addMinutes(newStart, currentDuration);
+      const newStartZoned = setMinutes(setHours(baseStartZoned, parsed.hours), parsed.minutes);
+      // Convert back to absolute UTC before saving
+      const newStartUtc = fromZonedTime(newStartZoned, tz);
+      const newEndUtc = addMinutes(newStartUtc, currentDuration);
+      
       draft = {
         ...draft,
-        startTime: newStart.toISOString(),
-        endTime: newEnd.toISOString(),
+        startTime: newStartUtc.toISOString(),
+        endTime: newEndUtc.toISOString(),
         updatedAt: new Date().toISOString()
       };
-      startTimeInput = format(newStart, 'h:mm a');
-      endTimeInput = format(newEnd, 'h:mm a');
+      startTimeInput = formatInTimeZone(newStartUtc, tz, 'h:mm a');
+      endTimeInput = formatInTimeZone(newEndUtc, tz, 'h:mm a');
     } else {
-      let newEnd = setMinutes(setHours(baseEnd, parsed.hours), parsed.minutes);
-      if (newEnd <= baseStart) {
-        newEnd = addMinutes(baseStart, 15);
+      let newEndZoned = setMinutes(setHours(baseEndZoned, parsed.hours), parsed.minutes);
+      let newEndUtc = fromZonedTime(newEndZoned, tz);
+      
+      if (newEndUtc <= baseStartUtc) {
+        newEndUtc = addMinutes(baseStartUtc, 15);
       }
+      
       draft = {
         ...draft,
-        endTime: newEnd.toISOString(),
+        endTime: newEndUtc.toISOString(),
         updatedAt: new Date().toISOString()
       };
-      endTimeInput = format(newEnd, 'h:mm a');
+      endTimeInput = formatInTimeZone(newEndUtc, tz, 'h:mm a');
     }
   }
 
@@ -422,16 +414,24 @@
     } else {
       const baseStart = parseISO(draft.startTime);
       const baseEnd = parseISO(draft.endTime);
-      const duration = Math.max(15, differenceInMinutes(baseEnd, baseStart));
+      const duration = getSafeDuration(baseStart, baseEnd);
 
-      const newStart = new Date(
+      const tz = sanitizeTimezone(draft.timeZone || settingsStore.timeZone);
+      const baseStartZoned = toZonedTime(baseStart, tz);
+
+      // Map target grid date with the event's zoned time
+      const newStartZoned = new Date(
         targetDay.getFullYear(),
         targetDay.getMonth(),
         targetDay.getDate(),
-        baseStart.getHours(),
-        baseStart.getMinutes()
+        baseStartZoned.getHours(),
+        baseStartZoned.getMinutes()
       );
-      const newEnd = addMinutes(newStart, duration);
+      
+      const newStartUtc = fromZonedTime(newStartZoned, tz);
+      const newEndUtc = addMinutes(newStartUtc, duration);
+      const newStart = newStartUtc; // Rename for compatibility below
+      const newEnd = newEndUtc;
 
       draft = {
         ...draft,
@@ -536,11 +536,16 @@
     const next = !draft.isAllDay;
 
     if (next) {
-      const baseDate = parseISO(draft.startTime);
-      const dateStr = isValid(baseDate) ? format(baseDate, 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd');
+      const tz = sanitizeTimezone(draft.timeZone || settingsStore.timeZone);
+      // Format the UTC timestamp to the event's configured timezone before extracting the date
+      const dateStr = draft.startTime 
+        ? formatInTimeZone(draft.startTime, tz, 'yyyy-MM-dd') 
+        : format(new Date(), 'yyyy-MM-dd');
+      
+      const { startIso, endIso } = generateAllDayIso(dateStr);
       updateDraft('isAllDay', true);
-      updateDraft('startTime', `${dateStr}T00:00:00`);
-      updateDraft('endTime', `${dateStr}T00:00:00`);
+      updateDraft('startTime', startIso);
+      updateDraft('endTime', endIso);
       updateDraft('occurrenceDate', dateStr);
     } else {
       updateDraft('isAllDay', false);
@@ -678,11 +683,7 @@
       return;
     }
 
-    const isRecurring = Boolean(
-      (masterEvent.rrule && masterEvent.rrule !== 'none') || 
-      masterEvent.recurringEventId || 
-      masterEvent.isRecurringInstance
-    );
+    const isRecurring = isEventRecurring(masterEvent);
 
     if (!isRecurring) {
       if (initialEventSnapshot && hasEventChanged(initialEventSnapshot, draft)) {
@@ -813,11 +814,7 @@
                 <button 
                   onpointerdown={(e) => {
                     e.stopPropagation();
-                    const isRecurring = Boolean(
-                      (draft?.rrule && draft.rrule !== 'none') ||
-                      draft?.recurringEventId ||
-                      draft?.isRecurringInstance
-                    );
+                    const isRecurring = isEventRecurring(draft);
 
                     if (isRecurring && draft) {
                       const originalOccurrence = initialEventSnapshot?.occurrenceDate || calendarState.selectedDateKey || (draft.startTime ? format(parseISO(draft.startTime), 'yyyy-MM-dd') : undefined);
@@ -954,7 +951,7 @@
       >
         <div class="flex items-center gap-2 truncate">
           <Globe size={13} class="shrink-0 text-zinc-400" />
-          <span class="truncate">{draft.timeZone || 'GMT+5:30 Colombo'}</span>
+          <span class="truncate">{selectedTzDisplay}</span>
         </div>
         {#if !isReadOnly}
           <ChevronDown size={12} class="text-zinc-500 shrink-0" />
@@ -1466,11 +1463,11 @@
         <div class="max-h-56 overflow-y-auto flex flex-col gap-0.5 custom-scrollbar">
           {#each filteredTimezones as tz}
             <button
-              onpointerdown={(e) => { e.stopPropagation(); updateDraft('timeZone', tz.tz); activeSideMenu = 'none'; }}
+              onpointerdown={(e) => { e.stopPropagation(); updateDraft('timeZone', tz.id); activeSideMenu = 'none'; }}
               class="flex items-center justify-between px-2.5 py-1.5 text-xs rounded-lg text-left transition-colors cursor-pointer
-                {draft.timeZone === tz.tz ? 'bg-[#282828] text-blue-400 font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
+                {draft.timeZone === tz.id ? 'bg-[#282828] text-blue-400 font-semibold' : 'text-zinc-300 hover:bg-[#242424]'}"
             >
-              <span class="text-zinc-500 font-mono text-[10px] w-14 shrink-0">{tz.offset}</span>
+              <span class="text-zinc-500 font-mono text-[10px] w-[72px] shrink-0">{tz.offset}</span>
               <span class="truncate flex-1">{tz.name}</span>
             </button>
           {/each}

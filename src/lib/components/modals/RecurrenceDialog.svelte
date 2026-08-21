@@ -25,6 +25,7 @@
   } from 'date-fns';
   import { List, X } from 'lucide-svelte';
   import type { CalendarEvent } from '../../../types/event';
+  import { getSafeDuration } from '../../utils/dateMath';
 
   let selectedScope = $state<'this' | 'following' | 'all'>('this');
   let pending = $derived(contextMenuStore.pendingRecurringAction);
@@ -61,29 +62,29 @@
 
     const instance = pending.originalEvent;
     const updated = pending.updatedEvent;
-    // Derive the true occurrence date prior to any edits
     const occurrenceDate = pending.initialSnapshot?.occurrenceDate || pending.occurrenceDate || format(parseISO(instance.startTime), 'yyyy-MM-dd');
     
-    // Resolve the master recurring series ID
     const rootMasterGoogleId = instance.recurringEventId || instance.googleEventId || instance.id;
-
-    // Find the master event record
     const masterEvent = eventStore.events.find(e => e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId) || instance;
+    
     const masterStart = parseISO(masterEvent.startTime);
     const occDate = parseISO(occurrenceDate);
     const masterStartKey = format(masterStart, 'yyyy-MM-dd');
+
+    // PREVENT 404 NOT FOUND: Guarantee we use the official Google ID for exceptions
+    const correctRecurringId = masterEvent.googleEventId || masterEvent.id;
+
+    // PREVENT 400 BAD REQUEST: Check if the user specifically requested an RRULE change
+    const rruleChanged = pending.diffs.some(d => d.field === 'Repeat');
 
     /* ------------------------------------------------------------------------
        1. DELETE ACTION
        ------------------------------------------------------------------------ */
     if (pending.action === 'delete') {
       if (selectedScope === 'this' && occurrenceDate) {
-        // 1. If deleting a detached child exception, delete its record directly
         if (instance.id !== masterEvent.id || instance.recurringEventId) {
           eventStore.deleteEvent(instance.id);
         }
-
-        // 2. Add exdate to master series to ensure it is not re-projected
         if (masterEvent && masterEvent.id !== instance.id) {
           const currentExdates = masterEvent.exdates || [];
           if (!currentExdates.includes(occurrenceDate)) {
@@ -118,14 +119,17 @@
             rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
           });
 
-          eventStore.events = eventStore.events.filter(e => {
-            const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.id === instance.id);
-            return !(isMatch && e.startTime >= occDate.toISOString() && e.id !== masterEvent.id);
+          // PURGE GHOSTS
+          const targetIso = occDate.toISOString();
+          const futureExceptions = eventStore.events.filter(e => {
+            const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.recurringEventId === masterEvent.id);
+            return (isMatch && e.startTime >= targetIso && e.id !== masterEvent.id);
           });
-          await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
+          for (const ex of futureExceptions) {
+            eventStore.deleteEvent(ex.id);
+          }
         }
       } else {
-        // Delete all instances across master and all child exceptions
         await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
       }
     }
@@ -134,7 +138,6 @@
        ------------------------------------------------------------------------ */
     else if (pending.action === 'update' && updated) {
       if (selectedScope === 'this' && occurrenceDate) {
-        // Exclude original occurrence date from master
         const currentExdates = masterEvent.exdates || [];
         if (!currentExdates.includes(occurrenceDate)) {
           eventStore.updateEvent({
@@ -143,7 +146,6 @@
           });
         }
 
-        // Calculate original start timestamp corresponding to the specific occurrence date
         const origDateObj = parseISO(occurrenceDate);
         const masterStartObj = parseISO(masterEvent.startTime);
         const calculatedOriginalStart = set(origDateObj, {
@@ -155,11 +157,10 @@
         const targetDateKey = format(parseISO(updated.startTime), 'yyyy-MM-dd');
 
         if (instance.id !== masterEvent.id) {
-          // Editing an existing detached child exception: update in-place to prevent duplicates
           eventStore.updateEvent({
             ...instance,
             ...updated,
-            recurringEventId: rootMasterGoogleId,
+            recurringEventId: correctRecurringId,
             originalStartTime: instance.originalStartTime || calculatedOriginalStart,
             occurrenceDate: targetDateKey,
             isRecurringInstance: false,
@@ -169,12 +170,11 @@
             updatedAt: new Date().toISOString()
           });
         } else {
-          // Creating a new detached exception from a virtual master instance
           const detachedInstance: CalendarEvent = {
             ...updated,
             id: 'evt_' + Date.now(),
             googleEventId: undefined,
-            recurringEventId: rootMasterGoogleId,
+            recurringEventId: correctRecurringId,
             originalStartTime: instance.originalStartTime || calculatedOriginalStart,
             occurrenceDate: targetDateKey,
             isRecurringInstance: false,
@@ -189,15 +189,23 @@
         const isModifyingFromRoot = isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey;
 
         if (isModifyingFromRoot) {
-          // Modifying from the very first occurrence: update master series in-place
           const newStart = parseISO(updated.startTime);
           const newEnd = parseISO(updated.endTime);
-          const duration = Math.max(15, differenceInMinutes(newEnd, newStart));
 
-          const rawRule = (updated.rrule && updated.rrule !== 'none') ? updated.rrule : masterEvent.rrule;
+          const rawRule = rruleChanged ? updated.rrule : masterEvent.rrule;
           const canonicalRRule = convertRRuleToRFC5545(rawRule, newStart.toISOString())
             .replace(/;?UNTIL=[^;]+/gi, '');
 
+          // 1. PURGE GHOSTS: Since the root is changing, all old exceptions are mathematically invalid
+          const futureExceptions = eventStore.events.filter(e => {
+            const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.recurringEventId === masterEvent.id);
+            return (isMatch && e.id !== masterEvent.id);
+          });
+          for (const ex of futureExceptions) {
+            eventStore.deleteEvent(ex.id);
+          }
+
+          // 2. Update the master series
           eventStore.updateEvent({
             ...masterEvent,
             title: updated.title,
@@ -211,11 +219,11 @@
             isAllDay: updated.isAllDay,
             timeZone: sanitizeTimezone(updated.timeZone),
             rrule: canonicalRRule,
+            exdates: [], // IMPORTANT: Clear old exclusions since the cadence is completely reset
             untilDate: undefined,
             updatedAt: new Date().toISOString()
           });
         } else {
-          // Modifying mid-series: truncate old master and spawn new series
           const cutoffDate = subDays(occDate, 1);
           const localEndOfCutoff = new Date(
             cutoffDate.getFullYear(), 
@@ -237,25 +245,17 @@
             rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
           });
 
-          // Remove detached future instances matching local or Google ID from memory and SQLite
-          const masterGid = masterEvent.googleEventId;
-          eventStore.events = eventStore.events.filter(e => {
-            const isMatch = (
-              e.recurringEventId === rootMasterGoogleId || 
-              e.id === instance.id ||
-              (masterGid && e.recurringEventId === masterGid) ||
-              e.recurringEventId === masterEvent.id
-            );
-            return !(isMatch && e.startTime >= occDate.toISOString() && e.id !== masterEvent.id);
+          // PURGE GHOSTS
+          const targetIso = occDate.toISOString();
+          const futureExceptions = eventStore.events.filter(e => {
+            const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.recurringEventId === masterEvent.id);
+            return (isMatch && e.startTime >= targetIso && e.id !== masterEvent.id);
           });
-          
-          await deleteFutureInstancesFromDb(rootMasterGoogleId, occDate.toISOString());
-          if (masterGid && masterGid !== rootMasterGoogleId) {
-            await deleteFutureInstancesFromDb(masterGid, occDate.toISOString());
+          for (const ex of futureExceptions) {
+            eventStore.deleteEvent(ex.id);
           }
 
-          // Spawn the new recurring series with cadence matching the new target start day
-          const rawRule = (updated.rrule && updated.rrule !== 'none') ? updated.rrule : canonicalMasterRRule;
+          const rawRule = rruleChanged ? updated.rrule : canonicalMasterRRule;
           const newSeriesRRule = convertRRuleToRFC5545(rawRule, updated.startTime)
             .replace(/;?UNTIL=[^;]+/gi, '');
 
@@ -275,17 +275,16 @@
           eventStore.addEvent(newSeries);
         }
       } else {
-        // Update all events across the master series
         const newStart = parseISO(updated.startTime);
         const newEnd = parseISO(updated.endTime);
-        const duration = Math.max(15, differenceInMinutes(newEnd, newStart));
+        const duration = getSafeDuration(newStart, newEnd);
 
         const adjustedMasterStart = setMinutes(setHours(masterStart, newStart.getHours()), newStart.getMinutes());
         const adjustedMasterEnd = addMinutes(adjustedMasterStart, duration);
 
-        const canonicalRRule = convertRRuleToRFC5545(updated.rrule || masterEvent.rrule, adjustedMasterStart.toISOString());
+        const rawRule = rruleChanged ? updated.rrule : masterEvent.rrule;
+        const canonicalRRule = convertRRuleToRFC5545(rawRule, adjustedMasterStart.toISOString());
 
-        // 1. Update the master recurring series
         eventStore.updateEvent({
           ...masterEvent,
           title: updated.title,
@@ -302,7 +301,6 @@
           updatedAt: new Date().toISOString()
         });
 
-        // 2. Synchronize all detached child exceptions belonging to this series
         const childExceptions = eventStore.events.filter(e => 
           e.recurringEventId === rootMasterGoogleId || 
           (masterEvent.googleEventId && e.recurringEventId === masterEvent.googleEventId)
@@ -312,7 +310,6 @@
           let childStart = parseISO(child.startTime);
           let childEnd = child.endTime ? parseISO(child.endTime) : childStart;
 
-          // Adjust time slot if time was modified, while preserving the exception's calendar day
           if (
             newStart.getHours() !== parseISO(instance.startTime).getHours() || 
             newStart.getMinutes() !== parseISO(instance.startTime).getMinutes()
