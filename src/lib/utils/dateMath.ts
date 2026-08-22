@@ -27,6 +27,8 @@ import {
   parse
 } from 'date-fns';
 import type { CalendarEvent } from '../../types/event';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+
 
 export interface DayCell {
   date: Date;
@@ -413,14 +415,21 @@ export function createProjectedSnapshot(currentEvent: CalendarEvent, dateKey: st
   
   if (dateKey && currentEvent.rrule && currentEvent.rrule !== 'none') {
     const [y, m, d] = dateKey.split('-').map(Number);
-    const origStart = parseISO(currentEvent.startTime);
-    const origEnd = currentEvent.endTime ? parseISO(currentEvent.endTime) : origStart;
-    const duration = Math.max(15, differenceInMinutes(origEnd, origStart));
+    const tz = currentEvent.timeZone || 'UTC';
+    
+    const origStartUtc = parseISO(currentEvent.startTime);
+    const origEndUtc = currentEvent.endTime ? parseISO(currentEvent.endTime) : origStartUtc;
+    const duration = Math.max(15, differenceInMinutes(origEndUtc, origStartUtc));
 
-    const newStart = new Date(y, m - 1, d, origStart.getHours(), origStart.getMinutes());
-    const newEnd = new Date(newStart.getTime() + duration * 60 * 1000);
-    projected.startTime = newStart.toISOString();
-    projected.endTime = newEnd.toISOString();
+    // Use strict timezone math to prevent 1-day leaks across midnights
+    const baseStartZoned = toZonedTime(origStartUtc, tz);
+    const newStartZoned = new Date(y, m - 1, d, baseStartZoned.getHours(), baseStartZoned.getMinutes(), 0);
+    
+    const newStartUtc = fromZonedTime(newStartZoned, tz);
+    const newEndUtc = addMinutes(newStartUtc, duration);
+
+    projected.startTime = newStartUtc.toISOString();
+    projected.endTime = newEndUtc.toISOString();
     projected.occurrenceDate = dateKey;
   } else {
     projected.occurrenceDate = dateKey || format(parseISO(currentEvent.startTime), 'yyyy-MM-dd');

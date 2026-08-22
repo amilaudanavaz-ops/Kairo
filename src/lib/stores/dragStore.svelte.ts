@@ -2,6 +2,8 @@ import { format, parseISO, differenceInMinutes, addMinutes } from 'date-fns';
 import { createProjectedSnapshot, isEventRecurring, getSafeDuration, generateAllDayIso } from '../utils/dateMath';
 import { eventStore } from './eventStore.svelte';
 import { contextMenuStore } from './contextMenuStore.svelte';
+import { settingsStore } from './settingsStore.svelte';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import type { CalendarEvent } from '../../types/event';
 import { HOUR_HEIGHT_PX } from '../utils/timeMath';
 
@@ -50,8 +52,10 @@ class DragStore {
     const domDateKey = target?.closest('[data-day-cell]')?.getAttribute('data-day-cell') || 
                       target?.closest('[data-timeline-column]')?.getAttribute('data-timeline-column');
 
-    this.pendingSourceDateKey = sourceDateKey || domDateKey || event.occurrenceDate || format(parseISO(event.startTime), 'yyyy-MM-dd');
-    this.originalOccurrenceDate = event.occurrenceDate || this.pendingSourceDateKey;
+    // FIX: Strictly prioritize the physical grid column date (sourceDateKey or domDateKey).
+    // Never trust the event's internal occurrenceDate tag for recurring master events.
+    this.pendingSourceDateKey = sourceDateKey || domDateKey || format(parseISO(event.startTime), 'yyyy-MM-dd');
+    this.originalOccurrenceDate = this.pendingSourceDateKey;
     this.pendingMode = mode;
 
     const sObj = parseISO(event.startTime);
@@ -246,10 +250,14 @@ class DragStore {
       updatedStartIso = allDayIso.startIso;
       updatedEndIso = allDayIso.endIso;
     } else {
-      const newStart = new Date(targetY, targetM - 1, targetD, startObj.getHours(), startObj.getMinutes(), 0);
-      const newEnd = addMinutes(newStart, duration);
-      updatedStartIso = newStart.toISOString();
-      updatedEndIso = newEnd.toISOString();
+      const tz = event.timeZone || settingsStore.timeZone;
+      const baseStartZoned = toZonedTime(startObj, tz);
+      
+      const newStartZoned = new Date(targetY, targetM - 1, targetD, baseStartZoned.getHours(), baseStartZoned.getMinutes(), 0);
+      const newStartUtc = fromZonedTime(newStartZoned, tz);
+      
+      updatedStartIso = newStartUtc.toISOString();
+      updatedEndIso = addMinutes(newStartUtc, duration).toISOString();
     }
 
     this.commitReschedule(targetDateKey, updatedStartIso, updatedEndIso);
@@ -262,7 +270,8 @@ class DragStore {
     }
 
     const event = { ...this.draggedEvent };
-    const originalOcc = this.originalOccurrenceDate || this.dragSourceDateKey || format(parseISO(event.startTime), 'yyyy-MM-dd');
+    // FIX: Use the strictly verified grid column date
+    const originalOcc = this.originalOccurrenceDate || format(parseISO(event.startTime), 'yyyy-MM-dd');
 
     const updatedEvent: CalendarEvent = {
       ...event,
@@ -272,24 +281,13 @@ class DragStore {
       updatedAt: new Date().toISOString()
     };
 
-    const isRecurring = isEventRecurring(event);
-
-    if (isRecurring) {
-      // Check if this specific event is already broken off from the main series
-      const isDetachedException = Boolean(event.recurringEventId && (!event.rrule || event.rrule === 'none'));
-      
-      // If detached, use it directly. Otherwise, find the root master.
-      const master = isDetachedException ? event : (eventStore.events.find(e => 
-        e.id === event.recurringEventId || 
-        e.googleEventId === event.recurringEventId || 
-        e.id === event.id
-      ) || event);
-      
-      const projectedSnapshot = createProjectedSnapshot(master, originalOcc);
+    if (isEventRecurring(event)) {
+      // Restore the snapshot so the Dialog knows we are moving Aug 18, not Aug 4.
+      const projectedSnapshot = createProjectedSnapshot(event, originalOcc);
 
       contextMenuStore.promptRecurringAction(
         'update',
-        master,
+        event,
         updatedEvent,
         originalOcc,
         projectedSnapshot

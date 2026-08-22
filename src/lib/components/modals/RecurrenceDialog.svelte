@@ -1,31 +1,10 @@
 <script lang="ts">
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
-  import { 
-    eventStore, 
-    convertRRuleToRFC5545, 
-    sanitizeTimezone 
-  } from '../../stores/eventStore.svelte';
-  import { 
-    getDb, 
-    deleteSeriesFromDb, 
-    deleteFutureInstancesFromDb 
-  } from '../../db/database';
   import { calendarState } from '../../stores/calendarState.svelte';
-  import { 
-    parseISO, 
-    set,
-    setHours, 
-    setMinutes, 
-    differenceInMinutes, 
-    addMinutes, 
-    format, 
-    isSameDay, 
-    subDays, 
-    isValid 
-  } from 'date-fns';
+  import { eventStore } from '../../stores/eventStore.svelte';
+  import { parseISO, format } from 'date-fns';
   import { List, X } from 'lucide-svelte';
-  import type { CalendarEvent } from '../../../types/event';
-  import { getSafeDuration } from '../../utils/dateMath';
+  import { executeRecurrenceUpdate, executeRecurrenceDelete } from '../../utils/recurrenceEngine';
 
   let selectedScope = $state<'this' | 'following' | 'all'>('this');
   let pending = $derived(contextMenuStore.pendingRecurringAction);
@@ -47,8 +26,21 @@
     );
   });
 
+  // NEW: Identifies if the user clicked the very first event of a series
+  let isRootEvent = $derived.by(() => {
+    if (!pending?.originalEvent) return false;
+    const rootId = pending.originalEvent.recurringEventId || pending.originalEvent.googleEventId || pending.originalEvent.id;
+    const master = eventStore.events.find(e => e.id === rootId || e.googleEventId === rootId) || pending.originalEvent;
+    const occDateKey = pending.occurrenceDate || format(parseISO(pending.originalEvent.startTime), 'yyyy-MM-dd');
+    const masterStartKey = format(parseISO(master.startTime), 'yyyy-MM-dd');
+    return occDateKey <= masterStartKey;
+  });
+
   $effect(() => {
-    if (isDateChange && selectedScope === 'all') {
+    // Force valid selection if options are hidden dynamically
+    if (isRootEvent && selectedScope === 'following') {
+      selectedScope = 'all';
+    } else if (isDateChange && !isRootEvent && !isDetachedException && selectedScope === 'all') {
       selectedScope = 'this';
     }
   });
@@ -60,280 +52,26 @@
   async function handleSave() {
     if (!pending) return;
 
-    const instance = pending.originalEvent;
-    const updated = pending.updatedEvent;
-    const occurrenceDate = pending.initialSnapshot?.occurrenceDate || pending.occurrenceDate || format(parseISO(instance.startTime), 'yyyy-MM-dd');
-    
-    const rootMasterGoogleId = instance.recurringEventId || instance.googleEventId || instance.id;
-    const masterEvent = eventStore.events.find(e => e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId) || instance;
-    
-    const masterStart = parseISO(masterEvent.startTime);
-    const occDate = parseISO(occurrenceDate);
-    const masterStartKey = format(masterStart, 'yyyy-MM-dd');
+    const occurrenceDate = pending.initialSnapshot?.occurrenceDate || pending.occurrenceDate || format(parseISO(pending.originalEvent.startTime), 'yyyy-MM-dd');
 
-    // PREVENT 404 NOT FOUND: Guarantee we use the official Google ID for exceptions
-    const correctRecurringId = masterEvent.googleEventId || masterEvent.id;
+    // Feed the Brain the exact projected snapshot (e.g., Aug 18) so it calculates
+    // the mathematical time deltas correctly, rather than the master event (Aug 4).
+    const occurrenceSnapshot = pending.initialSnapshot || pending.originalEvent;
 
-    // PREVENT 400 BAD REQUEST: Check if the user specifically requested an RRULE change
-    const rruleChanged = pending.diffs.some(d => d.field === 'Repeat');
-
-    /* ------------------------------------------------------------------------
-       1. DELETE ACTION
-       ------------------------------------------------------------------------ */
     if (pending.action === 'delete') {
-      if (selectedScope === 'this' && occurrenceDate) {
-        if (instance.id !== masterEvent.id || instance.recurringEventId) {
-          eventStore.deleteEvent(instance.id);
-        }
-        if (masterEvent && masterEvent.id !== instance.id) {
-          const currentExdates = masterEvent.exdates || [];
-          if (!currentExdates.includes(occurrenceDate)) {
-            eventStore.updateEvent({
-              ...masterEvent,
-              exdates: [...currentExdates, occurrenceDate]
-            });
-          }
-        }
-      } else if (selectedScope === 'following' && occurrenceDate) {
-        if (isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey) {
-          await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
-        } else {
-          const cutoffDate = subDays(occDate, 1);
-          const localEndOfCutoff = new Date(
-            cutoffDate.getFullYear(), 
-            cutoffDate.getMonth(), 
-            cutoffDate.getDate(), 
-            23, 59, 59
-          );
-          const untilUtcStr = masterEvent.isAllDay 
-            ? format(cutoffDate, 'yyyyMMdd') 
-            : (localEndOfCutoff.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z');
-          const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
-          
-          const canonicalMasterRRule = convertRRuleToRFC5545(masterEvent.rrule || 'weekly', masterEvent.startTime)
-            .replace(/;?UNTIL=[^;]+/gi, '');
-
-          eventStore.updateEvent({
-            ...masterEvent,
-            untilDate: cutoffDateKey,
-            rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
-          });
-
-          // PURGE GHOSTS
-          const targetIso = occDate.toISOString();
-          const futureExceptions = eventStore.events.filter(e => {
-            const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.recurringEventId === masterEvent.id);
-            return (isMatch && e.startTime >= targetIso && e.id !== masterEvent.id);
-          });
-          for (const ex of futureExceptions) {
-            eventStore.deleteEvent(ex.id);
-          }
-        }
-      } else {
-        await eventStore.deleteRecurringSeries(rootMasterGoogleId, instance.calendarId);
-      }
-    }
-    /* ------------------------------------------------------------------------
-       2. UPDATE ACTION
-       ------------------------------------------------------------------------ */
-    else if (pending.action === 'update' && updated) {
-      if (selectedScope === 'this' && occurrenceDate) {
-        const currentExdates = masterEvent.exdates || [];
-        if (!currentExdates.includes(occurrenceDate)) {
-          eventStore.updateEvent({
-            ...masterEvent,
-            exdates: [...currentExdates, occurrenceDate]
-          });
-        }
-
-        const origDateObj = parseISO(occurrenceDate);
-        const masterStartObj = parseISO(masterEvent.startTime);
-        const calculatedOriginalStart = set(origDateObj, {
-          hours: masterStartObj.getHours(),
-          minutes: masterStartObj.getMinutes(),
-          seconds: masterStartObj.getSeconds()
-        }).toISOString();
-
-        const targetDateKey = format(parseISO(updated.startTime), 'yyyy-MM-dd');
-
-        if (instance.id !== masterEvent.id) {
-          eventStore.updateEvent({
-            ...instance,
-            ...updated,
-            recurringEventId: correctRecurringId,
-            originalStartTime: instance.originalStartTime || calculatedOriginalStart,
-            occurrenceDate: targetDateKey,
-            isRecurringInstance: false,
-            rrule: 'none',
-            exdates: [],
-            untilDate: undefined,
-            updatedAt: new Date().toISOString()
-          });
-        } else {
-          const detachedInstance: CalendarEvent = {
-            ...updated,
-            id: 'evt_' + Date.now(),
-            googleEventId: undefined,
-            recurringEventId: correctRecurringId,
-            originalStartTime: instance.originalStartTime || calculatedOriginalStart,
-            occurrenceDate: targetDateKey,
-            isRecurringInstance: false,
-            rrule: 'none',
-            exdates: [],
-            untilDate: undefined,
-            updatedAt: new Date().toISOString()
-          };
-          eventStore.addEvent(detachedInstance);
-        }
-      } else if (selectedScope === 'following' && occurrenceDate) {
-        const isModifyingFromRoot = isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey;
-
-        if (isModifyingFromRoot) {
-          const newStart = parseISO(updated.startTime);
-          const newEnd = parseISO(updated.endTime);
-
-          const rawRule = rruleChanged ? updated.rrule : masterEvent.rrule;
-          const canonicalRRule = convertRRuleToRFC5545(rawRule, newStart.toISOString())
-            .replace(/;?UNTIL=[^;]+/gi, '');
-
-          // 1. PURGE GHOSTS: Since the root is changing, all old exceptions are mathematically invalid
-          const futureExceptions = eventStore.events.filter(e => {
-            const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.recurringEventId === masterEvent.id);
-            return (isMatch && e.id !== masterEvent.id);
-          });
-          for (const ex of futureExceptions) {
-            eventStore.deleteEvent(ex.id);
-          }
-
-          // 2. Update the master series
-          eventStore.updateEvent({
-            ...masterEvent,
-            title: updated.title,
-            description: updated.description,
-            location: updated.location,
-            conferencingUrl: updated.conferencingUrl,
-            conferencingProvider: updated.conferencingProvider,
-            colorOverride: updated.colorOverride,
-            startTime: newStart.toISOString(),
-            endTime: newEnd.toISOString(),
-            isAllDay: updated.isAllDay,
-            timeZone: sanitizeTimezone(updated.timeZone),
-            rrule: canonicalRRule,
-            exdates: [], // IMPORTANT: Clear old exclusions since the cadence is completely reset
-            untilDate: undefined,
-            updatedAt: new Date().toISOString()
-          });
-        } else {
-          const cutoffDate = subDays(occDate, 1);
-          const localEndOfCutoff = new Date(
-            cutoffDate.getFullYear(), 
-            cutoffDate.getMonth(), 
-            cutoffDate.getDate(), 
-            23, 59, 59
-          );
-          const untilUtcStr = masterEvent.isAllDay 
-            ? format(cutoffDate, 'yyyyMMdd') 
-            : (localEndOfCutoff.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z');
-          const cutoffDateKey = format(cutoffDate, 'yyyy-MM-dd');
-          
-          const canonicalMasterRRule = convertRRuleToRFC5545(masterEvent.rrule || 'weekly', masterEvent.startTime)
-            .replace(/;?UNTIL=[^;]+/gi, '');
-
-          eventStore.updateEvent({
-            ...masterEvent,
-            untilDate: cutoffDateKey,
-            rrule: `${canonicalMasterRRule};UNTIL=${untilUtcStr}`
-          });
-
-          // PURGE GHOSTS
-          const targetIso = occDate.toISOString();
-          const futureExceptions = eventStore.events.filter(e => {
-            const isMatch = (e.recurringEventId === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.recurringEventId === masterEvent.id);
-            return (isMatch && e.startTime >= targetIso && e.id !== masterEvent.id);
-          });
-          for (const ex of futureExceptions) {
-            eventStore.deleteEvent(ex.id);
-          }
-
-          const rawRule = rruleChanged ? updated.rrule : canonicalMasterRRule;
-          const newSeriesRRule = convertRRuleToRFC5545(rawRule, updated.startTime)
-            .replace(/;?UNTIL=[^;]+/gi, '');
-
-          const newSeriesId = 'evt_' + Date.now();
-          const newSeries: CalendarEvent = {
-            ...updated,
-            id: newSeriesId,
-            rrule: newSeriesRRule,
-            exdates: [],
-            untilDate: undefined,
-            googleEventId: undefined,
-            recurringEventId: undefined,
-            isRecurringInstance: false,
-            updatedAt: new Date().toISOString()
-          };
-          
-          eventStore.addEvent(newSeries);
-        }
-      } else {
-        const newStart = parseISO(updated.startTime);
-        const newEnd = parseISO(updated.endTime);
-        const duration = getSafeDuration(newStart, newEnd);
-
-        const adjustedMasterStart = setMinutes(setHours(masterStart, newStart.getHours()), newStart.getMinutes());
-        const adjustedMasterEnd = addMinutes(adjustedMasterStart, duration);
-
-        const rawRule = rruleChanged ? updated.rrule : masterEvent.rrule;
-        const canonicalRRule = convertRRuleToRFC5545(rawRule, adjustedMasterStart.toISOString());
-
-        eventStore.updateEvent({
-          ...masterEvent,
-          title: updated.title,
-          description: updated.description,
-          location: updated.location,
-          conferencingUrl: updated.conferencingUrl,
-          conferencingProvider: updated.conferencingProvider,
-          colorOverride: updated.colorOverride,
-          startTime: adjustedMasterStart.toISOString(),
-          endTime: adjustedMasterEnd.toISOString(),
-          isAllDay: updated.isAllDay,
-          timeZone: sanitizeTimezone(updated.timeZone),
-          rrule: canonicalRRule,
-          updatedAt: new Date().toISOString()
-        });
-
-        const childExceptions = eventStore.events.filter(e => 
-          e.recurringEventId === rootMasterGoogleId || 
-          (masterEvent.googleEventId && e.recurringEventId === masterEvent.googleEventId)
-        );
-
-        for (const child of childExceptions) {
-          let childStart = parseISO(child.startTime);
-          let childEnd = child.endTime ? parseISO(child.endTime) : childStart;
-
-          if (
-            newStart.getHours() !== parseISO(instance.startTime).getHours() || 
-            newStart.getMinutes() !== parseISO(instance.startTime).getMinutes()
-          ) {
-            childStart = setMinutes(setHours(childStart, newStart.getHours()), newStart.getMinutes());
-            childEnd = addMinutes(childStart, duration);
-          }
-
-          eventStore.updateEvent({
-            ...child,
-            title: updated.title,
-            description: updated.description,
-            location: updated.location,
-            conferencingUrl: updated.conferencingUrl,
-            conferencingProvider: updated.conferencingProvider,
-            colorOverride: updated.colorOverride,
-            startTime: childStart.toISOString(),
-            endTime: childEnd.toISOString(),
-            isAllDay: updated.isAllDay,
-            timeZone: sanitizeTimezone(updated.timeZone),
-            updatedAt: new Date().toISOString()
-          });
-        }
-      }
+      await executeRecurrenceDelete({
+        scope: selectedScope,
+        originalEvent: occurrenceSnapshot,
+        occurrenceDate
+      });
+    } else if (pending.action === 'update' && pending.updatedEvent) {
+      await executeRecurrenceUpdate({
+        scope: selectedScope,
+        originalEvent: occurrenceSnapshot,
+        updatedEvent: pending.updatedEvent,
+        occurrenceDate,
+        diffs: pending.diffs
+      });
     }
 
     contextMenuStore.isRecurrenceModalOpen = false;
@@ -367,22 +105,33 @@
       </h3>
 
       <div class="flex flex-col gap-1.5 text-xs text-zinc-200">
+        <!-- Always Shown -->
         <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'this' ? 'bg-[#252525] font-semibold text-white' : ''}">
           <input type="radio" name="recurrenceScope" value="this" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
           <span>{isDetachedException ? 'Only this modified event' : 'This event'}</span>
         </label>
 
-        {#if !isDetachedException}
+        <!-- Hidden if editing Root Event or an Exception -->
+        {#if !isRootEvent && !isDetachedException}
           <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'following' ? 'bg-[#252525] font-semibold text-white' : ''}">
             <input type="radio" name="recurrenceScope" value="following" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
             <span>This and following events</span>
           </label>
         {/if}
 
-        {#if !isDateChange || isDetachedException}
+        <!-- Hidden on Date Changes, EXCEPT if editing the Root Event -->
+        {#if !isDateChange || isRootEvent || isDetachedException}
           <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'all' ? 'bg-[#252525] font-semibold text-white' : ''}">
             <input type="radio" name="recurrenceScope" value="all" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
-            <span>{isDetachedException ? 'All events in this recurring series' : 'All events'}</span>
+            <span>
+              {#if isRootEvent && isDateChange}
+                All events (Shift entire series)
+              {:else if isDetachedException}
+                All events in this recurring series
+              {:else}
+                All events
+              {/if}
+            </span>
           </label>
         {/if}
       </div>

@@ -305,7 +305,7 @@ class EventStore {
 
     // 1. Collect all standalone events and detached child exceptions
     const standaloneAndExceptions = this.events.filter(e => 
-      !e.rrule || e.rrule === 'none' || e.recurringEventId
+      e.syncStatus !== ('pending_delete' as any) && (!e.rrule || e.rrule === 'none' || e.recurringEventId)
     );
 
     // Track which (masterId + dateKey) occurrences have been overridden
@@ -336,7 +336,7 @@ class EventStore {
 
     // 2. Collect master recurring series and project occurrences
     const masterEvents = this.events.filter(e => 
-      e.rrule && e.rrule !== 'none' && !e.recurringEventId
+      e.syncStatus !== ('pending_delete' as any) && e.rrule && e.rrule !== 'none' && !e.recurringEventId
     );
 
     for (const master of masterEvents) {
@@ -462,10 +462,18 @@ class EventStore {
       );
 
       if (created && created.google_event_id) {
-        // Update in-memory state so background sync recognizes this event and doesn't duplicate it
-        this.events = this.events.map(e => e.id === event.id ? { ...e, googleEventId: created.google_event_id } : e);
+        // GHOST PREVENTION: Check if the Unified Brain auto-purged this event while the network request was in-flight
+        const stillExists = this.events.find(e => e.id === event.id);
+        if (!stillExists || stillExists.syncStatus === ('pending_delete' as any)) {
+          console.log(`[KAIRO: GHOST PREVENTED] Event ${event.id} was auto-purged locally while creation was in-flight. Destroying ghost on Google.`);
+          this.dispatchGoogleDelete(created.google_event_id, event.calendarId).catch(() => {});
+          return;
+        }
+
+        console.log(`[KAIRO: GOOGLE CREATE SUCCESS] Assigned ID: ${created.google_event_id} to local event ${event.id}`);
+        this.events = this.events.map(e => e.id === event.id ? { ...e, googleEventId: created.google_event_id, syncStatus: 'synced' } : e);
         
-        // FIX: Grab the absolute latest state from memory to save to DB, avoiding stale closures
+        // LIFT SHIELD: Save the event back to SQLite
         const latestState = this.events.find(e => e.id === event.id);
         if (latestState) {
           await persistUpsertEvent(latestState);
@@ -524,7 +532,9 @@ class EventStore {
       );
 
       if (res) {
-        // FIX: Grab the absolute latest state from memory to save to DB, avoiding stale closures
+        // LIFT SHIELD: Successfully pushed to Google, drop the local pending lock.
+        this.events = this.events.map(e => e.id === event.id ? { ...e, syncStatus: 'synced' } : e);
+        
         const latestState = this.events.find(e => e.id === event.id);
         if (latestState) {
           await persistUpsertEvent(latestState);
@@ -535,7 +545,7 @@ class EventStore {
     }
   }
 
-  private async dispatchGoogleDelete(googleEventId: string, calendarId: string): Promise<void> {
+  private async dispatchGoogleDelete(googleEventId: string, calendarId: string, localIdToClean?: string): Promise<void> {
     const auth = await getValidTokenAndCalendar(calendarId);
     if (!auth) return;
 
@@ -549,6 +559,13 @@ class EventStore {
           eventId: googleEventId
         })
       );
+      
+      // LIFT SHIELD: Google confirmed the deletion. We can permanently erase the ghost from local memory.
+      if (localIdToClean) {
+        this.events = this.events.filter(e => e.id !== localIdToClean && e.recurringEventId !== localIdToClean);
+        await deleteDbEventByGoogleId(googleEventId);
+        await persistDeleteEvent(localIdToClean); 
+      }
     } catch (err) {
       console.warn('Outbound Google event deletion failed:', err);
     }
@@ -576,8 +593,12 @@ class EventStore {
       }
     }
 
+    const rruleRaw = event.rrule;
+    const rruleRfc = rruleRaw && rruleRaw !== 'none' ? convertRRuleToRFC5545(rruleRaw, startIso) : undefined;
+
     const newEvent: CalendarEvent = {
       ...event,
+      rrule: rruleRfc || event.rrule, // FIX: Immediately apply canonical RFC format
       startTime: startIso,
       endTime: endIso,
       timeZone: sanitizeTimezone(event.timeZone),
@@ -585,6 +606,7 @@ class EventStore {
     };
 
     this.events = [...this.events, newEvent];
+    console.log(`[KAIRO: CREATE] Locally created new event: "${newEvent.title}" (${newEvent.id})`, newEvent);
 
     persistUpsertEvent(newEvent).catch((err) => {
       console.error('Failed to persist new event:', err);
@@ -606,6 +628,7 @@ class EventStore {
 
     // Reassign array to trigger Svelte 5 reactivity immediately
     this.events = this.events.map(e => e.id === event.id ? updated : e);
+    console.log(`[KAIRO: EDIT] Locally updated event: "${updated.title}" (${updated.id})`, updated);
 
     persistUpsertEvent(updated).catch((err) => {
       console.error('Failed to persist updated event:', err);
@@ -620,13 +643,16 @@ class EventStore {
 
   deleteEvent(id: string): void {
     const target = this.events.find(e => e.id === id);
-    this.events = this.events.filter((e) => e.id !== id);
-    persistDeleteEvent(id).catch((err) => {
-      console.error('Failed to delete event from database:', err);
-    });
-
+    console.log(`[KAIRO: DELETE] Locally deleted event: "${target?.title || 'Unknown'}" (${id})`, target);
+    
     if (target?.googleEventId) {
-      this.dispatchGoogleDelete(target.googleEventId, target.calendarId).catch(() => {});
+      // MYSTERY 2 FIX: Activate the Deletion Sync Shield to prevent ghost events.
+      this.events = this.events.map(e => e.id === id ? { ...e, syncStatus: 'pending_delete' as any } : e);
+      persistUpsertEvent({ ...target, syncStatus: 'pending_delete' as any }).catch(console.error);
+      this.dispatchGoogleDelete(target.googleEventId, target.calendarId, id).catch(() => {});
+    } else {
+      this.events = this.events.filter((e) => e.id !== id);
+      persistDeleteEvent(id).catch(console.error);
     }
   }
 
@@ -635,7 +661,7 @@ class EventStore {
   }
 
   async deleteRecurringSeries(rootMasterGoogleId: string, calendarId?: string): Promise<void> {
-    // 1. Locate the master event record to get its canonical Google Event ID
+    console.log(`[KAIRO: DELETE SERIES] Triggered full series deletion for root ID: ${rootMasterGoogleId}`);
     const master = this.events.find(e => 
       e.id === rootMasterGoogleId || 
       e.googleEventId === rootMasterGoogleId || 
@@ -645,27 +671,29 @@ class EventStore {
     const masterGid = master?.googleEventId || (!rootMasterGoogleId.startsWith('evt_') ? rootMasterGoogleId : undefined);
     const targetCalId = calendarId || master?.calendarId;
 
-    // 2. Filter out master and all related child instances from memory
-    this.events = this.events.filter(e => {
-      const matchesMaster = e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.recurringEventId === rootMasterGoogleId;
-      const matchesGid = masterGid && (e.googleEventId === masterGid || e.recurringEventId === masterGid);
-      return !(matchesMaster || matchesGid);
-    });
-
-    // 3. Purge master and child rows from SQLite
-    try {
-      const db = await getDb();
-      await db.execute(
-        `DELETE FROM events WHERE id = ?1 OR google_event_id = ?1 OR recurring_event_id = ?1 ${masterGid ? 'OR google_event_id = ?2 OR recurring_event_id = ?2' : ''};`,
-        masterGid ? [rootMasterGoogleId, masterGid] : [rootMasterGoogleId]
-      );
-    } catch (err) {
-      console.error('Failed to delete recurring series in DB:', err);
-    }
-
-    // 4. Dispatch Google Cloud deletion
-    if (masterGid && targetCalId) {
-      this.dispatchGoogleDelete(masterGid, targetCalId).catch(() => {});
+    if (masterGid) {
+      // Activating Deletion Sync Shield for the whole series
+      this.events = this.events.map(e => {
+        const matchesMaster = e.id === rootMasterGoogleId || e.googleEventId === rootMasterGoogleId || e.recurringEventId === rootMasterGoogleId;
+        const matchesGid = masterGid && (e.googleEventId === masterGid || e.recurringEventId === masterGid);
+        if (matchesMaster || matchesGid) return { ...e, syncStatus: 'pending_delete' as any };
+        return e;
+      });
+      const pendingEvents = this.events.filter(e => e.syncStatus === ('pending_delete' as any));
+      await persistBatchEvents(pendingEvents);
+      
+      // FIX: Satisfy TypeScript by ensuring targetCalId exists before dispatching
+      if (targetCalId) {
+        this.dispatchGoogleDelete(masterGid, targetCalId, rootMasterGoogleId).catch(() => {});
+      }
+    } else {
+      this.events = this.events.filter(e => !(e.id === rootMasterGoogleId || e.recurringEventId === rootMasterGoogleId));
+      try {
+        const db = await getDb();
+        await db.execute(`DELETE FROM events WHERE id = ?1 OR google_event_id = ?1 OR recurring_event_id = ?1;`, [rootMasterGoogleId]);
+      } catch (err) {
+        console.error('Failed to delete recurring series in DB:', err);
+      }
     }
   }
 
@@ -940,6 +968,7 @@ class EventStore {
                           }
                         }
 
+                        console.log(`[KAIRO: GOOGLE SYNC DELETE] Google reported exception as cancelled. Purging local ID: ${rawGid}`);
                         // Remove detached child exception row from local memory and SQLite
                         this.events = this.events.filter(e => e.googleEventId !== rawGid && e.id !== rawGid);
                         await deleteDbEventByGoogleId(rawGid);
@@ -960,14 +989,32 @@ class EventStore {
                        -------------------------------------------------------- */
                     const mapped = this.mapGoogleEvent(gEvt, calId, acc.email);
                     if (mapped) {
-                      const matched = existingByGoogleId.get(mapped.googleEventId || '') || existingById.get(mapped.googleEventId || '');
+                      let matched = existingByGoogleId.get(mapped.googleEventId || '') || existingById.get(mapped.googleEventId || '');
+                      
+                      // HEURISTIC MATCH: Catch race conditions where a local event hasn't received its Google ID yet
+                      if (!matched && mapped.status !== 'cancelled') {
+                        matched = this.events.find(e => 
+                          e.syncStatus === 'pending_insert' && 
+                          e.title === mapped.title && 
+                          e.startTime === mapped.startTime &&
+                          !e.googleEventId
+                        );
+                      }
+
                       if (matched) {
+                        // SYNC SHIELD: If this event is currently being edited/moved/deleted locally, DO NOT overwrite it.
+                        if (matched.syncStatus === 'pending_update' || matched.syncStatus === 'pending_insert' || matched.syncStatus === ('pending_delete' as any)) {
+                          console.log(`[KAIRO: SYNC SHIELD ACTIVE] Blocking Google overwrite for locked local event: ${matched.id}`);
+                          continue; 
+                        }
+
                         mapped.id = matched.id;
                         // Preserve locally calculated exdates if Google did not explicitly provide them
                         if ((!mapped.exdates || mapped.exdates.length === 0) && matched.exdates && matched.exdates.length > 0) {
                           mapped.exdates = matched.exdates;
                         }
                       }
+                      console.log(`[KAIRO: GOOGLE SYNC UPSERT] Fetched event from Google: "${mapped.title}" (${mapped.id})`, mapped);
                       await persistUpsertEvent(mapped);
                     }
                   }
