@@ -432,11 +432,53 @@ class EventStore {
   }
 
   /* ==========================================================================
-     OUTBOUND GOOGLE CALENDAR DISPATCHERS
+     OUTBOUND GOOGLE CALENDAR DISPATCHERS (WITH ASYNC QUEUE)
      ========================================================================== */
 
+  // 1. The Async Operation Queue Engine
+  private syncQueue = new Map<string, Promise<void>>();
+
+  private enqueueGoogleSync(eventId: string, task: () => Promise<void>): Promise<void> {
+    const existingTask = this.syncQueue.get(eventId) || Promise.resolve();
+    
+    const nextTask = existingTask.then(task).catch(err => {
+      console.error(`[KAIRO: SYNC QUEUE] Task failed for event ${eventId}:`, err);
+    }).finally(() => {
+      // SOLVING INFINITE LOCK: Always clean up the promise once settled
+      if (this.syncQueue.get(eventId) === nextTask) {
+        this.syncQueue.delete(eventId);
+      }
+    });
+    
+    this.syncQueue.set(eventId, nextTask);
+    return nextTask;
+  }
+
+  // 2. Public Dispatchers (Queue Wrappers)
   private async dispatchGoogleCreate(event: CalendarEvent): Promise<void> {
-    const auth = await getValidTokenAndCalendar(event.calendarId);
+    return this.enqueueGoogleSync(event.id, () => this.performGoogleCreate(event.id));
+  }
+
+  private async dispatchGoogleUpdate(event: CalendarEvent): Promise<void> {
+    return this.enqueueGoogleSync(event.id, () => this.performGoogleUpdate(event.id));
+  }
+
+  private async dispatchGoogleDelete(googleEventId: string, calendarId: string, localIdToClean?: string): Promise<void> {
+    if (localIdToClean) {
+      return this.enqueueGoogleSync(localIdToClean, () => this.performGoogleDelete(googleEventId, calendarId, localIdToClean));
+    } else {
+      await this.performGoogleDelete(googleEventId, calendarId);
+    }
+  }
+
+  // 3. Internal Network Operations (The Brawn)
+  private async performGoogleCreate(eventId: string): Promise<void> {
+    // SOLVING STALE EVENT DATA: Fetch absolute latest snapshot from local memory right as we execute
+    const latestEvent = this.events.find(e => e.id === eventId);
+    if (!latestEvent || latestEvent.syncStatus === ('pending_delete' as any)) return;
+    if (latestEvent.googleEventId) return; // Prevent double creation if ID was assigned while waiting in line
+
+    const auth = await getValidTokenAndCalendar(latestEvent.calendarId);
     if (!auth) return;
 
     try {
@@ -447,34 +489,34 @@ class EventStore {
           accessToken: token,
           calendarId: auth.googleCalendarId,
           event: {
-            title: event.title || '(No Title)',
-            description: event.description || null,
-            location: event.location || null,
-            startTime: event.startTime,
-            endTime: event.endTime,
-            isAllDay: Boolean(event.isAllDay),
-            timeZone: sanitizeTimezone(event.timeZone),
-            rrule: convertRRuleToRFC5545(event.rrule, event.startTime),
-            recurringEventId: event.recurringEventId || null,
-            originalStartTime: event.originalStartTime || null
+            title: latestEvent.title || '(No Title)',
+            description: latestEvent.description || null,
+            location: latestEvent.location || null,
+            startTime: latestEvent.startTime,
+            endTime: latestEvent.endTime,
+            isAllDay: Boolean(latestEvent.isAllDay),
+            timeZone: sanitizeTimezone(latestEvent.timeZone),
+            rrule: convertRRuleToRFC5545(latestEvent.rrule, latestEvent.startTime),
+            recurringEventId: latestEvent.recurringEventId || null,
+            originalStartTime: latestEvent.originalStartTime || null
           }
         })
       );
 
       if (created && created.google_event_id) {
         // GHOST PREVENTION: Check if the Unified Brain auto-purged this event while the network request was in-flight
-        const stillExists = this.events.find(e => e.id === event.id);
+        const stillExists = this.events.find(e => e.id === latestEvent.id);
         if (!stillExists || stillExists.syncStatus === ('pending_delete' as any)) {
-          console.log(`[KAIRO: GHOST PREVENTED] Event ${event.id} was auto-purged locally while creation was in-flight. Destroying ghost on Google.`);
-          this.dispatchGoogleDelete(created.google_event_id, event.calendarId).catch(() => {});
+          console.log(`[KAIRO: GHOST PREVENTED] Event ${latestEvent.id} was auto-purged locally while creation was in-flight. Destroying ghost on Google.`);
+          this.dispatchGoogleDelete(created.google_event_id, latestEvent.calendarId, latestEvent.id).catch(() => {});
           return;
         }
 
-        console.log(`[KAIRO: GOOGLE CREATE SUCCESS] Assigned ID: ${created.google_event_id} to local event ${event.id}`);
-        this.events = this.events.map(e => e.id === event.id ? { ...e, googleEventId: created.google_event_id, syncStatus: 'synced' } : e);
+        console.log(`[KAIRO: GOOGLE CREATE SUCCESS] Assigned ID: ${created.google_event_id} to local event ${latestEvent.id}`);
+        this.events = this.events.map(e => e.id === latestEvent.id ? { ...e, googleEventId: created.google_event_id, syncStatus: 'synced' } : e);
         
         // LIFT SHIELD: Save the event back to SQLite
-        const latestState = this.events.find(e => e.id === event.id);
+        const latestState = this.events.find(e => e.id === latestEvent.id);
         if (latestState) {
           await persistUpsertEvent(latestState);
         }
@@ -484,26 +526,32 @@ class EventStore {
     }
   }
 
-  private async dispatchGoogleUpdate(event: CalendarEvent): Promise<void> {
-    if (!event.googleEventId) {
-      await this.dispatchGoogleCreate(event);
+  private async performGoogleUpdate(eventId: string): Promise<void> {
+    // SOLVING STALE EVENT DATA: Fetch absolute latest snapshot
+    const latestEvent = this.events.find(e => e.id === eventId);
+    if (!latestEvent || latestEvent.syncStatus === ('pending_delete' as any)) return;
+
+    if (!latestEvent.googleEventId) {
+      // If the Create request failed or it still has no ID, we are already locked in the queue, 
+      // so it is safe to directly call the internal create logic to prevent a deadlock.
+      await this.performGoogleCreate(eventId);
       return;
     }
 
-    const auth = await getValidTokenAndCalendar(event.calendarId);
+    const auth = await getValidTokenAndCalendar(latestEvent.calendarId);
     if (!auth) return;
 
-    let cleanStart = event.startTime;
-    let cleanEnd = event.endTime;
+    let cleanStart = latestEvent.startTime;
+    let cleanEnd = latestEvent.endTime;
 
-    if (!event.isAllDay) {
-      const pStart = parseISO(event.startTime);
-      const pEnd = parseISO(event.endTime);
+    if (!latestEvent.isAllDay) {
+      const pStart = parseISO(latestEvent.startTime);
+      const pEnd = parseISO(latestEvent.endTime);
       if (isValid(pStart)) cleanStart = pStart.toISOString();
       if (isValid(pEnd)) cleanEnd = pEnd.toISOString();
     } else {
-      const sDate = event.startTime.split('T')[0];
-      const eDate = (event.endTime || event.startTime).split('T')[0];
+      const sDate = latestEvent.startTime.split('T')[0];
+      const eDate = (latestEvent.endTime || latestEvent.startTime).split('T')[0];
       cleanStart = `${sDate}T00:00:00`;
       cleanEnd = `${eDate}T00:00:00`;
     }
@@ -515,27 +563,27 @@ class EventStore {
         (token) => invoke<NormalizedGoogleEvent>('update_google_event', {
           accessToken: token,
           calendarId: auth.googleCalendarId,
-          eventId: event.googleEventId,
+          eventId: latestEvent.googleEventId,
           event: {
-            title: event.title || '(No Title)',
-            description: event.description || null,
-            location: event.location || null,
+            title: latestEvent.title || '(No Title)',
+            description: latestEvent.description || null,
+            location: latestEvent.location || null,
             startTime: cleanStart,
             endTime: cleanEnd,
-            isAllDay: Boolean(event.isAllDay),
-            timeZone: sanitizeTimezone(event.timeZone),
-            rrule: convertRRuleToRFC5545(event.rrule, cleanStart),
-            recurringEventId: event.recurringEventId || null,
-            originalStartTime: event.recurringEventId ? (event.originalStartTime || null) : null
+            isAllDay: Boolean(latestEvent.isAllDay),
+            timeZone: sanitizeTimezone(latestEvent.timeZone),
+            rrule: convertRRuleToRFC5545(latestEvent.rrule, cleanStart),
+            recurringEventId: latestEvent.recurringEventId || null,
+            originalStartTime: latestEvent.recurringEventId ? (latestEvent.originalStartTime || null) : null
           }
         })
       );
 
       if (res) {
         // LIFT SHIELD: Successfully pushed to Google, drop the local pending lock.
-        this.events = this.events.map(e => e.id === event.id ? { ...e, syncStatus: 'synced' } : e);
+        this.events = this.events.map(e => e.id === latestEvent.id ? { ...e, syncStatus: 'synced' } : e);
         
-        const latestState = this.events.find(e => e.id === event.id);
+        const latestState = this.events.find(e => e.id === latestEvent.id);
         if (latestState) {
           await persistUpsertEvent(latestState);
         }
@@ -545,7 +593,7 @@ class EventStore {
     }
   }
 
-  private async dispatchGoogleDelete(googleEventId: string, calendarId: string, localIdToClean?: string): Promise<void> {
+  private async performGoogleDelete(googleEventId: string, calendarId: string, localIdToClean?: string): Promise<void> {
     const auth = await getValidTokenAndCalendar(calendarId);
     if (!auth) return;
 

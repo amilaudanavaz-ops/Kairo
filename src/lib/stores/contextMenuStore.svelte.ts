@@ -102,6 +102,45 @@ class ContextMenuStore {
           oldValue: base.rrule || 'Does not repeat'
         });
       }
+      if (base.location !== updatedEvent.location) {
+        diffs.push({
+          field: 'Location',
+          newValue: updatedEvent.location || '(empty)',
+          oldValue: base.location || '(empty)'
+        });
+      }
+
+      if (base.conferencingProvider !== updatedEvent.conferencingProvider || base.conferencingUrl !== updatedEvent.conferencingUrl) {
+        diffs.push({
+          field: 'Meeting',
+          newValue: updatedEvent.conferencingProvider === 'google_meet' ? 'Google Meet' : (updatedEvent.conferencingProvider === 'zoom' ? 'Zoom' : (updatedEvent.conferencingUrl ? 'Custom URL' : '(none)')),
+          oldValue: base.conferencingProvider === 'google_meet' ? 'Google Meet' : (base.conferencingProvider === 'zoom' ? 'Zoom' : (base.conferencingUrl ? 'Custom URL' : '(none)'))
+        });
+      }
+
+      if (JSON.stringify(base.participants || []) !== JSON.stringify(updatedEvent.participants || [])) {
+        diffs.push({
+          field: 'Guests',
+          newValue: `${(updatedEvent.participants || []).length} guests`,
+          oldValue: `${(base.participants || []).length} guests`
+        });
+      }
+
+      if (JSON.stringify(base.reminders || []) !== JSON.stringify(updatedEvent.reminders || [])) {
+        diffs.push({ field: 'Reminders', newValue: 'Updated', oldValue: 'Previous' });
+      }
+      
+      if (JSON.stringify(base.attachments || []) !== JSON.stringify(updatedEvent.attachments || [])) {
+        diffs.push({ field: 'Attachments', newValue: 'Updated', oldValue: 'Previous' });
+      }
+      
+      if (base.busyStatus !== updatedEvent.busyStatus) {
+        diffs.push({ field: 'Show as', newValue: updatedEvent.busyStatus || 'busy', oldValue: base.busyStatus || 'busy' });
+      }
+      
+      if (base.visibility !== updatedEvent.visibility) {
+        diffs.push({ field: 'Visibility', newValue: updatedEvent.visibility || 'default', oldValue: base.visibility || 'default' });
+      }
 
       if (diffs.length === 0) {
         this.isRecurrenceModalOpen = false;

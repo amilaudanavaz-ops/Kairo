@@ -37,11 +37,11 @@
   });
 
   $effect(() => {
-    // Force valid selection if options are hidden dynamically
-    if (isRootEvent && selectedScope === 'following') {
-      selectedScope = 'all';
-    } else if (isDateChange && !isRootEvent && !isDetachedException && selectedScope === 'all') {
-      selectedScope = 'this';
+    // Enforce the "No All Events on Date Change" rule
+    if (selectedScope === 'all') {
+      if (isDateChange || isRootEvent) {
+        selectedScope = 'following'; // Gracefully fallback to the chameleon option
+      }
     }
   });
 
@@ -105,33 +105,41 @@
       </h3>
 
       <div class="flex flex-col gap-1.5 text-xs text-zinc-200">
-        <!-- Always Shown -->
+        <!-- 
+          RULE 1: This Event 
+          Visibility: ALWAYS SHOWN
+        -->
         <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'this' ? 'bg-[#252525] font-semibold text-white' : ''}">
           <input type="radio" name="recurrenceScope" value="this" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
-          <span>{isDetachedException ? 'Only this modified event' : 'This event'}</span>
+          <span>This event</span>
         </label>
 
-        <!-- Hidden if editing Root Event or an Exception -->
-        {#if !isRootEvent && !isDetachedException}
-          <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'following' ? 'bg-[#252525] font-semibold text-white' : ''}">
-            <input type="radio" name="recurrenceScope" value="following" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
-            <span>This and following events</span>
-          </label>
-        {/if}
+        <!-- 
+          RULE 2: This and Following 
+          Visibility: ALWAYS SHOWN 
+          Behavior: Acts as the "All Events" button if the user clicks the Root Event.
+        -->
+        <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'following' ? 'bg-[#252525] font-semibold text-white' : ''}">
+          <input type="radio" name="recurrenceScope" value="following" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
+          <span>
+            {#if isRootEvent}
+              <!-- Label when modifying the very first event -->
+              All events
+            {:else}
+              <!-- Standard label for exceptions or mid-series splits -->
+              This and following events
+            {/if}
+          </span>
+        </label>
 
-        <!-- Hidden on Date Changes, EXCEPT if editing the Root Event -->
-        {#if !isDateChange || isRootEvent || isDetachedException}
+        <!-- 
+          RULE 3: All Events 
+          Visibility: HIDDEN ON DATE CHANGE AND HIDDEN ON ROOT EVENT
+        -->
+        {#if !isDateChange && !isRootEvent}
           <label class="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-[#262626] transition-colors {selectedScope === 'all' ? 'bg-[#252525] font-semibold text-white' : ''}">
             <input type="radio" name="recurrenceScope" value="all" bind:group={selectedScope} class="accent-blue-500 w-4 h-4 cursor-pointer" />
-            <span>
-              {#if isRootEvent && isDateChange}
-                All events (Shift entire series)
-              {:else if isDetachedException}
-                All events in this recurring series
-              {:else}
-                All events
-              {/if}
-            </span>
+            <span>All events</span>
           </label>
         {/if}
       </div>
