@@ -38,8 +38,9 @@
     return days;
   });
 
+  import { HOUR_HEIGHT_PX as HOUR_HEIGHT } from '../../utils/timeMath';
+
   const hours = Array.from({ length: 24 }, (_, i) => i);
-  const HOUR_HEIGHT = 56;
   const todayStart = startOfDay(new Date());
 
   let now = $state(new Date());
@@ -189,7 +190,7 @@
         {@const dayKey = format(day, 'yyyy-MM-dd')}
         {@const isPastDay = isBefore(startOfDay(day), todayStart)}
         {@const isCurrentDayColumn = isToday(day)}
-        {@const timedEvents = eventStore.events.filter((e: CalendarEvent) => !e.isAllDay && isSameDay(parseISO(e.startTime), day) && isCalendarVisible(e.calendarId))}
+        {@const timedEvents = eventStore.getEventsForDateKey(dayKey).filter((e: CalendarEvent) => !e.isAllDay && isCalendarVisible(e.calendarId))}
         {@const isPhantomTarget = dragStore.isDragging && dragStore.projectedDateKey === dayKey && dragStore.projectedStartTime && dragStore.projectedEndTime}
 
         <div 
@@ -310,10 +311,10 @@
               
               {#if layout.height > 34}
                 <div 
-                  class="text-[10px] font-bold font-sans truncate mt-0.5 pl-4 transition-colors group-hover:brightness-125 pointer-events-none"
+                  class="text-[10px] font-bold font-sans truncate mt-0.5 transition-colors group-hover:brightness-125 pointer-events-none"
                   style="color: {token.timeText};"
                 >
-                  {formatDisplayTime(event.startTime)}
+                  {formatDisplayTime(event.startTime)} – {formatDisplayTime(event.endTime)}
                 </div>
               {/if}
 

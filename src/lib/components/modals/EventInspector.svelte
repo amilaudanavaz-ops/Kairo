@@ -91,6 +91,27 @@
   let attachmentInput = $state('');
   let timezoneQuery = $state('');
 
+  // Mini Calendar Scroll Engine
+  let pickerWheelAccumulator = 0;
+  function handlePickerWheel(e: WheelEvent) {
+    e.stopPropagation(); // Prevent the main inspector background from scrolling
+
+    pickerWheelAccumulator += e.deltaY;
+    
+    // Threshold to prevent ultra-fast hyperscrolling
+    if (Math.abs(pickerWheelAccumulator) >= 40) {
+      const isDown = pickerWheelAccumulator > 0;
+      pickerWheelAccumulator = 0;
+      
+      // Hold Shift to jump by years, otherwise scroll by months
+      if (e.shiftKey) {
+        pickerMonth = isDown ? addYears(pickerMonth, 1) : subYears(pickerMonth, 1);
+      } else {
+        pickerMonth = isDown ? addMonths(pickerMonth, 1) : subMonths(pickerMonth, 1);
+      }
+    }
+  }
+
   // Live Location Suggestions via OpenStreetMap Photon API
   let liveLocations = $state<LocationSuggestion[]>([]);
   let locationFetchTimeout: number | undefined;
@@ -1386,6 +1407,7 @@
     {#if activeSideMenu === 'date' && !isReadOnly}
       {@const grid = generateMonthGrid(pickerMonth)}
       <div 
+        onwheel={handlePickerWheel}
         class="absolute top-14 w-60 bg-[#181818] border border-[#2b2b2b] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] p-3 z-999 flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-62.5'}"
       >

@@ -9,7 +9,7 @@ import {
 } from 'date-fns';
 import type { CalendarEvent } from '../../types/event';
 
-export const HOUR_HEIGHT_PX = 48; // Fixed height in pixels per 1-hour row
+export const HOUR_HEIGHT_PX = 56; // Fixed height in pixels per 1-hour row
 
 export function getWeekDays(activeDate: Date): Date[] {
   const start = startOfWeek(activeDate, { weekStartsOn: 0 });

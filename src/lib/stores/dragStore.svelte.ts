@@ -35,6 +35,7 @@ class DragStore {
   private initialDurationMinutes = 60;
   private initialStartMinutes = 0;
   private initialEndMinutes = 60;
+  private dragTimeZone = 'UTC';
 
   /**
    * Initializes pointer drag or resize with a 4px movement deadzone.
@@ -58,11 +59,14 @@ class DragStore {
     this.originalOccurrenceDate = this.pendingSourceDateKey;
     this.pendingMode = mode;
 
-    const sObj = parseISO(event.startTime);
-    const eObj = parseISO(event.endTime);
+    // FIX: Lock the resizing math to the event's actual timezone, preventing layout snapping
+    this.dragTimeZone = event.timeZone || settingsStore.timeZone;
+    const sObj = toZonedTime(parseISO(event.startTime), this.dragTimeZone);
+    const eObj = toZonedTime(parseISO(event.endTime), this.dragTimeZone);
+    
     this.initialStartMinutes = sObj.getHours() * 60 + sObj.getMinutes();
     this.initialEndMinutes = eObj.getHours() * 60 + eObj.getMinutes();
-    this.initialDurationMinutes = getSafeDuration(sObj, eObj);
+    this.initialDurationMinutes = getSafeDuration(parseISO(event.startTime), parseISO(event.endTime));
 
     const onPointerMove = (moveEvent: PointerEvent) => {
       this.currentX = moveEvent.clientX;
@@ -111,15 +115,20 @@ class DragStore {
 
           const [y, m, d] = (colDateKey || '').split('-').map(Number);
 
+          // FIX: Calculate precise delta movement based on the initial click position
+          const deltaY = moveEvent.clientY - this.startY;
+          const deltaMinutes = Math.round(((deltaY / HOUR_HEIGHT_PX) * 60) / 15) * 15;
+
           if (this.mode === 'move') {
-            const newStartMin = Math.min(1440 - this.initialDurationMinutes, Math.max(0, currentHoverMinutes));
+            // Apply delta to original start time so the event doesn't snap its top edge to the cursor
+            const newStartMin = Math.min(1440 - this.initialDurationMinutes, Math.max(0, this.initialStartMinutes + deltaMinutes));
             const newEndMin = newStartMin + this.initialDurationMinutes;
 
             const newStart = new Date(y, m - 1, d, Math.floor(newStartMin / 60), newStartMin % 60, 0);
             const newEnd = new Date(y, m - 1, d, Math.floor(newEndMin / 60), newEndMin % 60, 0);
 
-            this.projectedStartTime = newStart.toISOString();
-            this.projectedEndTime = newEnd.toISOString();
+            this.projectedStartTime = fromZonedTime(newStart, this.dragTimeZone).toISOString();
+            this.projectedEndTime = fromZonedTime(newEnd, this.dragTimeZone).toISOString();
           } else if (this.mode === 'resize-bottom') {
             // Pin start time, scale end time down/up (min 15 mins duration)
             const startHour = Math.floor(this.initialStartMinutes / 60);
@@ -129,8 +138,8 @@ class DragStore {
             const newEndMin = Math.min(1440, Math.max(this.initialStartMinutes + 15, currentHoverMinutes));
             const newEnd = new Date(y, m - 1, d, Math.floor(newEndMin / 60), newEndMin % 60, 0);
 
-            this.projectedStartTime = pinnedStart.toISOString();
-            this.projectedEndTime = newEnd.toISOString();
+            this.projectedStartTime = fromZonedTime(pinnedStart, this.dragTimeZone).toISOString();
+            this.projectedEndTime = fromZonedTime(newEnd, this.dragTimeZone).toISOString();
           } else if (this.mode === 'resize-top') {
             // Pin end time, scale start time up/down (min 15 mins duration)
             const endHour = Math.floor(this.initialEndMinutes / 60);
@@ -140,8 +149,8 @@ class DragStore {
             const newStartMin = Math.max(0, Math.min(this.initialEndMinutes - 15, currentHoverMinutes));
             const newStart = new Date(y, m - 1, d, Math.floor(newStartMin / 60), newStartMin % 60, 0);
 
-            this.projectedStartTime = newStart.toISOString();
-            this.projectedEndTime = pinnedEnd.toISOString();
+            this.projectedStartTime = fromZonedTime(newStart, this.dragTimeZone).toISOString();
+            this.projectedEndTime = fromZonedTime(pinnedEnd, this.dragTimeZone).toISOString();
           }
           return;
         }

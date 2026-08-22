@@ -732,7 +732,7 @@ class EventStore {
       
       // FIX: Satisfy TypeScript by ensuring targetCalId exists before dispatching
       if (targetCalId) {
-        this.dispatchGoogleDelete(masterGid, targetCalId, rootMasterGoogleId).catch(() => {});
+        this.dispatchGoogleDelete(masterGid as string, targetCalId, rootMasterGoogleId).catch(() => {});
       }
     } else {
       this.events = this.events.filter(e => !(e.id === rootMasterGoogleId || e.recurringEventId === rootMasterGoogleId));

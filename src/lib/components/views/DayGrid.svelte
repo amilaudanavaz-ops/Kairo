@@ -20,9 +20,9 @@
   import type { CalendarEvent, CalendarCategory } from '../../../types/event';
   import { toZonedTime, formatInTimeZone } from 'date-fns-tz';
   import { getSafeDuration } from '../../utils/dateMath';
+  import { HOUR_HEIGHT_PX as HOUR_HEIGHT } from '../../utils/timeMath';
 
   const hours = Array.from({ length: 24 }, (_, i) => i);
-  const HOUR_HEIGHT = 56;
   const todayStart = startOfDay(new Date());
 
   let currentDay = $derived(calendarState.currentDate);
@@ -138,11 +138,11 @@
   }
 
   let allDayEvents = $derived.by(() => {
-    return eventStore.events.filter((e: CalendarEvent) => e.isAllDay && isSameDay(parseISO(e.startTime), currentDay) && isCalendarVisible(e.calendarId));
+    return eventStore.getEventsForDateKey(dayKey).filter((e: CalendarEvent) => e.isAllDay && isCalendarVisible(e.calendarId));
   });
 
   let timedEvents = $derived.by(() => {
-    return eventStore.events.filter((e: CalendarEvent) => !e.isAllDay && isSameDay(parseISO(e.startTime), currentDay) && isCalendarVisible(e.calendarId));
+    return eventStore.getEventsForDateKey(dayKey).filter((e: CalendarEvent) => !e.isAllDay && isCalendarVisible(e.calendarId));
   });
 </script>
 
@@ -308,7 +308,17 @@
               {event.title || '(No Title)'}
             </span>
           </div>
-          {#if event.description}
+          
+          {#if layout.height > 34}
+            <div 
+              class="text-[11px] font-bold font-sans truncate mt-0.5 transition-colors group-hover:brightness-125 pointer-events-none"
+              style="color: {token.timeText};"
+            >
+              {formatDisplayTime(event.startTime)} – {formatDisplayTime(event.endTime)}
+            </div>
+          {/if}
+
+          {#if layout.height > 50 && event.description}
             <p class="text-[11px] text-[var(--text-muted)] mt-1 truncate group-hover:text-zinc-300 pointer-events-none">{event.description}</p>
           {/if}
 
