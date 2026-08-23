@@ -139,9 +139,10 @@
         <div class="flex items-center gap-4 mt-8">
           <button 
             onclick={() => plannerStore.add15MinutesToCurrent()}
-            class="px-5 py-3 bg-[#222] hover:bg-[#2a2a2a] border border-[#333] text-zinc-300 text-sm font-bold rounded-xl flex items-center gap-2 transition-all cursor-pointer"
+            disabled={plannerStore.isOvertime}
+            class="px-5 py-3 bg-[#222] hover:bg-[#2a2a2a] border border-[#333] text-zinc-300 text-sm font-bold rounded-xl flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Plus size={16} class="text-indigo-400" />
+            <Plus size={16} class={plannerStore.isOvertime ? "text-zinc-500" : "text-indigo-400"} />
             +15 Mins
           </button>
 

@@ -25,6 +25,13 @@
     return format(d, 'HH:mm');
   }
 
+  function formatDurationDisplay(minutes: number) {
+    if (minutes < 60) return `${minutes}m`;
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+
   // NATIVE DOM ACTION: Bypasses Svelte's event delegation to fix Tauri/WebView2 OS intercepts
   function dropZone(node: HTMLElement, slotIndex: number) {
     const handleDragEnter = (e: DragEvent) => {
@@ -87,7 +94,7 @@
     
     <!-- Header Capacity Badge -->
     <div class="absolute -top-8 right-0 text-[10px] font-semibold bg-[#222] border border-[#333] px-2 py-1 rounded text-zinc-300">
-      Capacity: {plannerStore.activeSession.durationMinutes / 60} hrs
+      Capacity: {formatDurationDisplay(plannerStore.activeSession.durationMinutes)}
     </div>
     <div class="absolute -top-8 left-16 text-[10px] font-bold tracking-widest uppercase text-zinc-500">
       Session Canvas

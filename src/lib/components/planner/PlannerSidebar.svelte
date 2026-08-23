@@ -10,6 +10,22 @@
     const m = minutes % 60;
     return m > 0 ? `${h}h ${m}m` : `${h}h`;
   }
+
+
+  function parseDurationString(input: string): number | null {
+    const str = input.toLowerCase().trim();
+    if (!str) return null;
+    let mins = 0;
+    const hMatch = str.match(/([0-9.]+)\s*h/);
+    const mMatch = str.match(/([0-9.]+)\s*m/);
+    if (hMatch || mMatch) {
+      if (hMatch) mins += parseFloat(hMatch[1]) * 60;
+      if (mMatch) mins += parseFloat(mMatch[1]);
+      return Math.round(mins);
+    }
+    const num = parseInt(str, 10);
+    return !isNaN(num) ? num : null;
+  }
 </script>
 
 <aside class="w-[340px] h-full bg-[#111111] flex flex-col shrink-0">
@@ -52,9 +68,26 @@
               </div>
               
               <div class="flex items-center gap-3 text-[11px] text-zinc-500 font-medium">
-                <div class="flex items-center gap-1">
+                <div class="flex items-center gap-1 group/dur">
                   <Clock size={12} />
-                  <span>{formatDuration(block.durationMinutes)}</span>
+                  <input 
+                    type="text"
+                    value={formatDuration(block.durationMinutes)}
+                    onblur={(e) => {
+                      const val = parseDurationString(e.currentTarget.value);
+                      if (val && val > 0 && val !== block.durationMinutes) {
+                        plannerStore.updateBlockDuration(block.id, block.type, val);
+                      }
+                      e.currentTarget.value = formatDuration(val || block.durationMinutes);
+                    }}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur();
+                    }}
+                    onclick={(e) => e.stopPropagation()}
+                    onpointerdown={(e) => e.stopPropagation()}
+                    class="w-14 bg-transparent text-zinc-500 font-medium text-[11px] outline-none hover:text-zinc-300 focus:text-indigo-400 focus:bg-[#222] rounded px-1 -ml-1 transition-colors cursor-text"
+                    title="Edit duration (e.g. 80, 1h 20m)"
+                  />
                 </div>
                 {#if block.type === 'calendar_event' && block.originalStartTime}
                   <div class="flex items-center gap-1 text-blue-400/80">

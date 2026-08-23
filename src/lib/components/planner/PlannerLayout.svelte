@@ -56,10 +56,36 @@
     }
   }
 
+  function parseDurationString(input: string): number | null {
+    const str = input.toLowerCase().trim();
+    if (!str) return null;
+    let mins = 0;
+    const hMatch = str.match(/([0-9.]+)\s*h/);
+    const mMatch = str.match(/([0-9.]+)\s*m/);
+    if (hMatch || mMatch) {
+      if (hMatch) mins += parseFloat(hMatch[1]) * 60;
+      if (mMatch) mins += parseFloat(mMatch[1]);
+      return Math.round(mins);
+    }
+    const num = parseInt(str, 10);
+    return !isNaN(num) ? num : null;
+  }
+
+  function formatDurationDisplay(minutes: number) {
+    if (minutes < 60) return `${minutes}m`;
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+
   function handleDurationChange(e: Event) {
-    const val = parseInt((e.target as HTMLInputElement).value, 10);
-    if (!isNaN(val) && val > 0) {
+    const target = e.target as HTMLInputElement;
+    const val = parseDurationString(target.value);
+    if (val && val > 0) {
       plannerStore.updateSessionDuration(val);
+      target.value = formatDurationDisplay(val);
+    } else if (plannerStore.activeSession) {
+      target.value = formatDurationDisplay(plannerStore.activeSession.durationMinutes);
     }
   }
 </script>
@@ -90,20 +116,32 @@
           {#if plannerStore.activeSession}
             <div class="flex items-center gap-2">
               <span class="text-[13px] font-medium text-zinc-500">Session Duration:</span>
-              <select 
-                value={plannerStore.activeSession.durationMinutes} 
-                onchange={handleDurationChange}
-                class="bg-[#181818] border border-[#2a2a2a] text-zinc-200 text-[13px] font-medium rounded-md px-3 py-1.5 outline-none cursor-pointer hover:border-[#444] transition-colors"
-              >
-                <option value={60}>1 Hour</option>
-                <option value={120}>2 Hours</option>
-                <option value={180}>3 Hours</option>
-                <option value={240}>4 Hours</option>
-                <option value={300}>5 Hours</option>
-                <option value={360}>6 Hours</option>
-                <option value={420}>7 Hours</option>
-                <option value={480}>8 Hours</option>
-              </select>
+              <div class="flex items-center bg-[#181818] border border-[#2a2a2a] rounded-md overflow-hidden hover:border-[#444] focus-within:border-indigo-500 transition-colors">
+                <button 
+                  onclick={() => plannerStore.updateSessionDuration(Math.max(60, plannerStore.activeSession!.durationMinutes - 60))}
+                  class="px-2 py-1.5 text-zinc-400 hover:text-white hover:bg-[#222] transition-colors font-bold text-xs cursor-pointer"
+                  title="Subtract 1 Hour"
+                >
+                  -1h
+                </button>
+                <div class="w-px h-4 bg-[#2a2a2a]"></div>
+                <input 
+                  type="text"
+                  value={formatDurationDisplay(plannerStore.activeSession.durationMinutes)} 
+                  onblur={handleDurationChange}
+                  onkeydown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                  class="w-16 bg-transparent text-center text-zinc-200 text-[13px] font-medium outline-none"
+                  title="Enter minutes (e.g. 80) or hours (e.g. 1.5h, 1h 20m)"
+                />
+                <div class="w-px h-4 bg-[#2a2a2a]"></div>
+                <button 
+                  onclick={() => plannerStore.updateSessionDuration(plannerStore.activeSession!.durationMinutes + 60)}
+                  class="px-2 py-1.5 text-zinc-400 hover:text-white hover:bg-[#222] transition-colors font-bold text-xs cursor-pointer"
+                  title="Add 1 Hour"
+                >
+                  +1h
+                </button>
+              </div>
             </div>
             
             <button 

@@ -63,6 +63,35 @@ class PlannerStore {
       .flatMap(k => layout[k]);
   }
 
+  // Grouped execution sequence (Merges consecutive chunks of the same task)
+  get executionSequence() {
+    const rawIds = this.flatLayout;
+    const sequence: { id: string, title: string, parentId: string, durationMinutes: number, chunkIds: string[] }[] = [];
+
+    for (const id of rawIds) {
+      const block = this.timelineBlocks.find(b => b.id === id);
+      if (!block) continue;
+
+      const parentId = block.parentId || block.id;
+      const last = sequence[sequence.length - 1];
+
+      // If the current block shares a parent with the previous block, merge them!
+      if (last && last.parentId === parentId) {
+        last.durationMinutes += block.durationMinutes;
+        last.chunkIds.push(block.id);
+      } else {
+        sequence.push({
+          id: block.id, // Primary active ID for HUD lookup
+          parentId,
+          title: block.title,
+          durationMinutes: block.durationMinutes,
+          chunkIds: [block.id]
+        });
+      }
+    }
+    return sequence;
+  }
+
   // 1. The Timeline Grid (Slot-based)
   timelineBlocks = $derived.by(() => {
     if (!this.activeSession) return [];
@@ -192,6 +221,24 @@ class PlannerStore {
     await deleteFlowTask(taskId);
   }
 
+  async updateBlockDuration(blockId: string, blockType: string, newDurationMinutes: number) {
+    console.log(`[Store] ⏱️ Updating duration for ${blockId} to ${newDurationMinutes}m`);
+    if (blockType === 'custom_task') {
+      this.tasks = this.tasks.map(t => t.id === blockId ? { ...t, durationMinutes: newDurationMinutes } : t);
+      const updated = this.tasks.find(t => t.id === blockId);
+      if (updated) await saveFlowTask(updated);
+    } else if (blockType === 'calendar_event') {
+      const events = eventStore.getEventsForDateKey(this.activeDateKey);
+      const e = events.find(x => x.id === blockId);
+      if (e) {
+        const start = parseISO(e.startTime);
+        const newEnd = addMinutes(start, newDurationMinutes);
+        const updated = { ...e, endTime: newEnd.toISOString(), updatedAt: new Date().toISOString() };
+        eventStore.updateEvent(updated);
+      }
+    }
+  }
+
   /* ==========================================================================
      TIMELINE MUTATIONS & GUILLOTINE SPLIT
      ========================================================================== */
@@ -251,7 +298,7 @@ class PlannerStore {
   }
 
   async moveBlockToSlot(blockId: string, sourceSlot: number, targetSlot: number) {
-    console.log(`[Store] 🔄 moveBlockToSlot TRIGGERED: ${blockId} from Slot ${sourceSlot} -> Slot ${targetSlot}`);
+    console.log(`[Store] 🔄 moveBlockToSlot: ${blockId} from Slot ${sourceSlot} -> Slot ${targetSlot}`);
     if (!this.activeSession || sourceSlot === targetSlot) return;
     
     const currentLayout = this.activeSession.layout || {};
@@ -265,23 +312,57 @@ class PlannerStore {
     
     const movingTask = this.tasks.find(x => x.id === blockId);
     if (!movingTask) {
-      console.warn('[Store] ❌ Could not find moving task in store:', blockId);
+      console.warn('[Store] ❌ Could not find moving task:', blockId);
       return;
     }
 
-    if (targetUsed + movingTask.durationMinutes > 60) {
-      console.warn('[Store] ❌ Target slot is too full to accept this move!');
+    const availableInTarget = 60 - targetUsed;
+    
+    if (availableInTarget <= 0) {
+      console.warn('[Store] ❌ Target slot is completely full!');
       return;
     }
 
-    const updatedLayout = { ...currentLayout };
-    updatedLayout[sourceSlot] = (updatedLayout[sourceSlot] || []).filter(id => id !== blockId);
-    updatedLayout[targetSlot] = [...targetTasks, blockId];
+    if (movingTask.durationMinutes <= availableInTarget) {
+      // Standard Move - Fits completely
+      const updatedLayout = { ...currentLayout };
+      updatedLayout[sourceSlot] = (updatedLayout[sourceSlot] || []).filter(id => id !== blockId);
+      updatedLayout[targetSlot] = [...targetTasks, blockId];
 
-    const updatedSession = { ...this.activeSession, layout: updatedLayout };
-    this.sessions = this.sessions.map(s => s.id === updatedSession.id ? updatedSession : s);
-    await saveFlowSession(updatedSession);
-    console.log(`[Store] ✅ Successfully moved ${blockId} to Slot ${targetSlot}`);
+      const updatedSession = { ...this.activeSession, layout: updatedLayout };
+      this.sessions = this.sessions.map(s => s.id === updatedSession.id ? updatedSession : s);
+      await saveFlowSession(updatedSession);
+      console.log(`[Store] ✅ Successfully moved ${blockId} to Slot ${targetSlot}`);
+    } else {
+      // Splitting Logic - Chunk the task
+      console.log(`[Store] ✂️ Splitting moved task to fit ${availableInTarget}m space`);
+      const chunkForTarget = availableInTarget;
+      const remainingInSource = movingTask.durationMinutes - availableInTarget;
+      
+      // 1. Shrink original chunk in source slot
+      this.tasks = this.tasks.map(t => t.id === blockId ? { ...t, durationMinutes: remainingInSource } : t);
+      await saveFlowTask(this.tasks.find(t => t.id === blockId)!);
+      
+      // 2. Create new chunk for target slot
+      const newChunkId = 'task_' + Date.now() + Math.floor(Math.random() * 1000);
+      const newChunk: FlowTask = {
+        ...movingTask,
+        id: newChunkId,
+        durationMinutes: chunkForTarget,
+        createdAt: new Date().toISOString()
+      };
+      
+      this.tasks = [...this.tasks, newChunk];
+      await saveFlowTask(newChunk);
+      
+      // 3. Add new chunk to target slot layout
+      const updatedLayout = { ...currentLayout };
+      updatedLayout[targetSlot] = [...targetTasks, newChunkId];
+      
+      const updatedSession = { ...this.activeSession, layout: updatedLayout };
+      this.sessions = this.sessions.map(s => s.id === updatedSession.id ? updatedSession : s);
+      await saveFlowSession(updatedSession);
+    }
   }
 
   async removeBlockFromTimeline(blockId: string) {
@@ -306,16 +387,14 @@ class PlannerStore {
      ========================================================================== */
 
   startSession() {
-    if (!this.activeSession || this.flatLayout.length === 0) return;
+    if (!this.activeSession || this.executionSequence.length === 0) return;
     this.isExecutionMode = true;
-    this.activeBlockId = this.flatLayout[0];
     
-    const block = this.timelineBlocks.find(b => b.id === this.activeBlockId);
-    if (block) {
-      this.timerRemainingSeconds = block.durationMinutes * 60;
-      this.isOvertime = false;
-      this.startTimer();
-    }
+    const firstStep = this.executionSequence[0];
+    this.activeBlockId = firstStep.id;
+    this.timerRemainingSeconds = firstStep.durationMinutes * 60;
+    this.isOvertime = false;
+    this.startTimer();
   }
 
   private startTimer() {
@@ -344,10 +423,15 @@ class PlannerStore {
   async add15MinutesToCurrent() {
     if (!this.activeBlockId || !this.activeSession) return;
     
-    // The Domino Push: We update the task duration, which automatically pushes everything down in `timelineBlocks`
-    if (this.activeBlockId.startsWith('task_')) {
-      this.tasks = this.tasks.map(t => t.id === this.activeBlockId ? { ...t, durationMinutes: t.durationMinutes + 15 } : t);
-      await saveFlowTask(this.tasks.find(t => t.id === this.activeBlockId)!);
+    const currentStep = this.executionSequence.find(s => s.id === this.activeBlockId);
+    if (!currentStep) return;
+
+    // The Domino Push: Update the duration of the LAST chunk in the merged group
+    const lastChunkId = currentStep.chunkIds[currentStep.chunkIds.length - 1];
+    
+    if (lastChunkId.startsWith('task_')) {
+      this.tasks = this.tasks.map(t => t.id === lastChunkId ? { ...t, durationMinutes: t.durationMinutes + 15 } : t);
+      await saveFlowTask(this.tasks.find(t => t.id === lastChunkId)!);
     }
     
     // Update session overtime tracked metric
@@ -364,30 +448,38 @@ class PlannerStore {
     
     if (this.runnerInterval) clearInterval(this.runnerInterval);
 
-    // If we were in overtime, lock in the exact tracked minutes and push dominoes
+    const currentStepIndex = this.executionSequence.findIndex(s => s.id === this.activeBlockId);
+    const currentStep = this.executionSequence[currentStepIndex];
+    if (!currentStep) return;
+
+    // If we were in overtime, lock in the exact tracked minutes to the LAST chunk
     if (this.isOvertime) {
       const extraMinutes = Math.ceil(this.timerRemainingSeconds / 60);
-      if (this.activeBlockId.startsWith('task_')) {
-        this.tasks = this.tasks.map(t => t.id === this.activeBlockId ? { ...t, durationMinutes: t.durationMinutes + extraMinutes } : t);
-        await saveFlowTask(this.tasks.find(t => t.id === this.activeBlockId)!);
+      const lastChunkId = currentStep.chunkIds[currentStep.chunkIds.length - 1];
+      
+      if (lastChunkId.startsWith('task_')) {
+        this.tasks = this.tasks.map(t => t.id === lastChunkId ? { ...t, durationMinutes: t.durationMinutes + extraMinutes } : t);
+        await saveFlowTask(this.tasks.find(t => t.id === lastChunkId)!);
       }
       const updatedSession = { ...this.activeSession, overtimeMinutes: this.activeSession.overtimeMinutes + extraMinutes };
       this.sessions = this.sessions.map(s => s.id === updatedSession.id ? updatedSession : s);
       await saveFlowSession(updatedSession);
     }
 
-    // Mark completed
-    if (this.activeBlockId.startsWith('task_')) {
-      this.tasks = this.tasks.map(t => t.id === this.activeBlockId ? { ...t, isCompleted: true } : t);
-      await saveFlowTask(this.tasks.find(t => t.id === this.activeBlockId)!);
+    // Mark ALL chunks in the merged group as completed
+    for (const chunkId of currentStep.chunkIds) {
+      if (chunkId.startsWith('task_')) {
+        this.tasks = this.tasks.map(t => t.id === chunkId ? { ...t, isCompleted: true } : t);
+        const t = this.tasks.find(x => x.id === chunkId);
+        if (t) await saveFlowTask(t);
+      }
     }
 
-    // Progress to next
-    const currentIndex = this.flatLayout.indexOf(this.activeBlockId);
-    if (currentIndex >= 0 && currentIndex < this.flatLayout.length - 1) {
-      this.activeBlockId = this.flatLayout[currentIndex + 1];
-      const nextBlock = this.timelineBlocks.find(b => b.id === this.activeBlockId);
-      this.timerRemainingSeconds = (nextBlock?.durationMinutes || 0) * 60;
+    // Progress to next grouped step
+    if (currentStepIndex >= 0 && currentStepIndex < this.executionSequence.length - 1) {
+      const nextStep = this.executionSequence[currentStepIndex + 1];
+      this.activeBlockId = nextStep.id;
+      this.timerRemainingSeconds = nextStep.durationMinutes * 60;
       this.isOvertime = false;
       this.startTimer();
     } else {
@@ -456,7 +548,77 @@ class PlannerStore {
     this.sessions = this.sessions.map(s => s.id === updatedSession.id ? updatedSession : s);
     await saveFlowSession(updatedSession);
   }
+
+  async reorderTimeline(fromIndex: number, toIndex: number) {
+    if (!this.activeSession) return;
+    
+    // 1. Reorder the merged execution sequence
+    const seq = [...this.executionSequence];
+    const [moved] = seq.splice(fromIndex, 1);
+    seq.splice(toIndex, 0, moved);
+
+    // 2. Identify all chunk IDs currently on the timeline to clear them
+    const chunksToDelete = this.executionSequence.flatMap(s => s.chunkIds).filter(id => {
+      const t = this.tasks.find(x => x.id === id);
+      return t && t.parentId; // Only target child chunks, protecting original inbox tasks
+    });
+    
+    let newTasks = this.tasks.filter(t => !chunksToDelete.includes(t.id));
+    
+    // Delete old chunks from DB
+    for (const id of chunksToDelete) {
+      await deleteFlowTask(id);
+    }
+    
+    // 3. Sequentially repack the entire timeline!
+    const newLayout: Record<number, string[]> = {};
+    let currentSlot = 0;
+    let currentSlotUsed = 0;
+
+    for (const item of seq) {
+      let remainingMins = item.durationMinutes;
+      
+      while (remainingMins > 0) {
+        const availableInSlot = 60 - currentSlotUsed;
+        if (availableInSlot === 0) {
+          currentSlot++;
+          currentSlotUsed = 0;
+          continue;
+        }
+
+        const chunkMins = Math.min(remainingMins, availableInSlot);
+        const chunkId = 'task_' + Date.now() + Math.floor(Math.random() * 100000);
+        
+        const childTask: FlowTask = {
+          id: chunkId,
+          parentId: item.parentId, // Keep it linked to the original task
+          dateKey: this.activeDateKey,
+          title: item.title,
+          durationMinutes: chunkMins,
+          isCompleted: false,
+          createdAt: new Date().toISOString()
+        };
+        
+        newTasks.push(childTask);
+        await saveFlowTask(childTask);
+
+        if (!newLayout[currentSlot]) newLayout[currentSlot] = [];
+        newLayout[currentSlot].push(chunkId);
+        
+        currentSlotUsed += chunkMins;
+        remainingMins -= chunkMins;
+      }
+    }
+
+    this.tasks = newTasks;
+    
+    // 4. Save and trigger reactivity
+    const updatedSession = { ...this.activeSession, layout: newLayout };
+    this.sessions = this.sessions.map(s => s.id === updatedSession.id ? updatedSession : s);
+    await saveFlowSession(updatedSession);
+  }
   
 }
+
 
 export const plannerStore = new PlannerStore();
