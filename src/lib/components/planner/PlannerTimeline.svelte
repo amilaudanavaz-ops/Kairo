@@ -49,11 +49,7 @@
     </div>
 
     <!-- RIGHT CANVAS (1-Hour Slot Drop Zones) -->
-    <div 
-      class="flex-1 flex flex-col relative pt-2 z-10"
-      ondragenter={(e) => e.preventDefault()}
-      ondragover={(e) => e.preventDefault()}
-    >
+    <div class="flex-1 flex flex-col relative pt-2 z-10">
       {#if plannerStore.timelineBlocks.length === 0}
         <div class="absolute inset-0 flex flex-col items-center justify-center text-zinc-600 gap-4 border-2 border-dashed border-[#222] rounded-2xl m-2 pointer-events-none -z-10">
           <CheckSquare size={32} class="opacity-30" />
@@ -63,13 +59,10 @@
 
       {#each Array.from({ length: Math.ceil(plannerStore.activeSession.durationMinutes / 60) }) as _, i}
         <div 
-          ondragenter={(e) => { e.preventDefault(); }}
-          ondragover={(e) => { 
-            e.preventDefault(); // MANDATORY: This tells the browser "this is a valid drop target"
-          }}
+          ondragenter={(e) => e.preventDefault()}
+          ondragover={(e) => e.preventDefault()}
           ondrop={(e) => {
             e.preventDefault();
-            e.stopPropagation();
             const dataStr = e.dataTransfer?.getData('text/plain');
             console.log(`[Timeline] 📥 DROP detected in Slot ${i}! Raw data received:`, dataStr);
             
@@ -97,7 +90,7 @@
               console.warn('[Timeline] ⚠️ No data payload found in drop event!');
             }
           }}
-          class="w-full relative border-b border-[#1e1e1e] hover:bg-white/5 transition-colors flex flex-col gap-1.5 p-2"
+          class="w-full relative border-b border-[#1e1e1e] bg-[rgba(255,255,255,0.01)] hover:bg-white/5 transition-colors flex flex-col gap-1.5 p-2"
           style="height: {60 * PIXELS_PER_MINUTE}px;"
         >
           <!-- Render blocks specifically assigned to this slot -->

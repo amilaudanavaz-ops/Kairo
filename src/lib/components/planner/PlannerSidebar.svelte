@@ -38,7 +38,7 @@
               e.dataTransfer.setData('text/plain', payload);
             }
           }}
-          class="bg-[#181818] border border-[#222] hover:border-[#333] rounded-xl p-3.5 flex flex-col gap-2.5 transition-colors cursor-grab active:cursor-grabbing group select-none"
+          class="bg-[#181818] border border-[#2a2a2a] hover:border-[#333] rounded-xl p-3.5 flex flex-col gap-2.5 transition-colors cursor-grab active:cursor-grabbing group select-none"
         >
           <div class="flex items-start justify-between gap-2">
             <div class="flex items-start gap-3 min-w-0">
