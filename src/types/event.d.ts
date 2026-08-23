@@ -71,11 +71,16 @@ export interface CalendarEvent {
   visibility: Visibility;
   reminders: string[];
   creatorEmail?: string;
-  participants?: string[];
+  participants?: EventParticipant[];
   attachments?: string[];
   colorOverride?: string;
   syncStatus: SyncStatus;
   updatedAt: string;
+}
+export interface EventParticipant {
+  email: string;
+  name?: string;
+  rsvpStatus?: 'accepted' | 'declined' | 'tentative' | 'needsAction';
 }
 
 export interface DayOverflowItem {

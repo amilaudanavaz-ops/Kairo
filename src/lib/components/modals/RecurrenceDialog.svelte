@@ -31,9 +31,15 @@
     if (!pending?.originalEvent) return false;
     const rootId = pending.originalEvent.recurringEventId || pending.originalEvent.googleEventId || pending.originalEvent.id;
     const master = eventStore.events.find(e => e.id === rootId || e.googleEventId === rootId) || pending.originalEvent;
-    const occDateKey = pending.occurrenceDate || format(parseISO(pending.originalEvent.startTime), 'yyyy-MM-dd');
+    
+    // FIX: Check the Invisible Tether to know if this was originally the first event
+    let originalAnchorKey = pending.occurrenceDate || format(parseISO(pending.originalEvent.startTime), 'yyyy-MM-dd');
+    if (pending.originalEvent.originalStartTime) {
+      originalAnchorKey = format(parseISO(pending.originalEvent.originalStartTime), 'yyyy-MM-dd');
+    }
+    
     const masterStartKey = format(parseISO(master.startTime), 'yyyy-MM-dd');
-    return occDateKey <= masterStartKey;
+    return originalAnchorKey <= masterStartKey;
   });
 
   $effect(() => {

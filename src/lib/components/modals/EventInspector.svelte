@@ -144,12 +144,32 @@
     }, 200);
   }
 
-  let filteredContacts = $derived.by(() => {
-    if (!participantQuery.trim()) return calendarState.contacts;
-    const q = participantQuery.toLowerCase();
-    return calendarState.contacts.filter((c: ParticipantContact) => 
-      c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q)
-    );
+  let participantSuggestions = $derived.by(() => {
+    const q = participantQuery.trim().toLowerCase();
+    let results: ParticipantContact[] = [];
+
+    if (q) {
+      // 1. Search existing contacts
+      results = calendarState.contacts.filter((c: ParticipantContact) => 
+        c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q)
+      );
+      
+      // 2. Add smart email auto-completions for new addresses
+      const exactMatch = results.some(r => r.email.toLowerCase() === q);
+      
+      if (!q.includes('@')) {
+        results.push({ name: `${q}@gmail.com`, email: `${q}@gmail.com` });
+        results.push({ name: `${q}@outlook.com`, email: `${q}@outlook.com` });
+      } else if (q.endsWith('@')) {
+        results.push({ name: `${q}gmail.com`, email: `${q}gmail.com` });
+        results.push({ name: `${q}outlook.com`, email: `${q}outlook.com` });
+      } else if (!exactMatch && q.includes('@') && q.split('@')[1].length > 1) {
+        results.push({ name: q, email: q });
+      }
+    } else {
+      results = calendarState.contacts;
+    }
+    return results;
   });
 
   $effect(() => {
@@ -234,6 +254,17 @@
     for (let m = 0; m < 60; m += 15) {
       const d = setMinutes(setHours(new Date(), h), m);
       timePresets.push(format(d, 'h:mm a'));
+    }
+  }
+
+  // Svelte Action to auto-scroll the dropdown to the current hour
+  function scrollToCurrentTime(node: HTMLElement) {
+    const currentHourStr = format(new Date(), 'h:00 a'); // e.g., "3:00 PM"
+    const buttons = Array.from(node.querySelectorAll('button'));
+    const target = buttons.find(b => b.textContent?.trim() === currentHourStr);
+    
+    if (target) {
+      node.scrollTop = target.offsetTop - 8; // Offset slightly so it's not glued to the very top
     }
   }
 
@@ -521,8 +552,12 @@
   function selectParticipant(contact: ParticipantContact) {
     if (!draft || isReadOnly) return;
     const current = draft.participants || [];
-    if (!current.includes(contact.email)) {
-      updateDraft('participants', [...current, contact.email]);
+    if (!current.some((p: any) => p.email === contact.email)) {
+      updateDraft('participants', [...current, { 
+        email: contact.email, 
+        name: contact.name, 
+        rsvpStatus: 'needsAction' 
+      }]);
     }
     participantQuery = '';
     activeSideMenu = 'none';
@@ -538,16 +573,16 @@
 
   function setGoogleMeet() {
     if (!draft || isReadOnly) return;
-    const meetId = Math.random().toString(36).substring(2, 5) + '-' + Math.random().toString(36).substring(2, 6) + '-' + Math.random().toString(36).substring(2, 5);
-    updateDraft('conferencingUrl', `https://meet.google.com/${meetId}`);
+    // The Rust backend will dynamically generate the real Google Meet link upon saving
+    updateDraft('conferencingUrl', ''); 
     updateDraft('conferencingProvider', 'google_meet');
     activeSideMenu = 'none';
   }
 
   function setZoom() {
     if (!draft || isReadOnly) return;
-    const zoomId = Math.floor(100000000 + Math.random() * 900000000);
-    updateDraft('conferencingUrl', `https://zoom.us/j/${zoomId}`);
+    // The Rust backend will inject the user's Zoom PMI from settings upon saving
+    updateDraft('conferencingUrl', '');
     updateDraft('conferencingProvider', 'zoom');
     activeSideMenu = 'none';
   }
@@ -1032,6 +1067,9 @@
                 selectParticipant({ name: participantQuery.trim(), email: participantQuery.trim() });
               }
             }}
+            autocomplete="off"
+            spellcheck="false"
+            data-form-type="other"
             class="bg-transparent text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none w-full {isReadOnly ? 'cursor-default' : ''}"
           />
         </div>
@@ -1039,11 +1077,20 @@
         {#if draft.participants && draft.participants.length > 0}
           <div class="flex flex-wrap gap-1 pl-5">
             {#each draft.participants as p, i}
-              <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#252525] border border-[#2f2f2f] text-[10px] text-zinc-300">
-                <span>{p}</span>
+              <span class="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-[#252525] border border-[#2f2f2f] text-[10px] text-zinc-300">
+                {#if p.rsvpStatus === 'accepted'}
+                  <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" title="Accepted"></div>
+                {:else if p.rsvpStatus === 'declined'}
+                  <div class="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" title="Declined"></div>
+                {:else if p.rsvpStatus === 'tentative'}
+                  <div class="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="Maybe"></div>
+                {:else}
+                  <div class="w-1.5 h-1.5 rounded-full border border-zinc-500 shrink-0" title="Awaiting response"></div>
+                {/if}
+                <span>{p.name || p.email}</span>
                 {#if !isReadOnly}
                   <button 
-                    onclick={() => updateDraft('participants', draft?.participants?.filter((_: string, idx: number) => idx !== i))}
+                    onclick={() => updateDraft('participants', draft?.participants?.filter((_, idx: number) => idx !== i))}
                     class="hover:text-rose-400 cursor-pointer"
                   >
                     <X size={10} />
@@ -1087,6 +1134,10 @@
               >
                 {draft.conferencingProvider === 'google_meet' ? 'Google Meet Call' : 'Zoom Call'}
               </a>
+            {:else if draft.conferencingProvider === 'google_meet'}
+              <span class="truncate text-blue-400 font-semibold">Google Meet (Added on save)</span>
+            {:else if draft.conferencingProvider === 'zoom'}
+              <span class="truncate text-blue-400 font-semibold">Zoom (Added on save)</span>
             {:else}
               <span class="truncate">Conferencing</span>
             {/if}
@@ -1270,15 +1321,19 @@
           {sideMenuOnRight ? 'left-full ml-2' : '-left-70'}"
       >
         <div class="max-h-60 overflow-y-auto flex flex-col gap-0.5 custom-scrollbar">
-          {#each filteredContacts as contact}
-            <button
-              onpointerdown={(e) => { e.stopPropagation(); selectParticipant(contact); }}
-              class="flex flex-col px-3 py-1.5 rounded-xl hover:bg-[#282828] text-left transition-colors cursor-pointer group"
-            >
-              <span class="font-semibold text-xs text-zinc-100 group-hover:text-blue-400">{contact.name}</span>
-              <span class="text-[11px] text-zinc-400 truncate">{contact.email}</span>
-            </button>
-          {/each}
+          {#if participantSuggestions.length === 0}
+            <div class="px-3 py-2 text-xs text-zinc-500 italic text-center">Type an email address...</div>
+          {:else}
+            {#each participantSuggestions as contact}
+              <button
+                onpointerdown={(e) => { e.stopPropagation(); selectParticipant(contact); }}
+                class="flex flex-col px-3 py-1.5 rounded-xl hover:bg-[#282828] text-left transition-colors cursor-pointer group"
+              >
+                <span class="font-semibold text-xs text-zinc-100 group-hover:text-blue-400">{contact.name}</span>
+                <span class="text-[11px] text-zinc-400 truncate">{contact.email}</span>
+              </button>
+            {/each}
+          {/if}
         </div>
       </div>
     {/if}
@@ -1454,6 +1509,7 @@
     {#if (activeSideMenu === 'start_time' || activeSideMenu === 'end_time') && !isReadOnly}
       {@const isStart = activeSideMenu === 'start_time'}
       <div 
+        use:scrollToCurrentTime
         class="absolute top-10 w-38 bg-[#1c1c1c] border border-[#2e2e2e] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.95)] p-1 z-999 max-h-68 overflow-y-auto custom-scrollbar flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100
           {sideMenuOnRight ? 'left-full ml-2' : '-left-40'}"
       >

@@ -18,6 +18,7 @@ import {
   clearCalendarSyncToken
 } from '../db/database';
 import { calendarState } from './calendarState.svelte';
+import { settingsStore } from './settingsStore.svelte';
 import { 
   format, 
   parseISO, 
@@ -498,7 +499,10 @@ class EventStore {
             timeZone: sanitizeTimezone(latestEvent.timeZone),
             rrule: convertRRuleToRFC5545(latestEvent.rrule, latestEvent.startTime),
             recurringEventId: latestEvent.recurringEventId || null,
-            originalStartTime: latestEvent.originalStartTime || null
+            originalStartTime: latestEvent.originalStartTime || null,
+            participants: latestEvent.participants || [],
+            conferencingProvider: latestEvent.conferencingProvider || null,
+            zoomPmiLink: settingsStore.zoomPmiLink || null
           }
         })
       );
@@ -574,7 +578,10 @@ class EventStore {
             timeZone: sanitizeTimezone(latestEvent.timeZone),
             rrule: convertRRuleToRFC5545(latestEvent.rrule, cleanStart),
             recurringEventId: latestEvent.recurringEventId || null,
-            originalStartTime: latestEvent.recurringEventId ? (latestEvent.originalStartTime || null) : null
+            originalStartTime: latestEvent.recurringEventId ? (latestEvent.originalStartTime || null) : null,
+            participants: latestEvent.participants || [],
+            conferencingProvider: latestEvent.conferencingProvider || null,
+            zoomPmiLink: settingsStore.zoomPmiLink || null
           }
         })
       );
@@ -899,7 +906,14 @@ class EventStore {
       visibility: 'default',
       reminders: ['15m'],
       creatorEmail: accountEmail,
-      participants: gEvt.participants || (gEvt.attendees ? gEvt.attendees.map((a: any) => a.email).filter(Boolean) : []),
+      participants: (gEvt.participants || []).map((p: any) => {
+        if (typeof p === 'string') return { email: p, name: p, rsvpStatus: 'needsAction' };
+        return {
+          email: p.email,
+          name: p.name || p.email,
+          rsvpStatus: p.rsvp_status || p.rsvpStatus || 'needsAction'
+        };
+      }),
       attachments: [],
       syncStatus: 'synced' as SyncStatus,
       updatedAt: new Date().toISOString()

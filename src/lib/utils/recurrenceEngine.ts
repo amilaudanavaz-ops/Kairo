@@ -9,7 +9,7 @@ import {
   differenceInMinutes, 
   set 
 } from 'date-fns';
-import { fromZonedTime } from 'date-fns-tz';
+import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { eventStore, convertRRuleToRFC5545, sanitizeTimezone } from '../stores/eventStore.svelte';
 import type { CalendarEvent } from '../../types/event';
 import { getSafeDuration } from './dateMath';
@@ -65,14 +65,19 @@ export async function executeRecurrenceUpdate(payload: RecurrencePayload): Promi
   const occDate = parseISO(occurrenceDate);
   const masterStartKey = format(masterStart, 'yyyy-MM-dd');
 
-  // Classify Event Position
-  const isRoot = isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey;
+  // Classify Event Position (Check the Invisible Tether)
+  let originalAnchorKey = occurrenceDate;
+  if (originalEvent.originalStartTime) {
+    originalAnchorKey = format(parseISO(originalEvent.originalStartTime), 'yyyy-MM-dd');
+  }
+  const isRoot = originalAnchorKey <= masterStartKey;
   
   // Classify Mutation Type
   const isRRuleChange = diffs.some(d => d.field === 'Repeat');
   const isDateChange = occurrenceDate !== format(parseISO(updatedEvent.startTime), 'yyyy-MM-dd');
   const isTimeChange = diffs.some(d => d.field === 'Time') && !isDateChange;
-  const isStructuralChange = isDateChange || isRRuleChange;
+
+  const isStructuralChange = isDateChange || isRRuleChange || isTimeChange;
 
   // RULE A: "This Event" (Single Exception)
   if (scope === 'this') {
@@ -85,15 +90,15 @@ export async function executeRecurrenceUpdate(payload: RecurrencePayload): Promi
         syncStatus: 'pending_update' // Sync Shield
       });
     }
-
-    // 2. Calculate the original anchor time for Google mapping
-    const origDateObj = parseISO(occurrenceDate);
-    const masterStartObj = parseISO(masterEvent.startTime);
-    const calculatedOriginalStart = set(origDateObj, {
-      hours: masterStartObj.getHours(),
-      minutes: masterStartObj.getMinutes(),
-      seconds: masterStartObj.getSeconds()
-    }).toISOString();
+// 2. Calculate the original anchor time for Google mapping using strict timezone math
+    const [y, m, d] = occurrenceDate.split('-').map(Number);
+    const tz = sanitizeTimezone(masterEvent.timeZone);
+    
+    const masterStartUtc = parseISO(masterEvent.startTime);
+    const baseStartZoned = toZonedTime(masterStartUtc, tz);
+    
+    const newStartZoned = new Date(y, m - 1, d, baseStartZoned.getHours(), baseStartZoned.getMinutes(), baseStartZoned.getSeconds());
+    const calculatedOriginalStart = fromZonedTime(newStartZoned, tz).toISOString();
 
     const targetDateKey = format(parseISO(updatedEvent.startTime), 'yyyy-MM-dd');
 
@@ -170,20 +175,8 @@ export async function executeRecurrenceUpdate(payload: RecurrencePayload): Promi
         eventStore.deleteEvent(ex.id);
       }
     } else {
-      // Rhythm is safe: Reparent exceptions to the new series and apply attribute shifts
-      const startObj = parseISO(updatedEvent.startTime);
-      const oldStartObj = parseISO(originalEvent.startTime);
-      const deltaMinutes = differenceInMinutes(startObj, oldStartObj);
-
+      // Cosmetic change ONLY: Reparent exceptions to the new series
       for (const ex of futureExceptions) {
-        let childStart = parseISO(ex.startTime);
-        let childEnd = ex.endTime ? parseISO(ex.endTime) : childStart;
-        
-        if (isTimeChange) {
-          childStart = addMinutes(childStart, deltaMinutes);
-          childEnd = addMinutes(childEnd, deltaMinutes);
-        }
-
         eventStore.updateEvent({
           ...ex,
           title: updatedEvent.title,
@@ -192,8 +185,6 @@ export async function executeRecurrenceUpdate(payload: RecurrencePayload): Promi
           conferencingUrl: updatedEvent.conferencingUrl,
           conferencingProvider: updatedEvent.conferencingProvider,
           colorOverride: updatedEvent.colorOverride,
-          startTime: childStart.toISOString(),
-          endTime: childEnd.toISOString(),
           recurringEventId: newSeriesId, // Reparenting
           syncStatus: 'pending_update'
         });
@@ -268,16 +259,8 @@ export async function executeRecurrenceUpdate(payload: RecurrencePayload): Promi
         eventStore.deleteEvent(ex.id);
       }
     } else {
-      // Attribute or pure Time shift: safe to cascade without destroying dates
+      // Cosmetic Attribute shift ONLY: safe to cascade without destroying dates
       for (const child of childExceptions) {
-        let childStart = parseISO(child.startTime);
-        let childEnd = child.endTime ? parseISO(child.endTime) : childStart;
-
-        if (isTimeChange) {
-          childStart = addMinutes(childStart, deltaMinutes);
-          childEnd = addMinutes(childStart, duration);
-        }
-
         eventStore.updateEvent({
           ...child,
           title: updatedEvent.title,
@@ -286,10 +269,6 @@ export async function executeRecurrenceUpdate(payload: RecurrencePayload): Promi
           conferencingUrl: updatedEvent.conferencingUrl,
           conferencingProvider: updatedEvent.conferencingProvider,
           colorOverride: updatedEvent.colorOverride,
-          startTime: childStart.toISOString(),
-          endTime: childEnd.toISOString(),
-          isAllDay: updatedEvent.isAllDay,
-          timeZone: sanitizeTimezone(updatedEvent.timeZone),
           syncStatus: 'pending_update'
         });
       }
@@ -309,7 +288,13 @@ export async function executeRecurrenceDelete(payload: Omit<RecurrencePayload, '
   const masterStart = parseISO(masterEvent.startTime);
   const occDate = parseISO(occurrenceDate);
   const masterStartKey = format(masterStart, 'yyyy-MM-dd');
-  const isRoot = isSameDay(masterStart, occDate) || occurrenceDate <= masterStartKey;
+  
+  // Classify Event Position (Check the Invisible Tether)
+  let originalAnchorKey = occurrenceDate;
+  if (originalEvent.originalStartTime) {
+    originalAnchorKey = format(parseISO(originalEvent.originalStartTime), 'yyyy-MM-dd');
+  }
+  const isRoot = originalAnchorKey <= masterStartKey;
 
   // RULE A: "This Event"
   if (scope === 'this') {

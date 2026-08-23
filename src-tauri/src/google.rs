@@ -51,6 +51,14 @@ pub struct GoogleCalendarListResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NormalizedParticipant {
+    pub email: String,
+    pub name: Option<String>,
+    #[serde(alias = "rsvpStatus")]
+    pub rsvp_status: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NormalizedGoogleEvent {
     pub google_event_id: String,
     pub recurring_event_id: Option<String>,
@@ -69,7 +77,7 @@ pub struct NormalizedGoogleEvent {
     pub busy_status: String,
     pub color_override: Option<String>,
     pub etag: Option<String>,
-    pub participants: Vec<String>,
+    pub participants: Vec<NormalizedParticipant>,
     pub reminders: Vec<String>,
 }
 
@@ -97,6 +105,11 @@ pub struct GoogleEventMutationPayload {
     pub recurring_event_id: Option<String>,
     #[serde(alias = "originalStartTime")]
     pub original_start_time: Option<String>,
+    pub participants: Option<Vec<NormalizedParticipant>>,
+    #[serde(alias = "conferencingProvider")]
+    pub conferencing_provider: Option<String>,
+    #[serde(alias = "zoomPmiLink")]
+    pub zoom_pmi_link: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -445,9 +458,14 @@ pub async fn fetch_google_events(
         if let Some(attendees) = item.get("attendees").and_then(|a| a.as_array()) {
             for att in attendees {
                 if let Some(email) = att.get("email").and_then(|e| e.as_str()) {
-                    participants.push(email.to_string());
-                } else if let Some(name) = att.get("displayName").and_then(|n| n.as_str()) {
-                    participants.push(name.to_string());
+                    let name = att.get("displayName").and_then(|n| n.as_str()).map(|s| s.to_string());
+                    let rsvp_status = att.get("responseStatus").and_then(|r| r.as_str()).map(|s| s.to_string());
+                    
+                    participants.push(NormalizedParticipant {
+                        email: email.to_string(),
+                        name,
+                        rsvp_status,
+                    });
                 }
             }
         }
@@ -612,8 +630,9 @@ pub async fn create_google_event(
 ) -> Result<NormalizedGoogleEvent, String> {
     let http_client = reqwest::Client::new();
     let encoded_cal_id = urlencoding::encode(&calendar_id);
+    // Add sendUpdates=all so Google officially emails the guests
     let url = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/{}/events?conferenceDataVersion=1",
+        "https://www.googleapis.com/calendar/v3/calendars/{}/events?conferenceDataVersion=1&sendUpdates=all",
         encoded_cal_id
     );
 
@@ -668,6 +687,50 @@ pub async fn create_google_event(
         }
     }
 
+    // Map Participants (Attendees)
+    if let Some(participants) = &event.participants {
+        if !participants.is_empty() {
+            let attendees: Vec<serde_json::Value> = participants.iter().map(|p| {
+                serde_json::json!({ 
+                    "email": p.email,
+                    "displayName": p.name,
+                    "responseStatus": p.rsvp_status.as_deref().unwrap_or("needsAction")
+                })
+            }).collect();
+            body["attendees"] = serde_json::json!(attendees);
+        }
+    }
+
+    // Map Conferencing (Google Meet or Zoom)
+    if let Some(provider) = &event.conferencing_provider {
+        if provider == "google_meet" {
+            let request_id = format!("meet_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            body["conferenceData"] = serde_json::json!({
+                "createRequest": {
+                    "requestId": request_id,
+                    "conferenceSolutionKey": { "type": "hangoutsMeet" }
+                }
+            });
+        } else if provider == "zoom" {
+            if let Some(zoom_link) = &event.zoom_pmi_link {
+                if !zoom_link.is_empty() {
+                    let current_desc = body["description"].as_str().unwrap_or("");
+                    let new_desc = if current_desc.is_empty() {
+                        format!("Zoom Meeting Link: {}", zoom_link)
+                    } else {
+                        format!("{}\n\nZoom Meeting Link: {}", current_desc, zoom_link)
+                    };
+                    body["description"] = serde_json::json!(new_desc);
+                    
+                    let current_loc = body["location"].as_str().unwrap_or("");
+                    if current_loc.is_empty() {
+                        body["location"] = serde_json::json!(zoom_link);
+                    }
+                }
+            }
+        }
+    }
+
     let res = http_client
         .post(&url)
         .bearer_auth(&access_token)
@@ -710,10 +773,11 @@ pub async fn create_google_event(
         busy_status: "busy".to_string(),
         color_override: None,
         etag: item.get("etag").and_then(|e| e.as_str()).map(|s| s.to_string()),
-        participants: vec![],
+        participants: event.participants.unwrap_or_default(),
         reminders: vec!["15m".to_string()],
     })
 }
+
 
 #[tauri::command]
 pub async fn update_google_event(
@@ -726,7 +790,7 @@ pub async fn update_google_event(
     let encoded_cal_id = urlencoding::encode(&calendar_id);
     let encoded_evt_id = urlencoding::encode(&event_id);
     let url = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
+        "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}?conferenceDataVersion=1&sendUpdates=all",
         encoded_cal_id,
         encoded_evt_id
     );
@@ -782,6 +846,50 @@ pub async fn update_google_event(
         }
     }
 
+    // Map Participants (Attendees)
+    if let Some(participants) = &event.participants {
+        if !participants.is_empty() {
+            let attendees: Vec<serde_json::Value> = participants.iter().map(|p| {
+                serde_json::json!({ 
+                    "email": p.email,
+                    "displayName": p.name,
+                    "responseStatus": p.rsvp_status.as_deref().unwrap_or("needsAction")
+                })
+            }).collect();
+            body["attendees"] = serde_json::json!(attendees);
+        }
+    }
+
+    // Map Conferencing (Google Meet or Zoom)
+    if let Some(provider) = &event.conferencing_provider {
+        if provider == "google_meet" {
+            let request_id = format!("meet_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            body["conferenceData"] = serde_json::json!({
+                "createRequest": {
+                    "requestId": request_id,
+                    "conferenceSolutionKey": { "type": "hangoutsMeet" }
+                }
+            });
+        } else if provider == "zoom" {
+            if let Some(zoom_link) = &event.zoom_pmi_link {
+                if !zoom_link.is_empty() {
+                    let current_desc = body["description"].as_str().unwrap_or("");
+                    let new_desc = if current_desc.is_empty() {
+                        format!("Zoom Meeting Link: {}", zoom_link)
+                    } else {
+                        format!("{}\n\nZoom Meeting Link: {}", current_desc, zoom_link)
+                    };
+                    body["description"] = serde_json::json!(new_desc);
+                    
+                    let current_loc = body["location"].as_str().unwrap_or("");
+                    if current_loc.is_empty() {
+                        body["location"] = serde_json::json!(zoom_link);
+                    }
+                }
+            }
+        }
+    }
+
     // Use PUT to completely replace start/end boundaries without field merging conflicts
     let res = http_client
         .put(&url)
@@ -825,7 +933,7 @@ pub async fn update_google_event(
         busy_status: "busy".to_string(),
         color_override: None,
         etag: item.get("etag").and_then(|e| e.as_str()).map(|s| s.to_string()),
-        participants: vec![],
+        participants: event.participants.unwrap_or_default(), 
         reminders: vec!["15m".to_string()],
     })
 }
