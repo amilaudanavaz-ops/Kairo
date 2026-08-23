@@ -5,6 +5,7 @@
   import MonthGrid from './lib/components/views/MonthGrid.svelte';
   import WeekGrid from './lib/components/views/WeekGrid.svelte';
   import DayGrid from './lib/components/views/DayGrid.svelte';
+  import PlannerLayout from './lib/components/planner/PlannerLayout.svelte';
   import DayOverflowPopover from './lib/components/modals/DayOverflowPopover.svelte';
   import EventInspector from './lib/components/modals/EventInspector.svelte';
   import ContextMenu from './lib/components/modals/ContextMenu.svelte';
@@ -96,20 +97,26 @@
   <AuthScreen />
 {:else}
   <main class="h-screen w-screen flex flex-col bg-[#121212] overflow-hidden select-none font-sans text-[#ededed]">
-    <TitleBar />
+    {#if calendarState.appMode === 'calendar'}
+      <TitleBar />
+    {/if}
 
     <div class="flex-1 flex min-h-0 overflow-hidden relative">
-      {#if calendarState.isSidebarOpen}
+      {#if calendarState.isSidebarOpen && calendarState.appMode === 'calendar'}
         <Sidebar />
       {/if}
 
       <section class="flex-1 flex flex-col min-h-0 bg-[#121212] overflow-hidden relative min-w-0">
-        {#if calendarState.viewMode === 'month'}
-          <MonthGrid />
-        {:else if calendarState.viewMode === 'week'}
-          <WeekGrid />
-        {:else if calendarState.viewMode === 'day'}
-          <DayGrid />
+        {#if calendarState.appMode === 'calendar'}
+          {#if calendarState.viewMode === 'month'}
+            <MonthGrid />
+          {:else if calendarState.viewMode === 'week'}
+            <WeekGrid />
+          {:else if calendarState.viewMode === 'day'}
+            <DayGrid />
+          {/if}
+        {:else if calendarState.appMode === 'planner'}
+          <PlannerLayout />
         {/if}
       </section>
 
@@ -171,6 +178,17 @@
           </span>
         </div>
       {/if}
+    {/if}
+
+    <!-- KFlow Loading Splash Screen -->
+    {#if calendarState.isKFlowLoading}
+      <div class="absolute inset-0 z-[9999] bg-[#0a0a0a] flex flex-col items-center justify-center animate-in fade-in duration-300">
+        <div class="w-16 h-16 rounded-2xl flex items-center justify-center bg-gradient-to-tr from-indigo-500 to-purple-500 shadow-[0_0_50px_rgba(99,102,241,0.5)] animate-pulse mb-6">
+          <svg class="w-8 h-8 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        </div>
+        <h1 class="text-2xl font-black tracking-widest uppercase text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400">Loading KFlow</h1>
+        <p class="text-xs text-zinc-500 mt-2 font-medium tracking-wide">Initializing execution environment...</p>
+      </div>
     {/if}
   </main>
 {/if}

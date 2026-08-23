@@ -29,8 +29,10 @@
 
 <aside class="w-60 bg-[var(--bg-surface)] border-r border-[var(--border-subtle)] flex flex-col justify-between shrink-0 select-none overflow-hidden text-[var(--text-primary)] font-sans">
   <div class="flex-1 overflow-y-auto custom-scrollbar p-2 flex flex-col gap-3">
+   
+
     <!-- Mini Calendar -->
-    <div class="px-1 pt-1">
+    <div class="px-1">
       <MiniCalendar />
     </div>
 
@@ -153,7 +155,18 @@
     </div>
   </div>
 
-  <div class="p-2 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)]">
+  <div class="p-2 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] flex flex-col gap-1.5">
+    <button 
+      onclick={() => calendarState.setAppMode('planner')}
+      class="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-500/10 to-purple-500/10 hover:from-indigo-500/20 hover:to-purple-500/20 border border-indigo-500/20 transition-all cursor-pointer"
+    >
+      <div class="flex items-center gap-2">
+        <div class="w-4 h-4 rounded flex items-center justify-center bg-gradient-to-tr from-indigo-500 to-purple-500 shadow-sm">
+          <svg class="w-2.5 h-2.5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        </div>
+        <span class="font-black tracking-wide text-xs text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400">KFlow</span>
+      </div>
+    </button>
     <button
       onclick={() => settingsStore.open('general')}
       class="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)] transition-colors cursor-pointer"

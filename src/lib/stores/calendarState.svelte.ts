@@ -9,12 +9,25 @@ import {
 import { eventStore } from './eventStore.svelte';
 
 class CalendarState {
+  appMode = $state<'calendar' | 'planner'>('calendar');
+  isKFlowLoading = $state(false);
   currentDate = $state(new Date());
   viewMode = $state<ViewMode>('month');
   isSidebarOpen = $state(true);
   isInspectorDocked = $state(false);
   isAddAccountModalOpen = $state(false);
-  
+
+  setAppMode(mode: 'calendar' | 'planner') {
+    if (mode === 'planner' && this.appMode === 'calendar') {
+      this.isKFlowLoading = true;
+      setTimeout(() => {
+        this.isKFlowLoading = false;
+        this.appMode = mode;
+      }, 900); // 900ms Splash screen
+    } else {
+      this.appMode = mode;
+    }
+  }
   // Selection & Draft Tracking
   selectedEventId = $state<string | null>(null);
   selectedDateKey = $state<string | null>(null);

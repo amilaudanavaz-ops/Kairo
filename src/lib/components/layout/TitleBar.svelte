@@ -140,7 +140,7 @@
         >
           <div class="flex flex-col px-3 py-2 border-b border-[var(--border-subtle)] mb-0.5">
             <span class="text-xs font-bold text-[var(--text-primary)]">{settingsStore.preferredName || 'User'}</span>
-            <span class="text-[11px] text-[var(--text-muted)] truncate">{settingsStore.email || 'Not connected'}</span>
+            <span class="text-[11px] text-[var(--text-muted)] truncate">{settingsStore.primaryAccount?.email || 'Not connected'}</span>
           </div>
 
           <button
@@ -186,7 +186,7 @@
 
           <button
             onclick={() => { 
-              settingsStore.logout(); 
+              settingsStore.deleteAccountAndData(); 
               isProfileMenuOpen = false; 
             }}
             class="flex items-center gap-2 px-3 py-1.5 text-xs text-rose-400 hover:bg-rose-950/40 rounded-xl transition-colors text-left cursor-pointer"
