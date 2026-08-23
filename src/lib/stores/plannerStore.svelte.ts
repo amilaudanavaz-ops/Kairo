@@ -16,6 +16,22 @@ class PlannerStore {
   // UI States
   isOverflowManagerOpen = $state(false);
   
+  // Pointer Drag State (Bypasses HTML5)
+  isDragging = $state(false);
+  dragPayload = $state<{type: 'inbox' | 'timeline', id: string, sourceSlot?: number} | null>(null);
+
+  startDrag(payload: {type: 'inbox' | 'timeline', id: string, sourceSlot?: number}) {
+    this.isDragging = true;
+    this.dragPayload = payload;
+    document.body.style.cursor = 'grabbing';
+  }
+
+  clearDrag() {
+    this.isDragging = false;
+    this.dragPayload = null;
+    document.body.style.cursor = '';
+  }
+  
   // Data Layer
   tasks = $state<FlowTask[]>([]);
   sessions = $state<FlowSession[]>([]);

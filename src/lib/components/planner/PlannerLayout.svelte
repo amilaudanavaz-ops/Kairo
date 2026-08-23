@@ -13,6 +13,39 @@
     plannerStore.init(plannerStore.activeDateKey);
   });
 
+  // THE MAGIC BULLET: Global drop tracking using coordinate piercing
+  $effect(() => {
+    const handlePointerUp = (e: PointerEvent) => {
+      if (!plannerStore.isDragging || !plannerStore.dragPayload) return;
+
+      // 1. Find all elements exactly under the mouse release coordinates
+      const elements = document.elementsFromPoint(e.clientX, e.clientY);
+      
+      // 2. See if one of those elements is a timeline slot
+      const slotEl = elements.find(el => el.hasAttribute('data-drop-slot'));
+
+      if (slotEl) {
+        const targetSlot = parseInt(slotEl.getAttribute('data-drop-slot')!, 10);
+        const data = plannerStore.dragPayload;
+        
+        console.log(`[Layout] 📥 POINTER DROP on Slot ${targetSlot}! Payload:`, data);
+        
+        if (data.type === 'timeline') {
+          plannerStore.moveBlockToSlot(data.id, data.sourceSlot!, targetSlot);
+        } else if (data.type === 'inbox') {
+          const block = plannerStore.inboxBlocks.find(b => b.id === data.id);
+          if (block) plannerStore.addBlockToTimeline(block, targetSlot);
+        }
+      }
+
+      // 3. Clear drag state
+      plannerStore.clearDrag();
+    };
+
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => window.removeEventListener('pointerup', handlePointerUp);
+  });
+
   function changeDate(days: number) {
     if (days === 0) {
       plannerStore.activeDateKey = format(new Date(), 'yyyy-MM-dd');
@@ -34,6 +67,7 @@
 <div class="w-full h-full flex bg-[#111111] relative overflow-hidden font-sans text-zinc-200">
   
   {#if !plannerStore.isExecutionMode}
+  
     <!-- MAIN CANVAS ON LEFT -->
     <main class="flex-1 flex flex-col relative h-full min-w-0 border-r border-[#1e1e1e]">
       

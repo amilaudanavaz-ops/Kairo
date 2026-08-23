@@ -24,6 +24,62 @@
     d.setHours(d.getHours() + slotIndex);
     return format(d, 'HH:mm');
   }
+
+  // NATIVE DOM ACTION: Bypasses Svelte's event delegation to fix Tauri/WebView2 OS intercepts
+  function dropZone(node: HTMLElement, slotIndex: number) {
+    const handleDragEnter = (e: DragEvent) => {
+      e.preventDefault();
+      node.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+    };
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      node.style.backgroundColor = '';
+    };
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault(); // Synchronous native preventDefault required by WebView2
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    };
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      node.style.backgroundColor = '';
+      
+      // Read directly from the global bypass
+      const data = (window as any).__kflowDragPayload;
+      console.log(`[Timeline] 📥 DROP detected in Slot ${slotIndex}! Payload:`, data);
+      
+      if (data) {
+        try {
+          if (data.type === 'timeline') {
+            plannerStore.moveBlockToSlot(data.id, data.sourceSlot, slotIndex);
+          } else if (data.type === 'inbox') {
+            const block = plannerStore.inboxBlocks.find(b => b.id === data.id);
+            if (block) plannerStore.addBlockToTimeline(block, slotIndex);
+          }
+        } catch (err) {
+          console.error("[Timeline] 💥 Drop processing error:", err);
+        }
+      } else {
+        console.warn('[Timeline] ⚠️ No drag payload found in global state!');
+      }
+      
+      (window as any).__kflowDragPayload = null;
+    };
+
+    node.addEventListener('dragenter', handleDragEnter);
+    node.addEventListener('dragleave', handleDragLeave);
+    node.addEventListener('dragover', handleDragOver);
+    node.addEventListener('drop', handleDrop);
+
+    return {
+      destroy() {
+        node.removeEventListener('dragenter', handleDragEnter);
+        node.removeEventListener('dragleave', handleDragLeave);
+        node.removeEventListener('dragover', handleDragOver);
+        node.removeEventListener('drop', handleDrop);
+      }
+    };
+  }
 </script>
 
 <div class="w-full max-w-5xl mx-auto mt-6 mb-32 flex gap-8 select-none relative">
@@ -59,53 +115,20 @@
 
       {#each Array.from({ length: Math.ceil(plannerStore.activeSession.durationMinutes / 60) }) as _, i}
         <div 
-          ondragenter={(e) => e.preventDefault()}
-          ondragover={(e) => e.preventDefault()}
-          ondrop={(e) => {
-            e.preventDefault();
-            const dataStr = e.dataTransfer?.getData('text/plain');
-            console.log(`[Timeline] 📥 DROP detected in Slot ${i}! Raw data received:`, dataStr);
-            
-            if (dataStr) {
-              try {
-                const data = JSON.parse(dataStr);
-                console.log(`[Timeline] 🔍 Parsed Drop Data:`, data);
-                
-                if (data.type === 'timeline') {
-                   console.log(`[Timeline] ➡️ Moving timeline chunk ${data.id}`);
-                   plannerStore.moveBlockToSlot(data.id, data.sourceSlot, i);
-                } else if (data.type === 'inbox') {
-                   const block = plannerStore.inboxBlocks.find(b => b.id === data.id);
-                   if (block) {
-                     console.log(`[Timeline] ➕ Adding inbox block to timeline:`, block.title);
-                     plannerStore.addBlockToTimeline(block, i);
-                   } else {
-                     console.warn(`[Timeline] ❌ Could not find block in inboxBlocks for id: ${data.id}`);
-                   }
-                }
-              } catch (err) {
-                console.error("[Timeline] 💥 Invalid drag payload or parse error:", err);
-              }
-            } else {
-              console.warn('[Timeline] ⚠️ No data payload found in drop event!');
-            }
-          }}
+          data-drop-slot={i}
           class="w-full relative border-b border-[#1e1e1e] bg-[rgba(255,255,255,0.01)] hover:bg-white/5 transition-colors flex flex-col gap-1.5 p-2"
           style="height: {60 * PIXELS_PER_MINUTE}px;"
         >
           <!-- Render blocks specifically assigned to this slot -->
           {#each plannerStore.timelineBlocks.filter(b => b.slotIndex === i) as block}
             <div 
-              draggable="true"
-              ondragstart={(e) => {
+              onpointerdown={(e) => {
+                if (e.button !== 0) return;
                 e.stopPropagation();
-                console.log(`[Timeline] ✋ Drag START for timeline chunk: ${block.id}`);
-                if (e.dataTransfer) {
-                  const payload = JSON.stringify({ type: 'timeline', id: block.id, sourceSlot: i });
-                  e.dataTransfer.setData('text/plain', payload);
-                }
+                e.preventDefault();
+                plannerStore.startDrag({ type: 'timeline', id: block.id, sourceSlot: i });
               }}
-              class="w-full px-3 py-1.5 flex items-center justify-between bg-[#1a1a1a]/90 border border-[#333] hover:border-[#555] rounded-lg cursor-grab active:cursor-grabbing group shadow-md select-none"
+              class="w-full px-3 py-1.5 flex items-center justify-between bg-[#1a1a1a]/90 border border-[#333] hover:border-[#555] rounded-lg cursor-grab group shadow-md select-none {plannerStore.isDragging && plannerStore.dragPayload?.id === block.id ? 'opacity-40 ring-2 ring-indigo-500' : ''}"
               style="height: {(block.durationMinutes / 60) * 100}%; min-height: 32px;"
             >
               <div class="flex flex-col truncate">

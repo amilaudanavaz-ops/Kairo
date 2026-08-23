@@ -30,15 +30,13 @@
     {:else}
       {#each plannerStore.inboxBlocks as block (block.id)}
         <div 
-          draggable="true"
-          ondragstart={(e) => {
-            console.log(`[Sidebar] ✋ Drag START for inbox task: ${block.id}`);
-            if (e.dataTransfer) {
-              const payload = JSON.stringify({ type: 'inbox', id: block.id });
-              e.dataTransfer.setData('text/plain', payload);
-            }
+          onpointerdown={(e) => {
+            if (e.button !== 0) return; // Only trigger on left click
+            e.preventDefault(); 
+            console.log(`[Sidebar] ✋ Pointer Drag START: ${block.id}`);
+            plannerStore.startDrag({ type: 'inbox', id: block.id });
           }}
-          class="bg-[#181818] border border-[#2a2a2a] hover:border-[#333] rounded-xl p-3.5 flex flex-col gap-2.5 transition-colors cursor-grab active:cursor-grabbing group select-none"
+          class="bg-[#181818] border border-[#2a2a2a] hover:border-[#333] rounded-xl p-3.5 flex flex-col gap-2.5 transition-colors cursor-grab group select-none {plannerStore.isDragging && plannerStore.dragPayload?.id === block.id ? 'opacity-40 border-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.2)]' : ''}"
         >
           <div class="flex items-start justify-between gap-2">
             <div class="flex items-start gap-3 min-w-0">
