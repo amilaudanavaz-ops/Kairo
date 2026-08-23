@@ -1,97 +1,135 @@
 <script lang="ts">
-  import { Clock, Calendar, CheckSquare, X } from 'lucide-svelte';
+  import { Trash2, CheckSquare } from 'lucide-svelte';
   import { plannerStore } from '../../stores/plannerStore.svelte';
-  import { format, parseISO } from 'date-fns';
+  import { format } from 'date-fns';
+  import { onMount, onDestroy } from 'svelte';
 
-  // 1 minute = 2 pixels for a nice visual scale
   const PIXELS_PER_MINUTE = 2; 
+
+  // Live Ticking Clock for Labels
+  let liveTime = $state(new Date());
+  let timer: ReturnType<typeof setInterval>;
+
+  onMount(() => {
+    timer = setInterval(() => { liveTime = new Date(); }, 60000); // Update every minute
+  });
+  
+  onDestroy(() => {
+    if (timer) clearInterval(timer);
+  });
+
+  // Calculate dynamic hour labels starting from NOW
+  function getSlotTime(slotIndex: number) {
+    const d = new Date(liveTime);
+    d.setHours(d.getHours() + slotIndex);
+    return format(d, 'HH:mm');
+  }
 </script>
 
-<div class="w-full max-w-2xl mx-auto mt-6 mb-32 flex flex-col gap-1 select-none">
+<div class="w-full max-w-5xl mx-auto mt-6 mb-32 flex gap-8 select-none relative">
   {#if plannerStore.activeSession}
-    <div class="flex items-center justify-between mb-4 px-2">
-      <div class="text-xs font-bold tracking-widest uppercase text-zinc-500">Session Canvas</div>
-      <div class="text-[11px] font-semibold bg-[#222] border border-[#333] px-2 py-1 rounded text-zinc-300">
-        Capacity: {plannerStore.activeSession.durationMinutes / 60} hrs
-      </div>
+    
+    <!-- Header Capacity Badge -->
+    <div class="absolute -top-8 right-0 text-[10px] font-semibold bg-[#222] border border-[#333] px-2 py-1 rounded text-zinc-300">
+      Capacity: {plannerStore.activeSession.durationMinutes / 60} hrs
+    </div>
+    <div class="absolute -top-8 left-16 text-[10px] font-bold tracking-widest uppercase text-zinc-500">
+      Session Canvas
     </div>
 
-    <!-- Add HTML5 Drop Attributes -->
-    <div 
-      ondragover={(e) => { e.preventDefault(); e.dataTransfer && (e.dataTransfer.dropEffect = 'move'); }}
-      ondrop={(e) => {
-        e.preventDefault();
-        const dataStr = e.dataTransfer?.getData('application/json');
-        if (dataStr) {
-          try {
-            const data = JSON.parse(dataStr);
-            const block = plannerStore.inboxBlocks.find(b => b.id === data.id);
-            if (block) plannerStore.addBlockToTimeline(block, data.duration);
-          } catch (err) {}
-        }
-      }}
-      class="relative w-full rounded-2xl border border-[#2a2a2a] hover:border-indigo-500/50 bg-[#121212] overflow-hidden transition-colors"
-      style="height: {Math.max(plannerStore.activeSession.durationMinutes * PIXELS_PER_MINUTE, 300)}px;"
-    >
-      <!-- Background 1-hour slots -->
-      <div class="absolute inset-0 pointer-events-none flex flex-col">
-        {#each Array(Math.ceil(plannerStore.activeSession.durationMinutes / 60)) as _, i}
-          <div class="w-full border-b border-[#242424]" style="height: {60 * PIXELS_PER_MINUTE}px;">
-            <span class="text-[10px] text-zinc-600 font-bold ml-2 mt-1 block tracking-wider uppercase">Slot {i + 1} (1h)</span>
-          </div>
-        {/each}
-      </div>
+    <!-- LEFT AXIS (Live Time) matching the screenshot -->
+    <div class="w-16 shrink-0 flex flex-col border-r border-[#1e1e1e] relative pt-2">
+      {#each Array(Math.ceil(plannerStore.activeSession.durationMinutes / 60)) as _, i}
+        <div class="relative w-full flex justify-end pr-3" style="height: {60 * PIXELS_PER_MINUTE}px;">
+          <span class="text-xs font-bold text-zinc-400 mt-[-8px]">{getSlotTime(i)}</span>
+          <!-- The Circle on the axis line -->
+          <div class="absolute -right-[5px] top-[-4px] w-[9px] h-[9px] rounded-full border-2 border-[#1e1e1e] bg-[#111111]"></div>
+        </div>
+      {/each}
+    </div>
 
+    <!-- RIGHT CANVAS (1-Hour Slot Drop Zones) -->
+    <div 
+      class="flex-1 flex flex-col relative pt-2 z-10"
+      ondragenter={(e) => e.preventDefault()}
+      ondragover={(e) => e.preventDefault()}
+    >
       {#if plannerStore.timelineBlocks.length === 0}
-        <div class="absolute inset-0 flex flex-col items-center justify-center text-zinc-600 gap-3">
+        <div class="absolute inset-0 flex flex-col items-center justify-center text-zinc-600 gap-4 border-2 border-dashed border-[#222] rounded-2xl m-2 pointer-events-none -z-10">
           <CheckSquare size={32} class="opacity-30" />
-          <span class="text-sm font-medium bg-[#121212] px-3 py-1">Drag tasks here to build your session</span>
+          <span class="text-sm font-medium">Drag tasks here to build your session</span>
         </div>
       {/if}
 
-      <div class="flex flex-col relative z-10 w-full h-full">
-        {#each plannerStore.timelineBlocks as block}
-          <div 
-            class="w-full px-3 py-1.5 flex flex-col justify-between transition-all group relative overflow-hidden
-              {block.isOverflow ? 'bg-orange-950/20 border-b border-orange-500/50' : 'bg-[#1c1c1c]/90 border-b border-[#2b2b2b] hover:bg-[#222]'}"
-            style="height: {block.durationMinutes * PIXELS_PER_MINUTE}px;"
-          >
-            <!-- Left accent color bar -->
+      {#each Array.from({ length: Math.ceil(plannerStore.activeSession.durationMinutes / 60) }) as _, i}
+        <div 
+          ondragenter={(e) => { e.preventDefault(); }}
+          ondragover={(e) => { 
+            e.preventDefault(); // MANDATORY: This tells the browser "this is a valid drop target"
+          }}
+          ondrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const dataStr = e.dataTransfer?.getData('text/plain');
+            console.log(`[Timeline] 📥 DROP detected in Slot ${i}! Raw data received:`, dataStr);
+            
+            if (dataStr) {
+              try {
+                const data = JSON.parse(dataStr);
+                console.log(`[Timeline] 🔍 Parsed Drop Data:`, data);
+                
+                if (data.type === 'timeline') {
+                   console.log(`[Timeline] ➡️ Moving timeline chunk ${data.id}`);
+                   plannerStore.moveBlockToSlot(data.id, data.sourceSlot, i);
+                } else if (data.type === 'inbox') {
+                   const block = plannerStore.inboxBlocks.find(b => b.id === data.id);
+                   if (block) {
+                     console.log(`[Timeline] ➕ Adding inbox block to timeline:`, block.title);
+                     plannerStore.addBlockToTimeline(block, i);
+                   } else {
+                     console.warn(`[Timeline] ❌ Could not find block in inboxBlocks for id: ${data.id}`);
+                   }
+                }
+              } catch (err) {
+                console.error("[Timeline] 💥 Invalid drag payload or parse error:", err);
+              }
+            } else {
+              console.warn('[Timeline] ⚠️ No data payload found in drop event!');
+            }
+          }}
+          class="w-full relative border-b border-[#1e1e1e] hover:bg-white/5 transition-colors flex flex-col gap-1.5 p-2"
+          style="height: {60 * PIXELS_PER_MINUTE}px;"
+        >
+          <!-- Render blocks specifically assigned to this slot -->
+          {#each plannerStore.timelineBlocks.filter(b => b.slotIndex === i) as block}
             <div 
-              class="absolute left-0 top-0 bottom-0 w-1 {block.isOverflow ? 'bg-orange-500' : ''}" 
-              style={!block.isOverflow && block.type === 'calendar_event' ? `background-color: ${block.colorHex || '#3b82f6'};` : ''}
-            ></div>
-
-            <div class="flex items-start justify-between pl-2">
-              <div class="flex flex-col gap-0.5 truncate">
+              draggable="true"
+              ondragstart={(e) => {
+                e.stopPropagation();
+                console.log(`[Timeline] ✋ Drag START for timeline chunk: ${block.id}`);
+                if (e.dataTransfer) {
+                  const payload = JSON.stringify({ type: 'timeline', id: block.id, sourceSlot: i });
+                  e.dataTransfer.setData('text/plain', payload);
+                }
+              }}
+              class="w-full px-3 py-1.5 flex items-center justify-between bg-[#1a1a1a]/90 border border-[#333] hover:border-[#555] rounded-lg cursor-grab active:cursor-grabbing group shadow-md select-none"
+              style="height: {(block.durationMinutes / 60) * 100}%; min-height: 32px;"
+            >
+              <div class="flex flex-col truncate">
                 <span class="text-sm font-bold text-zinc-100 truncate">{block.title}</span>
-                <div class="flex items-center gap-2 text-[10px] text-zinc-500 font-medium">
-                  <div class="flex items-center gap-1">
-                    <Clock size={10} />
-                    <span>{block.durationMinutes}m</span>
-                  </div>
-                  <span class="text-zinc-700">•</span>
-                  <span>{format(parseISO(block.calculatedStart), 'h:mm a')} - {format(parseISO(block.calculatedEnd), 'h:mm a')}</span>
-                </div>
+                <span class="text-[10px] text-zinc-500 font-medium">{block.durationMinutes}m</span>
               </div>
-
               <button 
                 onclick={() => plannerStore.removeBlockFromTimeline(block.id)}
-                class="opacity-0 group-hover:opacity-100 p-1 text-rose-400/70 hover:text-rose-400 hover:bg-rose-400/10 rounded transition-all cursor-pointer"
-                title="Remove from session"
+                class="opacity-0 group-hover:opacity-100 p-1.5 text-zinc-400 hover:text-rose-400 hover:bg-rose-400/10 rounded transition-all cursor-pointer"
+                title="Remove from timeline"
               >
-                <X size={14} strokeWidth={2.5} />
+                <Trash2 size={14} strokeWidth={2.5} />
               </button>
             </div>
-            
-            {#if block.isOverflow}
-              <div class="pl-2 text-[10px] font-bold text-orange-400 uppercase tracking-wider mt-auto">
-                Pushed into overflow
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
+          {/each}
+        </div>
+      {/each}
     </div>
   {/if}
 </div>

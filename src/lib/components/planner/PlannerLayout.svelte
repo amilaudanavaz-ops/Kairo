@@ -14,64 +14,70 @@
   });
 
   function changeDate(days: number) {
-    const current = parseISO(plannerStore.activeDateKey);
-    const next = addDays(current, days);
-    plannerStore.activeDateKey = format(next, 'yyyy-MM-dd');
+    if (days === 0) {
+      plannerStore.activeDateKey = format(new Date(), 'yyyy-MM-dd');
+    } else {
+      const current = parseISO(plannerStore.activeDateKey);
+      const next = addDays(current, days);
+      plannerStore.activeDateKey = format(next, 'yyyy-MM-dd');
+    }
   }
 
   function handleDurationChange(e: Event) {
-    const val = parseInt((e.target as HTMLSelectElement).value, 10);
-    plannerStore.updateSessionDuration(val);
+    const val = parseInt((e.target as HTMLInputElement).value, 10);
+    if (!isNaN(val) && val > 0) {
+      plannerStore.updateSessionDuration(val);
+    }
   }
 </script>
 
-<div class="w-full h-full flex bg-[#0d1017] relative overflow-hidden font-sans text-zinc-200">
+<div class="w-full h-full flex bg-[#111111] relative overflow-hidden font-sans text-zinc-200">
   
   {#if !plannerStore.isExecutionMode}
-    <!-- SIDEBAR ON LEFT -->
-    <PlannerSidebar />
-
-    <!-- MAIN CANVAS ON RIGHT -->
-    <main class="flex-1 flex flex-col relative h-full min-w-0">
+    <!-- MAIN CANVAS ON LEFT -->
+    <main class="flex-1 flex flex-col relative h-full min-w-0 border-r border-[#1e1e1e]">
       
       <!-- Session Header -->
-      <header class="h-24 shrink-0 flex items-center justify-between px-10 border-b border-white/5">
-        <div class="flex items-center gap-6">
-          <h1 class="text-3xl font-black text-[#5c8cff] tracking-tight">Session Plan</h1>
-          
-          <div class="flex items-center gap-2 bg-[#141820] border border-white/5 rounded-xl px-2 py-1.5">
-            <button onclick={() => changeDate(-1)} class="p-1 text-zinc-500 hover:text-zinc-200 transition-colors"><ChevronLeft size={16} /></button>
-            <div class="px-3 text-sm font-bold text-zinc-200 min-w-[120px] text-center">
-              {format(parseISO(plannerStore.activeDateKey), 'dd/MM/yyyy')}
-            </div>
-            <button onclick={() => changeDate(1)} class="p-1 text-zinc-500 hover:text-zinc-200 transition-colors"><ChevronRight size={16} /></button>
+      <header class="h-16 shrink-0 flex items-center justify-between px-8 border-b border-[#1e1e1e] bg-[#111111]">
+        <div class="flex items-center gap-5">
+          <div class="flex items-center bg-[#181818] border border-[#2a2a2a] rounded-md overflow-hidden">
+            <button onclick={() => changeDate(-1)} class="px-2.5 py-1.5 text-zinc-400 hover:text-white hover:bg-[#222] transition-colors"><ChevronLeft size={16} /></button>
+            <div class="w-px h-4 bg-[#2a2a2a]"></div>
+            <button onclick={() => changeDate(0)} class="px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-white hover:bg-[#222] transition-colors">Today</button>
+            <div class="w-px h-4 bg-[#2a2a2a]"></div>
+            <button onclick={() => changeDate(1)} class="px-2.5 py-1.5 text-zinc-400 hover:text-white hover:bg-[#222] transition-colors"><ChevronRight size={16} /></button>
           </div>
+          <h1 class="text-[17px] font-bold text-white tracking-wide">
+            {format(parseISO(plannerStore.activeDateKey), 'EEEE, MMMM do')}
+          </h1>
         </div>
 
         <div class="flex items-center gap-4">
           {#if plannerStore.activeSession}
-            <div class="flex items-center gap-3 bg-[#141820] border border-white/5 rounded-full px-4 py-2">
-              <span class="text-sm font-medium text-zinc-400">Dur</span>
-              <select value={plannerStore.activeSession.durationMinutes} onchange={handleDurationChange} class="bg-transparent text-sm font-bold text-white outline-none cursor-pointer text-center appearance-none">
-                <option value={60}>1</option>
-                <option value={120}>2</option>
-                <option value={180}>3</option>
-                <option value={240}>4</option>
-                <option value={300}>5</option>
-                <option value={360}>6</option>
-                <option value={420}>7</option>
-                <option value={480}>8</option>
+            <div class="flex items-center gap-2">
+              <span class="text-[13px] font-medium text-zinc-500">Session Duration:</span>
+              <select 
+                value={plannerStore.activeSession.durationMinutes} 
+                onchange={handleDurationChange}
+                class="bg-[#181818] border border-[#2a2a2a] text-zinc-200 text-[13px] font-medium rounded-md px-3 py-1.5 outline-none cursor-pointer hover:border-[#444] transition-colors"
+              >
+                <option value={60}>1 Hour</option>
+                <option value={120}>2 Hours</option>
+                <option value={180}>3 Hours</option>
+                <option value={240}>4 Hours</option>
+                <option value={300}>5 Hours</option>
+                <option value={360}>6 Hours</option>
+                <option value={420}>7 Hours</option>
+                <option value={480}>8 Hours</option>
               </select>
-              <span class="text-sm font-medium text-zinc-400">Hr</span>
             </div>
             
             <button 
               onclick={() => plannerStore.startSession()}
               disabled={plannerStore.timelineBlocks.length === 0}
-              class="flex items-center gap-2 px-6 py-2.5 bg-[#5c8cff] hover:bg-[#4a7aeb] text-white text-sm font-bold rounded-full transition-colors cursor-pointer shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              class="flex items-center gap-2 px-5 py-1.5 bg-[#5b5fdb] hover:bg-[#6c70ed] text-white text-[13px] font-semibold rounded-md transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span>Start Focus</span>
-              <Play size={14} fill="currentColor" />
+              <span>Start Session</span>
             </button>
           {/if}
         </div>
@@ -85,6 +91,9 @@
       <!-- Quick Add Bar Centered at Bottom -->
       <TaskFloatingBar />
     </main>
+
+    <!-- SIDEBAR ON RIGHT -->
+    <PlannerSidebar />
 
   {:else}
     <!-- EXECUTION MODE -->
