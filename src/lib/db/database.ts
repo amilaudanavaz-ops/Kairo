@@ -409,9 +409,9 @@ export async function loadStoredEvents(): Promise<CalendarEvent[]> {
     busyStatus: r.busy_status || 'busy',
     visibility: r.visibility || 'default',
     reminders: safeJsonParse<string[]>(r.reminders, ['15m']),
-    creatorEmail: r.creator_email || '',
-    participants: safeJsonParse<string[]>(r.participants, []),
-    attachments: safeJsonParse<string[]>(r.attachments, []),
+      creatorEmail: r.creator_email || '',
+      participants: safeJsonParse<any[]>(r.participants, []),
+      attachments: safeJsonParse<any[]>(r.attachments, []),
     colorOverride: r.color_override || undefined,
     syncStatus: (r.sync_status as SyncStatus) || 'synced',
     updatedAt: r.updated_at || new Date().toISOString()
