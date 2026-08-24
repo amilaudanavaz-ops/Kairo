@@ -119,7 +119,7 @@
               <div class="flex items-center bg-[#181818] border border-[#2a2a2a] rounded-md overflow-hidden hover:border-[#444] focus-within:border-indigo-500 transition-colors">
                 <button 
                   onclick={() => plannerStore.updateSessionDuration(Math.max(60, plannerStore.activeSession!.durationMinutes - 60))}
-                  class="px-2 py-1.5 text-zinc-400 hover:text-white hover:bg-[#222] transition-colors font-bold text-xs cursor-pointer"
+                  class="px-2 py-1.5 bg-white text-[#222] hover:text-white hover:bg-[#222] transition-colors font-bold text-xs cursor-pointer"
                   title="Subtract 1 Hour"
                 >
                   -1h
@@ -136,7 +136,7 @@
                 <div class="w-px h-4 bg-[#2a2a2a]"></div>
                 <button 
                   onclick={() => plannerStore.updateSessionDuration(plannerStore.activeSession!.durationMinutes + 60)}
-                  class="px-2 py-1.5 text-zinc-400 hover:text-white hover:bg-[#222] transition-colors font-bold text-xs cursor-pointer"
+                  class="px-2 py-1.5 bg-white text-[#222] hover:text-white hover:bg-[#222] transition-colors font-bold text-xs cursor-pointer"
                   title="Add 1 Hour"
                 >
                   +1h

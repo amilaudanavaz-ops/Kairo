@@ -81,7 +81,7 @@
             class="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)] rounded transition-colors cursor-pointer"
             title="Sync with Google"
           >
-            <RefreshCw size={12} class={settingsStore.isAuthenticating ? 'animate-spin text-blue-500' : ''} />
+            <RefreshCw size={12} class={settingsStore.isGoogleAuthInProgress ? 'animate-spin text-blue-500' : ''} />
           </button>
           
           <button

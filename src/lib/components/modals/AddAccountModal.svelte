@@ -8,7 +8,7 @@
   async function handleConnectGoogle() {
     isGoogleConnecting = true;
     try {
-      await settingsStore.connectGoogleOAuth();
+      await settingsStore.startGoogleAuth();
       calendarState.closeAddAccountModal();
     } finally {
       isGoogleConnecting = false;
@@ -45,7 +45,7 @@
           onclick={handleConnectGoogle}
           class="w-full flex items-center gap-3.5 px-4 py-3 rounded-xl bg-[#222222] hover:bg-[#2a2a2a] border border-[#2e2e2e] hover:border-zinc-500 transition-all text-xs font-semibold cursor-pointer group"
         >
-          {#if isGoogleConnecting || settingsStore.isAuthenticating}
+          {#if isGoogleConnecting || settingsStore.isGoogleAuthInProgress}
             <div class="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
           {:else}
             <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24">
