@@ -92,7 +92,7 @@
 
 <div class="w-full h-full flex bg-[#111111] relative overflow-hidden font-sans text-zinc-200">
   
-  {#if !plannerStore.isExecutionMode}
+  {#if !plannerStore.isExecutionMode || plannerStore.isHudMinimized}
   
     <!-- MAIN CANVAS ON LEFT -->
     <main class="flex-1 flex flex-col relative h-full min-w-0 border-r border-[#1e1e1e]">
@@ -144,13 +144,22 @@
               </div>
             </div>
             
-            <button 
-              onclick={() => plannerStore.startSession()}
-              disabled={plannerStore.timelineBlocks.length === 0}
-              class="flex items-center gap-2 px-5 py-1.5 bg-[#5b5fdb] hover:bg-[#6c70ed] text-white text-[13px] font-semibold rounded-md transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span>Start Session</span>
-            </button>
+            {#if plannerStore.isExecutionMode}
+              <button 
+                onclick={() => plannerStore.isHudMinimized = false}
+                class="flex items-center gap-2 px-5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[13px] font-semibold rounded-md transition-colors cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+              >
+                <span>Return to HUD</span>
+              </button>
+            {:else}
+              <button 
+                onclick={() => plannerStore.startSession()}
+                disabled={plannerStore.timelineBlocks.length === 0}
+                class="flex items-center gap-2 px-5 py-1.5 bg-[#5b5fdb] hover:bg-[#6c70ed] text-white text-[13px] font-semibold rounded-md transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <span>Start Session</span>
+              </button>
+            {/if}
           {/if}
         </div>
       </header>
@@ -170,6 +179,11 @@
   {:else}
     <!-- EXECUTION MODE -->
     <ExecutionHud />
+    <OverflowManager />
+  {/if}
+
+  <!-- Allow viewing Overflow dynamically from Canvas -->
+  {#if plannerStore.isExecutionMode && plannerStore.isHudMinimized}
     <OverflowManager />
   {/if}
 

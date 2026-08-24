@@ -1,17 +1,17 @@
 <script lang="ts">
   import { plannerStore } from '../../stores/plannerStore.svelte';
   import { calendarState } from '../../stores/calendarState.svelte';
-  import { Check, Plus, Timer, FastForward } from 'lucide-svelte';
+  import { Check, Plus, Timer, FastForward, Pause, Play, Square, LayoutDashboard } from 'lucide-svelte';
   import { onDestroy } from 'svelte';
 
-  let decisionCountdown = $state(5);
+  let decisionCountdown = $state(15);
   let decisionInterval: number | undefined;
 
   // Reactively monitor the timer to trigger the 5-second decision overlay
   $effect(() => {
     if (plannerStore.isExecutionMode && plannerStore.timerRemainingSeconds <= 0 && !plannerStore.isOvertime) {
       if (!decisionInterval) {
-        decisionCountdown = 5;
+        decisionCountdown = 15;
         decisionInterval = window.setInterval(() => {
           decisionCountdown--;
           if (decisionCountdown <= 0) {
@@ -55,23 +55,40 @@
     
     <!-- HUD Header -->
     <header class="w-full flex items-center justify-between p-6 absolute top-0 left-0">
-      <button 
-        onclick={() => {
-          calendarState.setAppMode('calendar');
-        }}
-        class="px-4 py-2 bg-[#222] hover:bg-[#2a2a2a] border border-[#333] text-zinc-300 text-xs font-bold rounded-xl transition-all cursor-pointer"
-      >
-        ← Back to Calendar
-      </button>
+      <div class="flex items-center gap-3">
+        <button 
+          onclick={() => {
+            calendarState.setAppMode('calendar');
+          }}
+          class="px-4 py-2 bg-[#222] hover:bg-[#2a2a2a] border border-[#333] text-zinc-300 text-xs font-bold rounded-xl transition-all cursor-pointer"
+        >
+          ← Back to Calendar
+        </button>
+        <button 
+          onclick={() => plannerStore.isHudMinimized = true}
+          class="px-4 py-2 bg-[#222] hover:bg-[#2a2a2a] border border-[#333] text-zinc-300 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-2"
+        >
+          <LayoutDashboard size={14} class="text-indigo-400" />
+          View Planner Canvas
+        </button>
+      </div>
 
-      <button 
-        onclick={() => plannerStore.isOverflowManagerOpen = true}
-        class="px-4 py-2 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/50 text-indigo-400 text-xs font-bold rounded-xl transition-all cursor-pointer"
-      >
-        Session Tasks
-      </button>
+      <div class="flex items-center gap-3">
+        <button 
+          onclick={() => plannerStore.stopSession()}
+          class="p-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 rounded-xl transition-all cursor-pointer"
+          title="End Session"
+        >
+          <Square size={16} fill="currentColor" />
+        </button>
+        <button 
+          onclick={() => plannerStore.isOverflowManagerOpen = true}
+          class="px-4 py-2.5 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/50 text-indigo-400 text-xs font-bold rounded-xl transition-all cursor-pointer"
+        >
+          Session Tasks
+        </button>
+      </div>
     </header>
-
     <!-- Main Content Centered -->
     <div class="flex-1 flex flex-col items-center justify-center w-full">
       <div class="flex flex-col items-center gap-6 max-w-xl w-full px-6">
@@ -97,7 +114,7 @@
       </h1>
 
       <!-- Massive Timer -->
-      <div class="text-[120px] font-black tracking-tighter tabular-nums leading-none {plannerStore.isOvertime ? 'text-orange-500' : isDecisionTime ? 'text-rose-500' : 'text-zinc-100'} drop-shadow-2xl">
+      <div class="text-[120px] font-black tracking-tighter tabular-nums leading-none {plannerStore.isPaused ? 'text-amber-500 opacity-50' : plannerStore.isOvertime ? 'text-orange-500' : isDecisionTime ? 'text-rose-500' : 'text-zinc-100'} drop-shadow-2xl transition-all">
         {plannerStore.isOvertime ? '+' : ''}{formattedTime}
       </div>
 
@@ -137,6 +154,17 @@
       {:else}
         <!-- Standard Active Controls -->
         <div class="flex items-center gap-4 mt-8">
+          <button 
+            onclick={() => plannerStore.togglePause()}
+            class="px-5 py-3 bg-[#222] hover:bg-[#2a2a2a] border border-[#333] {plannerStore.isPaused ? 'text-amber-400' : 'text-zinc-300'} text-sm font-bold rounded-xl flex items-center gap-2 transition-all cursor-pointer w-[120px] justify-center"
+          >
+            {#if plannerStore.isPaused}
+              <Play size={16} fill="currentColor" /> Resume
+            {:else}
+              <Pause size={16} fill="currentColor" /> Pause
+            {/if}
+          </button>
+
           <button 
             onclick={() => plannerStore.add15MinutesToCurrent()}
             disabled={plannerStore.isOvertime}

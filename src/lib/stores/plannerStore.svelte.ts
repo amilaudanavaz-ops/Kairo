@@ -8,6 +8,8 @@ import {
 import { eventStore } from './eventStore.svelte';
 import type { FlowTask, FlowSession, FlowBlock } from '../../types/planner';
 import { format, parseISO, addMinutes, differenceInMinutes, setHours, setMinutes } from 'date-fns';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { emit, listen } from '@tauri-apps/api/event';
 
 
 class PlannerStore {
@@ -39,10 +41,70 @@ class PlannerStore {
 
   // Execution Runner State
   isExecutionMode = $state(false);
+  isHudMinimized = $state(false); // Allows viewing planner while running
+  isPaused = $state(false); // Pause Engine
+  
   activeBlockId = $state<string | null>(null);
   timerRemainingSeconds = $state<number>(0);
   isOvertime = $state(false);
   runnerInterval: number | undefined;
+
+  // Widget Sync Engine
+  widgetState = $state<any>(null);
+  widgetWindow: any = null;
+  ipcInitialized = false;
+
+  initIpc(isWidgetWindow: boolean = false) {
+    if (this.ipcInitialized) return;
+    this.ipcInitialized = true;
+    
+    if (isWidgetWindow) {
+      // WIDGET BRAIN: Only listens to sync broadcasts from Main
+      listen('kflow_sync', (event) => {
+        this.widgetState = event.payload;
+      });
+    } else {
+      // MAIN BRAIN: Listens to commands from Widget
+      listen('kflow_command', (event) => {
+        const action = event.payload as string;
+        if (action === 'request_sync') this.broadcastSync();
+        if (action === 'pause_play') this.togglePause();
+        if (action === 'stop') this.stopSession();
+        if (action === 'complete') this.completeCurrentTask();
+        if (action === 'add_15') this.add15MinutesToCurrent();
+        if (action === 'overtime') this.triggerOvertime();
+      });
+    }
+  }
+
+  broadcastSync() {
+    const activeBlock = this.timelineBlocks.find(b => b.id === this.activeBlockId);
+    emit('kflow_sync', {
+      isExecutionMode: this.isExecutionMode,
+      activeBlockId: this.activeBlockId,
+      timerRemainingSeconds: this.timerRemainingSeconds,
+      isOvertime: this.isOvertime,
+      isPaused: this.isPaused,
+      activeTitle: activeBlock?.title || 'Flow Session'
+    });
+  } 
+
+  togglePause() {
+    this.isPaused = !this.isPaused;
+    this.broadcastSync();
+  }
+
+  async stopSession() {
+    this.isExecutionMode = false;
+    this.isHudMinimized = false;
+    this.activeBlockId = null;
+    if (this.runnerInterval) clearInterval(this.runnerInterval);
+    if (this.widgetWindow) {
+      try { await this.widgetWindow.close(); } catch(e) {}
+      this.widgetWindow = null;
+    }
+    this.broadcastSync();
+  }
 
   /* ==========================================================================
      REACTIVE TIMELINE ENGINE
@@ -386,31 +448,61 @@ class PlannerStore {
      EXECUTION RUNNER (THE DOMINO ENGINE)
      ========================================================================== */
 
-  startSession() {
+  async startSession() {
     if (!this.activeSession || this.executionSequence.length === 0) return;
     this.isExecutionMode = true;
+    this.isHudMinimized = false;
+    this.isPaused = false;
     
     const firstStep = this.executionSequence[0];
     this.activeBlockId = firstStep.id;
     this.timerRemainingSeconds = firstStep.durationMinutes * 60;
     this.isOvertime = false;
     this.startTimer();
-  }
 
+    // Spawn OS-Level Ghost Widget
+    try {
+      // 1. First, check if an old zombie window is stuck in the background and kill it
+      const existing = await WebviewWindow.getByLabel('kflow-widget');
+      if (existing) await existing.close();
+
+      // 2. Spawn the new window (Set to visible: true so it never hides from us)
+      this.widgetWindow = new WebviewWindow('kflow-widget', {
+        url: '/?widget=true', 
+        width: 410, 
+        height: 60,
+        decorations: false,
+        alwaysOnTop: true,
+        transparent: true,
+        resizable: false,
+        visible: true, 
+        skipTaskbar: true,
+        shadow: false
+      });
+
+      this.widgetWindow.once('tauri://error', (e: any) => {
+        console.error("Widget Window Error:", e);
+      });
+    } catch(e) { 
+      console.error("Widget spawn exception:", e); 
+    }
+    
+    this.broadcastSync();
+  }
   private startTimer() {
     if (this.runnerInterval) clearInterval(this.runnerInterval);
     this.runnerInterval = window.setInterval(() => {
+      if (this.isPaused) return; // Skip if paused
+
       if (this.isOvertime) {
-        // Stopwatch counting UP
         this.timerRemainingSeconds++;
       } else {
-        // Countdown
         this.timerRemainingSeconds--;
         if (this.timerRemainingSeconds <= 0) {
           clearInterval(this.runnerInterval);
-          // Trigger the 5-second UI decision overlay (handled via component reactivity)
         }
       }
+      this.broadcastSync();
     }, 1000);
   }
 
@@ -418,6 +510,7 @@ class PlannerStore {
     this.isOvertime = true;
     this.timerRemainingSeconds = 0;
     this.startTimer();
+    this.broadcastSync();
   }
 
   async add15MinutesToCurrent() {
@@ -441,6 +534,7 @@ class PlannerStore {
 
     this.timerRemainingSeconds += 15 * 60;
     this.startTimer();
+    this.broadcastSync();
   }
 
   async completeCurrentTask() {
@@ -482,10 +576,10 @@ class PlannerStore {
       this.timerRemainingSeconds = nextStep.durationMinutes * 60;
       this.isOvertime = false;
       this.startTimer();
+      this.broadcastSync();
     } else {
       // Session Finish Line!
-      this.isExecutionMode = false;
-      this.activeBlockId = null;
+      this.stopSession();
     }
   }
   /* ==========================================================================

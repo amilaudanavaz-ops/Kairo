@@ -19,12 +19,17 @@
   import { eventStore } from './lib/stores/eventStore.svelte';
   import { dragStore } from './lib/stores/dragStore.svelte';
   import { contextMenuStore } from './lib/stores/contextMenuStore.svelte';
+  import { plannerStore } from './lib/stores/plannerStore.svelte';
   import { loadInitialCalendars } from './lib/db/database';
   import { format, parseISO } from 'date-fns';
   import { resolveEventColorToken } from './lib/utils/colors';
+  import FloatingWidget from './lib/components/planner/FloatingWidget.svelte';
+
+  const isWidget = window.location.search.includes('widget=true') || window.location.href.includes('widget=true');
 
   onMount(async () => {
     try {
+      plannerStore.initIpc(isWidget); // Wires the brains correctly
       await settingsStore.init();
       const cals = await loadInitialCalendars();
       if (cals.length > 0) {
@@ -93,7 +98,9 @@
   });
 </script>
 
-{#if !settingsStore.isLoggedIn}
+{#if isWidget}
+  <FloatingWidget />
+{:else if !settingsStore.isLoggedIn}
   <AuthScreen />
 {:else}
   <main class="h-screen w-screen flex flex-col bg-[#121212] overflow-hidden select-none font-sans text-[#ededed]">
