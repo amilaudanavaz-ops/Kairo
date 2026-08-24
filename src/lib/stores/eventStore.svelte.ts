@@ -304,11 +304,23 @@ class EventStore {
   getEventsForDateKey(dateKey: string): CalendarEvent[] {
     const result: CalendarEvent[] = [];
 
-    // 1. Collect all standalone events and detached child exceptions
-    const standaloneAndExceptions = this.events.filter(e => 
-      e.syncStatus !== ('pending_delete' as any) && (!e.rrule || e.rrule === 'none' || e.recurringEventId)
+    // Create a dynamic list checking BOTH local and Google calendar IDs
+    const visibleCalendarIds = new Set(
+      calendarState.calendars
+        .filter(c => c.isVisible !== false)
+        .flatMap(c => [c.id, c.googleCalendarId].filter(Boolean))
     );
 
+    // Pre-filter: If calendars haven't loaded yet, show all to prevent a blank boot.
+    // Otherwise, strictly filter by the visible calendar IDs.
+    const visibleEvents = calendarState.calendars.length === 0 
+      ? this.events 
+      : this.events.filter(e => visibleCalendarIds.has(e.calendarId));
+
+    // 1. Collect all standalone events and detached child exceptions
+    const standaloneAndExceptions = visibleEvents.filter(e => 
+      e.syncStatus !== ('pending_delete' as any) && (!e.rrule || e.rrule === 'none' || e.recurringEventId)
+    );  
     // Track which (masterId + dateKey) occurrences have been overridden
     const overriddenOccurrences = new Set<string>();
 
@@ -336,7 +348,7 @@ class EventStore {
     }
 
     // 2. Collect master recurring series and project occurrences
-    const masterEvents = this.events.filter(e => 
+    const masterEvents = visibleEvents.filter(e => 
       e.syncStatus !== ('pending_delete' as any) && e.rrule && e.rrule !== 'none' && !e.recurringEventId
     );
 
