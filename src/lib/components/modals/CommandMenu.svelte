@@ -32,8 +32,7 @@
     { id: 'profile', title: 'Edit User Profile', icon: User, shortcut: '', action: () => settingsStore.open('profile') },
     { id: 'accounts', title: 'Manage Calendar Accounts', icon: User, shortcut: '', action: () => settingsStore.open('accounts') },
     { id: 'conferencing', title: 'Conferencing Settings', icon: Video, shortcut: '', action: () => settingsStore.open('conferencing') },
-    { id: 'sidebar', title: 'Toggle Inspector dock', icon: Layers, shortcut: '\\', action: () => calendarState.toggleInspectorDock() },
-    { id: 'logout', title: 'Log out', icon: LogOut, shortcut: '', action: () => settingsStore.logout() }
+    { id: 'sidebar', title: 'Toggle Inspector dock', icon: Layers, shortcut: '\\', action: () => calendarState.toggleInspectorDock() }
   ];
 
   let filteredCommands = $derived(

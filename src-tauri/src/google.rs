@@ -110,6 +110,9 @@ pub struct GoogleEventMutationPayload {
     pub conferencing_provider: Option<String>,
     #[serde(alias = "zoomPmiLink")]
     pub zoom_pmi_link: Option<String>,
+    pub reminders: Option<Vec<String>>,
+    #[serde(alias = "colorOverride")]
+    pub color_override: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -450,7 +453,9 @@ pub async fn fetch_google_events(
             }
         }
 
-        let color_override = item.get("colorId").and_then(|c| c.as_str()).map(|s| s.to_string());
+        let color_override = item.get("colorId")
+            .and_then(|c| c.as_str().map(String::from).or_else(|| c.as_i64().map(|n| n.to_string())))
+            .and_then(|id| map_google_color_id_to_hex(&id));
         let transparency = item.get("transparency").and_then(|t| t.as_str());
         let busy_status = if transparency == Some("transparent") { "free".to_string() } else { "busy".to_string() };
 
@@ -475,13 +480,17 @@ pub async fn fetch_google_events(
             if let Some(overrides) = rem_obj.get("overrides").and_then(|o| o.as_array()) {
                 for ov in overrides {
                     if let Some(mins) = ov.get("minutes").and_then(|m| m.as_u64()) {
-                        reminders.push(format!("{}m", mins));
+                        let rem_str = if mins == 0 { "0m".to_string() }
+                        else if mins % 1440 == 0 { format!("{}d", mins / 1440) }
+                        else if mins % 60 == 0 { format!("{}h", mins / 60) }
+                        else { format!("{}m", mins) };
+                        reminders.push(rem_str);
                     }
                 }
+            } else if rem_obj.get("useDefault").and_then(|u| u.as_bool()).unwrap_or(false) {
+                // If Google uses calendar defaults, assume the standard 30m popup
+                reminders.push("30m".to_string());
             }
-        }
-        if reminders.is_empty() {
-            reminders.push("15m".to_string());
         }
 
         let start_obj = item.get("start");
@@ -622,6 +631,60 @@ fn format_rfc3339_datetime(dt_str: &str) -> String {
     }
 }
 
+fn parse_reminder_string(rem: &str) -> u64 {
+    if rem.ends_with('m') {
+        rem.trim_end_matches('m').parse().unwrap_or(15)
+    } else if rem.ends_with('h') {
+        rem.trim_end_matches('h').parse::<u64>().unwrap_or(1) * 60
+    } else if rem.ends_with('d') {
+        rem.trim_end_matches('d').parse::<u64>().unwrap_or(1) * 1440
+    } else {
+        15
+    }
+}
+
+fn map_hex_to_google_color_id(hex_or_id: &str) -> Option<String> {
+    // If it is already a Google ID (1-11), pass it through
+    if let Ok(num) = hex_or_id.parse::<u8>() {
+        if (1..=11).contains(&num) {
+            return Some(num.to_string());
+        }
+    }
+    
+    // Translate standard UI hex codes to Google's strict color IDs
+    match hex_or_id.to_lowercase().as_str() {
+        "#7986cb" => Some("1".to_string()), // Lavender
+        "#33b679" => Some("2".to_string()), // Sage
+        "#8e24aa" => Some("3".to_string()), // Grape
+        "#e67c73" => Some("4".to_string()), // Flamingo
+        "#f6bf26" | "#f59e0b" => Some("5".to_string()), // Banana
+        "#f4511e" | "#f97316" => Some("6".to_string()), // Tangerine
+        "#039be5" | "#38bdf8" => Some("7".to_string()), // Peacock
+        "#616161" => Some("8".to_string()), // Graphite
+        "#3f51b5" | "#3b82f6" => Some("9".to_string()), // Blueberry / Default Blue
+        "#0b8043" | "#10b981" => Some("10".to_string()), // Basil
+        "#d50000" | "#ef4444" => Some("11".to_string()), // Tomato / Red
+        _ => None, // Fallback to calendar default
+    }
+}
+
+fn map_google_color_id_to_hex(id: &str) -> Option<String> {
+    match id {
+        "1" => Some("#7986cb".to_string()), // Lavender
+        "2" => Some("#33b679".to_string()), // Sage
+        "3" => Some("#8e24aa".to_string()), // Grape
+        "4" => Some("#e67c73".to_string()), // Flamingo
+        "5" => Some("#f6bf26".to_string()), // Banana
+        "6" => Some("#f4511e".to_string()), // Tangerine
+        "7" => Some("#039be5".to_string()), // Peacock
+        "8" => Some("#616161".to_string()), // Graphite
+        "9" => Some("#3f51b5".to_string()), // Blueberry
+        "10" => Some("#0b8043".to_string()), // Basil
+        "11" => Some("#d50000".to_string()), // Tomato
+        _ => None, // Fallback to calendar default
+    }
+}
+
 #[tauri::command]
 pub async fn create_google_event(
     access_token: String,
@@ -641,6 +704,34 @@ pub async fn create_google_event(
         "description": event.description.unwrap_or_default(),
         "location": event.location.unwrap_or_default(),
     });
+
+    // 1. COLOR MAPPER
+    if let Some(color_val) = &event.color_override {
+        if let Some(color_id) = map_hex_to_google_color_id(color_val) {
+            body["colorId"] = serde_json::json!(color_id);
+        } else {
+            body["colorId"] = serde_json::Value::Null;
+        }
+    } else {
+        body["colorId"] = serde_json::Value::Null;
+    }
+
+    // 2. GOOGLE REMINDER MAPPER
+    if let Some(reminders) = &event.reminders {
+        if reminders.is_empty() {
+            // Force Google to clear reminders by sending an empty overrides array
+            body["reminders"] = serde_json::json!({ "useDefault": false, "overrides": [] });
+        } else {
+            let overrides: Vec<serde_json::Value> = reminders.iter().map(|r| {
+                let mins = parse_reminder_string(r);
+                serde_json::json!({ "method": "popup", "minutes": mins })
+            }).collect();
+
+            body["reminders"] = serde_json::json!({ "useDefault": false, "overrides": overrides });
+        }
+    } else {
+        body["reminders"] = serde_json::json!({ "useDefault": true });
+    }
 
     let tz = sanitize_iana_tz(&event.time_zone.unwrap_or_else(|| "UTC".to_string()));
 
@@ -771,10 +862,12 @@ pub async fn create_google_event(
         time_zone: tz,
         status: "confirmed".to_string(),
         busy_status: "busy".to_string(),
-        color_override: None,
+        color_override: item.get("colorId")
+            .and_then(|c| c.as_str().map(String::from).or_else(|| c.as_i64().map(|n| n.to_string())))
+            .and_then(|id| map_google_color_id_to_hex(&id)),
         etag: item.get("etag").and_then(|e| e.as_str()).map(|s| s.to_string()),
-        participants: event.participants.unwrap_or_default(),
-        reminders: vec!["15m".to_string()],
+        participants: event.participants.unwrap_or_default(), 
+        reminders: event.reminders.unwrap_or_default(),
     })
 }
 
@@ -801,8 +894,35 @@ pub async fn update_google_event(
         "location": event.location.unwrap_or_default(),
     });
 
-    let tz = sanitize_iana_tz(&event.time_zone.unwrap_or_else(|| "UTC".to_string()));
+    // 1. COLOR MAPPER
+    if let Some(color_val) = &event.color_override {
+        if let Some(color_id) = map_hex_to_google_color_id(color_val) {
+            body["colorId"] = serde_json::json!(color_id);
+        } else {
+            body["colorId"] = serde_json::Value::Null;
+        }
+    } else {
+        body["colorId"] = serde_json::Value::Null;
+    }
 
+    // 2. GOOGLE REMINDER MAPPER
+    if let Some(reminders) = &event.reminders {
+        if reminders.is_empty() {
+            // Force Google to clear reminders by sending an empty overrides array
+            body["reminders"] = serde_json::json!({ "useDefault": false, "overrides": [] });
+        } else {
+            let overrides: Vec<serde_json::Value> = reminders.iter().map(|r| {
+                let mins = parse_reminder_string(r);
+                serde_json::json!({ "method": "popup", "minutes": mins })
+            }).collect();
+
+            body["reminders"] = serde_json::json!({ "useDefault": false, "overrides": overrides });
+        }
+    } else {
+        body["reminders"] = serde_json::json!({ "useDefault": true });
+    }
+
+    let tz = sanitize_iana_tz(&event.time_zone.unwrap_or_else(|| "UTC".to_string()));
     if event.is_all_day {
         let start_date = event.start_time.split('T').next().unwrap_or(&event.start_time);
         let raw_end_date = event.end_time.split('T').next().unwrap_or(&event.end_time);
@@ -931,12 +1051,15 @@ pub async fn update_google_event(
         time_zone: tz,
         status: "confirmed".to_string(),
         busy_status: "busy".to_string(),
-        color_override: None,
+        color_override: item.get("colorId")
+            .and_then(|c| c.as_str().map(String::from).or_else(|| c.as_i64().map(|n| n.to_string())))
+            .and_then(|id| map_google_color_id_to_hex(&id)),
         etag: item.get("etag").and_then(|e| e.as_str()).map(|s| s.to_string()),
         participants: event.participants.unwrap_or_default(), 
-        reminders: vec!["15m".to_string()],
+        reminders: event.reminders.unwrap_or_default(),
     })
 }
+
 
 #[tauri::command]
 pub async fn delete_google_event(

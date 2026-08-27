@@ -37,7 +37,6 @@ import {
   addDays 
 } from 'date-fns';
 import { eventOccursOnDay, getEventsForDay, parseRRuleUntilDate, getSafeDuration } from '../utils/dateMath';
-import { dispatchEventReminder } from '../utils/notifications';
 import { invoke } from '@tauri-apps/api/core';
 
 export interface NormalizedGoogleEvent {
@@ -76,6 +75,32 @@ export function sanitizeTimezone(tz?: string): string {
   return tz;
 }
 
+export function resolveGoogleColorId(val?: string): string | undefined {
+  if (!val) return undefined;
+  if (val.startsWith('#')) return val; // It's already hex
+  const map: Record<string, string> = {
+    "1": "#7986cb", "2": "#33b679", "3": "#8e24aa", "4": "#e67c73",
+    "5": "#f6bf26", "6": "#f4511e", "7": "#039be5", "8": "#616161",
+    "9": "#3f51b5", "10": "#0b8043", "11": "#d50000"
+  };
+  return map[val] || undefined;
+}
+
+export function parseGoogleReminders(gEvt: any): string[] {
+  // If Rust already cleaned it into an array
+  if (Array.isArray(gEvt.reminders) && gEvt.reminders.length > 0) return gEvt.reminders;
+  
+  // If it's a raw Google API object
+  if (gEvt.reminders && Array.isArray(gEvt.reminders.overrides)) {
+    return gEvt.reminders.overrides.map((o: any) => {
+      const m = o.minutes || 15;
+      if (m >= 1440 && m % 1440 === 0) return `${m / 1440}d`;
+      if (m >= 60 && m % 60 === 0) return `${m / 60}h`;
+      return `${m}m`;
+    });
+  }
+  return ['15m']; // Safety fallback
+}
 /**
  * Converts shorthand or mixed recurrence strings into strict RFC 5545 format.
  * Preserves embedded UNTIL cutoff parameters during series splits.
@@ -514,7 +539,9 @@ class EventStore {
             originalStartTime: latestEvent.originalStartTime || null,
             participants: latestEvent.participants || [],
             conferencingProvider: latestEvent.conferencingProvider || null,
-            zoomPmiLink: settingsStore.zoomPmiLink || null
+            zoomPmiLink: settingsStore.zoomPmiLink || null,
+            reminders: latestEvent.reminders || [],
+            colorOverride: latestEvent.colorOverride || null
           }
         })
       );
@@ -593,7 +620,9 @@ class EventStore {
             originalStartTime: latestEvent.recurringEventId ? (latestEvent.originalStartTime || null) : null,
             participants: latestEvent.participants || [],
             conferencingProvider: latestEvent.conferencingProvider || null,
-            zoomPmiLink: settingsStore.zoomPmiLink || null
+            zoomPmiLink: settingsStore.zoomPmiLink || null,
+            reminders: latestEvent.reminders || [],
+            colorOverride: latestEvent.colorOverride || null
           }
         })
       );
@@ -679,11 +708,10 @@ class EventStore {
       console.error('Failed to persist new event:', err);
     });
 
-    if (newEvent.reminders && newEvent.reminders.length > 0) {
-      dispatchEventReminder(newEvent);
-    }
-
     this.dispatchGoogleCreate(newEvent).catch(() => {});
+
+    // Tell Rust backend to recalculate notification timers
+    invoke('sync_reminders').catch(console.error);
   }
 
   updateEvent(event: CalendarEvent): void {
@@ -701,11 +729,10 @@ class EventStore {
       console.error('Failed to persist updated event:', err);
     });
 
-    if (updated.reminders && updated.reminders.length > 0) {
-      dispatchEventReminder(updated);
-    }
-
     this.dispatchGoogleUpdate(updated).catch(() => {});
+
+    // Tell Rust backend to recalculate notification timers
+    invoke('sync_reminders').catch(console.error);
   }
 
   deleteEvent(id: string): void {
@@ -721,6 +748,9 @@ class EventStore {
       this.events = this.events.filter((e) => e.id !== id);
       persistDeleteEvent(id).catch(console.error);
     }
+
+    // Tell Rust backend to recalculate notification timers
+    invoke('sync_reminders').catch(console.error);
   }
 
   deleteEventsByCalendarId(calendarId: string): void {
@@ -916,7 +946,9 @@ class EventStore {
       status: 'confirmed',
       busyStatus: gEvt.busy_status || gEvt.busyStatus || (gEvt.transparency === 'transparent' ? 'free' : 'busy'),
       visibility: 'default',
-      reminders: ['15m'],
+      // BULLETPROOF MAPPERS APPLIED HERE:
+      colorOverride: resolveGoogleColorId(gEvt.color_override || gEvt.colorOverride || gEvt.colorId),
+      reminders: parseGoogleReminders(gEvt),
       creatorEmail: accountEmail,
       participants: (gEvt.participants || []).map((p: any) => {
         if (typeof p === 'string') return { email: p, name: p, rsvpStatus: 'needsAction' };

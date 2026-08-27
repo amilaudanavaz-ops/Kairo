@@ -25,6 +25,36 @@
         "theme": "Dark",
         "backgroundColor": "#121212",
         "shadow": true
+      },
+      {
+        "label": "tray",
+        "url": "/?tray=true",
+        "title": "Kairo Tray",
+        "width": 320,
+        "height": 450,
+        "transparent": true,
+        "decorations": false,
+        "hiddenTitle": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "shadow": false
+      },
+      {
+        "label": "notification",
+        "url": "/?notification=true",
+        "title": "Kairo Reminder",
+        "width": 320,
+        "height": 100,
+        "transparent": true,
+        "decorations": false,
+        "hiddenTitle": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "shadow": false
       }
     ],
     "security": {

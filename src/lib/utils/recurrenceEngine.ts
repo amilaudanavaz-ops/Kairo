@@ -185,6 +185,8 @@ export async function executeRecurrenceUpdate(payload: RecurrencePayload): Promi
           conferencingUrl: updatedEvent.conferencingUrl,
           conferencingProvider: updatedEvent.conferencingProvider,
           colorOverride: updatedEvent.colorOverride,
+          reminders: updatedEvent.reminders,
+          attachments: updatedEvent.attachments,
           recurringEventId: newSeriesId, // Reparenting
           syncStatus: 'pending_update'
         });
@@ -237,6 +239,8 @@ export async function executeRecurrenceUpdate(payload: RecurrencePayload): Promi
       conferencingUrl: updatedEvent.conferencingUrl,
       conferencingProvider: updatedEvent.conferencingProvider,
       colorOverride: updatedEvent.colorOverride,
+      reminders: updatedEvent.reminders,
+      attachments: updatedEvent.attachments,
       startTime: adjustedMasterStart.toISOString(),
       endTime: adjustedMasterEnd.toISOString(),
       isAllDay: updatedEvent.isAllDay,
@@ -269,6 +273,8 @@ export async function executeRecurrenceUpdate(payload: RecurrencePayload): Promi
           conferencingUrl: updatedEvent.conferencingUrl,
           conferencingProvider: updatedEvent.conferencingProvider,
           colorOverride: updatedEvent.colorOverride,
+          reminders: updatedEvent.reminders,
+          attachments: updatedEvent.attachments,
           syncStatus: 'pending_update'
         });
       }

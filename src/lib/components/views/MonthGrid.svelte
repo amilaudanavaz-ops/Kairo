@@ -76,22 +76,61 @@
   let translateYPercent = $state(0);
   let isRolling = $state(false);
 
+  // --- PERSISTENT MEMORY CACHE ---
+  const cellEventsCache = new Map<string, CalendarEvent[]>();
+  let lastEventsRef: any = null;
+  let lastCalsRef: any = null;
+
+  let cellEventsMap = $derived.by(() => {
+    // SECURITY INVALIDATOR: We only clear the cache if an event was actually created, 
+    // dragged/edited, deleted, or if a calendar was hidden via the eye icon!
+    if (eventStore.events !== lastEventsRef || calendarState.calendars !== lastCalsRef) {
+      cellEventsCache.clear();
+      lastEventsRef = eventStore.events;
+      lastCalsRef = calendarState.calendars;
+    }
+
+    const map = new Map<string, CalendarEvent[]>();
+    
+    for (const cell of gridCells) {
+      if (cellEventsCache.has(cell.dateKey)) {
+        // INSTANT LOAD: This day was calculated in a previous frame (0ms)
+        map.set(cell.dateKey, cellEventsCache.get(cell.dateKey)!);
+      } else {
+        // ONLY calculate brand new days scrolling into view from the top/bottom
+        const dayEvents = eventStore.getEventsForDateKey(cell.dateKey).sort((a, b) => {
+          if (a.isAllDay && !b.isAllDay) return -1;
+          if (!a.isAllDay && b.isAllDay) return 1;
+          return new Date(a.startTime).getTime() - new Date(b.startTime).getTime();
+        });
+        
+        cellEventsCache.set(cell.dateKey, dayEvents);
+        map.set(cell.dateKey, dayEvents);
+      }
+    }
+    return map;
+  });
+
   function getEventToken(event: CalendarEvent) {
     const cal = calendarState.calendars.find((c: CalendarCategory) => c.id === event.calendarId || c.googleCalendarId === event.calendarId);
     return resolveEventColorToken(event.colorOverride || cal?.colorHex);
   }
 
-  function isCalendarVisible(calendarId: string): boolean {
-    const cal = calendarState.calendars.find((c: CalendarCategory) => c.id === calendarId || c.googleCalendarId === calendarId);
-    return cal ? cal.isVisible : true;
-  }
-
   function formatDisplayTime(isoString: string): string {
     try {
       const tz = settingsStore.timeZone;
-      return settingsStore.timeFormat === '24h' 
-        ? formatInTimeZone(isoString, tz, 'HH:mm') 
-        : formatInTimeZone(isoString, tz, 'haaa').toLowerCase();
+      if (settingsStore.timeFormat === '24h') {
+        return formatInTimeZone(isoString, tz, 'HH:mm');
+      } else {
+        // Extract the exact minutes
+        const mins = formatInTimeZone(isoString, tz, 'mm');
+        // Smart Format: Drop the :00 if it's exactly on the hour to save space!
+        if (mins === '00') {
+          return formatInTimeZone(isoString, tz, 'haaa').toLowerCase(); // e.g. "6am"
+        } else {
+          return formatInTimeZone(isoString, tz, 'h:mmaaa').toLowerCase(); // e.g. "6:15am"
+        }
+      }
     } catch {
       return '';
     }
@@ -207,18 +246,13 @@
         height: 140%;
         grid-template-columns: repeat({colsCount}, minmax(0, 1fr)); 
         grid-template-rows: repeat({TOTAL_BUFFER_ROWS}, minmax(0, 1fr));
-        transform: translateY({translateYPercent}%);
+        transform: translate3d(0, {translateYPercent}%, 0);
         transition: {isRolling ? 'transform 120ms cubic-bezier(0.2, 0, 1)' : 'none'};
+        will-change: transform;
       "
     >
       {#each gridCells as cell, i (cell.dateKey)}
-        {@const allDayEvents = eventStore.getEventsForDateKey(cell.dateKey)
-          .filter((e: CalendarEvent) => isCalendarVisible(e.calendarId))
-          .sort((a, b) => {
-            if (a.isAllDay && !b.isAllDay) return -1;
-            if (!a.isAllDay && b.isAllDay) return 1;
-            return new Date(a.startTime).getTime() - new Date(b.startTime).getTime();
-          })}
+        {@const allDayEvents = cellEventsMap.get(cell.dateKey) || []}
         {@const visibleEvents = allDayEvents.slice(0, MAX_VISIBLE_EVENTS)}
         {@const overflowCount = allDayEvents.length - MAX_VISIBLE_EVENTS}
         {@const isHighlighted = dragStore.dropTargetDateKey === cell.dateKey}
@@ -236,17 +270,19 @@
         >
           <!-- Date Label -->
           <div class="flex items-center justify-between pointer-events-none px-1 pt-0.5 pb-1">
-            <span
-              class="text-[11px] font-semibold rounded-full flex items-center justify-center transition-colors
-                {cell.isCurrentDay ? 'bg-blue-600 text-white font-bold px-1.5 min-w-5 h-5' : 'text-[var(--text-primary)]'}
-                {isFirstDayOfMonth && !cell.isCurrentDay ? 'font-bold text-[var(--text-primary)]' : ''}"
-            >
-              {#if isFirstDayOfMonth}
-                {format(cell.date, 'MMM d')}
-              {:else}
+            {#if cell.isCurrentDay}
+              <span class="text-[11px] font-bold rounded-full flex items-center justify-center bg-[#ea4335] text-white px-1.5 min-w-5 h-5 shadow-sm">
                 {format(cell.date, 'd')}
-              {/if}
-            </span>
+              </span>
+            {:else if isFirstDayOfMonth}
+              <span class="text-[10px] font-bold rounded-md flex items-center justify-center bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 tracking-wide uppercase">
+                {format(cell.date, 'MMM d')}
+              </span>
+            {:else}
+              <span class="text-[11px] font-semibold text-[var(--text-primary)] flex items-center justify-center">
+                {format(cell.date, 'd')}
+              </span>
+            {/if}
 
             {#if showWeekNum}
               <span class="text-[9px] font-mono text-[var(--text-muted)]">W{getISOWeek(cell.date)}</span>
@@ -267,6 +303,7 @@
                   onpointerdown={(e) => dragStore.initDrag(event, cell.dateKey, e)}
                   onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                   oncontextmenu={(e) => handleEventContextMenu(e, event)}
+                  title="All Day - {event.title || '(No Title)'}"
                   class="px-2 py-0.5 rounded text-[11px] font-semibold truncate cursor-grab active:cursor-grabbing transition-all
                     {cell.isPast && !isSelected ? 'opacity-55 hover:opacity-100' : 'opacity-100'}
                     {isSelected ? 'ring-2 ring-white shadow-xl !opacity-100' : ''}
@@ -286,6 +323,7 @@
                   onpointerdown={(e) => dragStore.initDrag(event, cell.dateKey, e)}
                   onclick={(e) => handleEventClick(e, event, cell.dateKey)}
                   oncontextmenu={(e) => handleEventContextMenu(e, event)}
+                  title="{formatDisplayTime(event.startTime)} - {event.title || '(No Title)'}"
                   class="px-1.5 py-0.5 rounded text-[11px] truncate cursor-grab active:cursor-grabbing flex items-center border transition-all group
                     {cell.isPast && !isSelected ? 'opacity-55 hover:opacity-100' : 'opacity-100'}
                     {isSelected 

@@ -58,7 +58,6 @@
   import { contextMenuStore } from '../../stores/contextMenuStore.svelte';
   import { resolveEventColorToken, KAIRO_COLORS } from '../../utils/colors';
   import { generateMonthGrid, formatRRuleLabel, createProjectedSnapshot, isEventRecurring, getSafeDuration, generateAllDayIso, getFormattedTimezones } from '../../utils/dateMath';
-  import { dispatchEventReminder } from '../../utils/notifications';
   import type { CalendarEvent, CalendarCategory, ParticipantContact, LocationSuggestion } from '../../../types/event';
   import { toZonedTime, fromZonedTime, formatInTimeZone } from 'date-fns-tz';
   
@@ -143,6 +142,20 @@
       }
     }, 200);
   }
+  // Clean raw HTML tags imported from Google Calendar into readable plain text
+  function stripHtml(html: string): string {
+    if (!html) return '';
+    return html
+      .replace(/<br\s*[\/]?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .trim();
+  }
 
   let participantSuggestions = $derived.by(() => {
     const q = participantQuery.trim().toLowerCase();
@@ -189,8 +202,12 @@
     untrack(() => {
       if (!draft || `${draft.id}_${draft.occurrenceDate || ''}` !== targetKey) {
         const projected = createProjectedSnapshot(currentEvent, dateKey);
-        draft = JSON.parse(JSON.stringify(projected));
-        initialEventSnapshot = JSON.parse(JSON.stringify(projected));
+        const draftObj = JSON.parse(JSON.stringify(projected));
+        if (draftObj && draftObj.description) {
+          draftObj.description = stripHtml(draftObj.description);
+        }
+        draft = draftObj;
+        initialEventSnapshot = draft ? JSON.parse(JSON.stringify(draft)) : null;
         const tz = sanitizeTimezone(projected.timeZone || settingsStore.timeZone);
         pickerMonth = parseISO(projected.startTime);
         startTimeInput = formatInTimeZone(projected.startTime, tz, 'h:mm a');
@@ -639,7 +656,8 @@
     const current = Array.isArray(draft.reminders) ? draft.reminders : [];
     if (!current.includes(remId)) {
       updateDraft('reminders', [...current, remId]);
-      dispatchEventReminder(draft);
+      // Note: Rust will automatically schedule the native notification 
+      // when this draft is saved and sent to the database.
     }
     activeSideMenu = 'none';
   }

@@ -24,10 +24,33 @@
   import { format, parseISO } from 'date-fns';
   import { resolveEventColorToken } from './lib/utils/colors';
   import FloatingWidget from './lib/components/planner/FloatingWidget.svelte';
+  import TrayPanel from './lib/components/tray/TrayPanel.svelte';
+  import NotificationPopup from './lib/components/modals/NotificationPopup.svelte';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { listen } from '@tauri-apps/api/event';
+  import { initializeNotifications, scheduleNextReminder, setupNotificationListener } from './lib/utils/notifications';
 
   const isWidget = window.location.search.includes('widget=true') || window.location.href.includes('widget=true');
+  // ADD THIS LINE:
+  const isTrayWindow = window.location.search.includes('tray=true') || window.location.href.includes('tray=true');
+  const isNotificationWindow = window.location.search.includes('notification=true') || window.location.href.includes('notification=true');
 
   onMount(async () => {
+    // 1. THE DUMB WIDGETS UI SETUP
+    if (isTrayWindow || isNotificationWindow) {
+      document.body.style.backgroundColor = 'transparent';
+      document.documentElement.style.backgroundColor = 'transparent';
+      // WE REMOVED THE "return;" HERE SO THE DATABASE CAN ACTUALLY LOAD!
+    }
+
+    // 2. THE BRAIN (Main Calendar Window)
+    // Only the main background window is allowed to calculate reminders and play audio!
+    if (!isTrayWindow && !isNotificationWindow && !isWidget) {
+      await initializeNotifications();
+      listen('request_next_reminder', () => scheduleNextReminder());
+      setupNotificationListener();
+    }
+
     try {
       plannerStore.initIpc(isWidget); // Wires the brains correctly
       await settingsStore.init();
@@ -35,13 +58,21 @@
       if (cals.length > 0) {
         calendarState.calendars = cals;
       }
-      await eventStore.initDatabase();
+      await eventStore.initDatabase(); // The Tray Panel desperately needs this to run!
     } catch (err) {
       console.error('Failed to initialize application:', err);
     }
   });
 
   $effect(() => {
+    // Prevent the dumb widgets from accidentally calculating reminders
+    if (isTrayWindow || isNotificationWindow) return;
+
+    // By explicitly reading .length, Svelte 5 guarantees it will auto-calculate 
+    // the timers every single time an event is added, edited, or deleted!
+    if (eventStore.events && eventStore.events.length >= 0) {
+      scheduleNextReminder();
+    }
     const handleKeyDown = (e: KeyboardEvent) => {
       const activeTag = (document.activeElement?.tagName || '').toLowerCase();
       
@@ -98,7 +129,14 @@
   });
 </script>
 
-{#if isWidget}
+<!-- ADD THIS IF BLOCK -->
+{#if isTrayWindow}
+  <main class="tray-app-container">
+    <TrayPanel />
+  </main>
+{:else if isNotificationWindow}
+  <NotificationPopup />
+{:else if isWidget}
   <FloatingWidget />
 {:else if !settingsStore.isLoggedIn}
   <AuthScreen />
@@ -199,3 +237,17 @@
     {/if}
   </main>
 {/if}
+
+<style>
+  .tray-app-container {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
+    padding: 8px; /* Leave room for drop shadows */
+    box-sizing: border-box;
+    overflow: hidden; /* Hide scrollbars */
+    user-select: none;
+  }
+</style>

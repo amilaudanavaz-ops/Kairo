@@ -127,11 +127,22 @@ class ContextMenuStore {
       }
 
       if (JSON.stringify(base.reminders || []) !== JSON.stringify(updatedEvent.reminders || [])) {
-        diffs.push({ field: 'Reminders', newValue: 'Updated', oldValue: 'Previous' });
+        const formatRem = (arr: string[]) => arr && arr.length > 0 ? arr.join(', ') : 'None';
+        diffs.push({ 
+          field: 'Reminders', 
+          newValue: formatRem(updatedEvent.reminders || []), 
+          oldValue: formatRem(base.reminders || []) 
+        });
       }
       
       if (JSON.stringify(base.attachments || []) !== JSON.stringify(updatedEvent.attachments || [])) {
-        diffs.push({ field: 'Attachments', newValue: 'Updated', oldValue: 'Previous' });
+        const newAtt = (updatedEvent.attachments || []).length;
+        const oldAtt = (base.attachments || []).length;
+        diffs.push({ 
+          field: 'Attachments', 
+          newValue: `${newAtt} file(s)`, 
+          oldValue: `${oldAtt} file(s)` 
+        });
       }
       
       if (base.busyStatus !== updatedEvent.busyStatus) {
@@ -263,11 +274,8 @@ class ContextMenuStore {
   setColorOverride(colorHex: string | undefined) {
     if (!this.targetEvent) return;
     const updated = { ...this.targetEvent, colorOverride: colorHex };
-    if (isEventRecurring(this.targetEvent)) {
-      this.promptRecurringAction('update', this.targetEvent, updated, this.targetEvent.occurrenceDate, this.targetEvent);
-    } else {
-      eventStore.updateEvent(updated);
-    }
+    // Directly update the event so color changes from the context menu save and sync immediately
+    eventStore.updateEvent(updated);
     this.close();
   }
 
